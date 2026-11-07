@@ -42,6 +42,7 @@ ROOT = Path(os.environ.get("AGENT_MEMORY_DIR", ".agent-memory"))
 PROGRESS = ROOT / "progress.md"
 ARCHIVE = ROOT / "progress-archive.md"
 FEATURES = ROOT / "features.json"
+FEATURES_LOG = ROOT / "features.jsonl"
 LESSONS = ROOT / "lessons.jsonl"
 TASKS = ROOT / "tasks.jsonl"
 PROPOSALS = ROOT / "proposals"
@@ -152,10 +153,27 @@ def git(*args: str) -> str:
 
 # ---------------------------------------------------------------- features
 def load_features() -> List[dict]:
-    return json.loads(FEATURES.read_text(encoding="utf-8")) if FEATURES.exists() else []
+    by_id: Dict[str, dict] = {}
+    if FEATURES.exists():
+        with contextlib.suppress(json.JSONDecodeError):
+            for f in json.loads(FEATURES.read_text(encoding="utf-8")):
+                if f.get("id"):
+                    by_id[f["id"]] = dict(f)
+    for e in read_jsonl(FEATURES_LOG):
+        fid = e.get("id")
+        if not fid:
+            continue
+        cur = by_id.setdefault(fid, {"id": fid, "description": "", "criteria": [], "passes": False,
+                                     "evidence": "", "verified_by": "", "updated": e.get("updated", "")})
+        for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated"):
+            if k in e:
+                cur[k] = e[k]
+    return list(by_id.values())
 
 
-def save_features(fs: List[dict]) -> None:
+def save_features(fs: List[dict], event: dict | None = None) -> None:
+    if event:
+        append_line(FEATURES_LOG, event)
     atomic_write(FEATURES, json.dumps(fs, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -239,12 +257,12 @@ def cmd_init(a: argparse.Namespace) -> None:
         PROGRESS.write_text("# Progress log\n\nNewest entries at the bottom. One entry per session or finished feature.\n", encoding="utf-8")
     if not FEATURES.exists():
         save_features([])
-    for p in (LESSONS, TASKS, PROPOSALS / ".gitkeep"):
+    for p in (FEATURES_LOG, LESSONS, TASKS, PROPOSALS / ".gitkeep"):
         p.touch()
     (ROOT / "VERSION").write_text(f"{SCHEMA}\n", encoding="utf-8")
     ga = ROOT / ".gitattributes"
     if not ga.exists():  # union merge keeps both sides of append-only logs; loaders de-duplicate
-        ga.write_text("lessons.jsonl merge=union\ntasks.jsonl merge=union\nprogress.md merge=union\n", encoding="utf-8")
+        ga.write_text("features.jsonl merge=union\nlessons.jsonl merge=union\ntasks.jsonl merge=union\nprogress.md merge=union\n", encoding="utf-8")
     gi = ROOT / ".gitignore"
     if not gi.exists():
         gi.write_text(".lock\n.*.tmp\n.gate-pass\nevals/results/\n", encoding="utf-8")
@@ -356,9 +374,10 @@ def cmd_feature(a: argparse.Namespace) -> None:
             if not a.criterion:
                 die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
             guard_secrets(a.desc, *a.criterion)
-            fs.append({"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
-                       "evidence": "", "verified_by": "", "updated": now()})
-            save_features(fs)
+            rec = {"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
+                   "evidence": "", "verified_by": "", "updated": now()}
+            fs.append(rec)
+            save_features(fs, dict(rec, ev="add"))
             print(f"added {a.id} with {len(a.criterion)} criteria")
         elif a.action in ("pass", "fail"):
             if a.id not in by_id:
@@ -374,7 +393,7 @@ def cmd_feature(a: argparse.Namespace) -> None:
             streak = 0 if a.action == "pass" else f.get("fail_streak", 0) + 1
             f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
                      fail_streak=streak, updated=now())
-            save_features(fs)
+            save_features(fs, dict(f, ev=a.action))
             print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
             if streak >= STUCK_AFTER:
                 print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)

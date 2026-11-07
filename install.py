@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AI Quality Pack v3 installer — cross-platform (Linux, macOS, Windows), stdlib only, Python 3.9+.
 
-  python3 install.py project [DIR] [--profile auto|python|typescript|go|none]
+  python3 install.py project [DIR] [--profile auto|python|typescript|go|rust|none]
   python3 install.py global
 Options:
   --no-upstream        skip mattpocock/skills (grill-me & co.)
@@ -37,6 +37,7 @@ GATES = {  # deterministic completion gate per profile (memory.py gate)
     "python": ["uv run ruff check .", "uv run pyright", "uv run pytest -q"],
     "typescript": ["npx eslint . --max-warnings=0", "npx tsc --noEmit", "npm test --silent"],
     "go": ["go vet ./...", "go test ./..."],
+    "rust": ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets -- -D warnings", "cargo test --workspace"],
 }
 EGM_REPO = "google/elephant-goldfish-model"
 EGM_CMDS = {
@@ -151,11 +152,11 @@ def link_dir(link: Path, target_rel: str, real: Path) -> None:
 
 def install_egm() -> None:
     """EGM needs its full plugin (skills read reviewer prompts elsewhere in the repo), so use each agent's plugin CLI."""
-    found = False
+    succeeded = False
     for cli, cmds in EGM_CMDS.items():
         if not shutil.which(cli):
             continue
-        found = True
+        cli_ok = True
         for cmd in cmds:
             log("egm: " + " ".join(cmd))
             if DRY:
@@ -164,13 +165,17 @@ def install_egm() -> None:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             except (OSError, subprocess.TimeoutExpired) as e:
                 log(f"WARN: egm via {cli} failed: {e}")
+                cli_ok = False
                 break
             if r.returncode != 0:
                 log(f"WARN: egm via {cli} failed: {(r.stderr or r.stdout).strip()[:300]}")
+                cli_ok = False
                 break
-        if cli == "codex":
-            log("NOTE: finish in Codex with its plugin install command (see the EGM README).")
-    if not found:
+        if cli_ok:
+            succeeded = True
+            if cli == "codex":
+                log("NOTE: finish in Codex with its plugin install command (see the EGM README).")
+    if not succeeded:
         log("NOTE: no agent CLI found for EGM. Install it manually:")
         for cmds in EGM_CMDS.values():
             for cmd in cmds:
@@ -187,6 +192,8 @@ def detect_profiles(root: Path) -> list:
         found.append("typescript")
     if (root / "go.mod").exists():
         found.append("go")
+    if (root / "Cargo.toml").exists():
+        found.append("rust")
     return found
 
 
@@ -286,7 +293,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Install the AI Quality Pack (Antigravity + Claude Code + any Agent Skills client).")
     ap.add_argument("mode", choices=["project", "global"])
     ap.add_argument("dir", nargs="?", default=".")
-    ap.add_argument("--profile", default="auto", choices=["auto", "python", "typescript", "go", "none"])
+    ap.add_argument("--profile", default="auto", choices=["auto", "python", "typescript", "go", "rust", "none"])
     ap.add_argument("--no-upstream", action="store_true")
     ap.add_argument("--update-upstream", action="store_true")
     ap.add_argument("--upstream-ref", default=UPSTREAM_REF, help="git ref of mattpocock/skills (default: pinned, reviewed SHA)")
@@ -306,7 +313,24 @@ def main() -> None:
         install_project(root, a)
     else:
         home = Path.home()
-        for d in (home / ".gemini" / "config" / "skills", home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
+        agy_plugin = home / ".gemini" / "config" / "plugins" / "ai-quality-pack"
+        agy_skills = agy_plugin / "skills"
+        install_pack_skills(agy_skills, a.upgrade)
+        if not a.no_upstream:
+            fetch_upstream(agy_skills, a.update_upstream, a.upstream_ref)
+        agy_tpl = PACK / "templates" / "antigravity"
+        for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
+            src_f = agy_tpl / rel
+            dst_f = agy_plugin / rel
+            if src_f.exists():
+                if a.upgrade and dst_f.exists() and not DRY:
+                    shutil.copy2(src_f, dst_f)
+                else:
+                    add_if_absent(src_f, dst_f)
+        for doc in ("README.md", "LICENSE"):
+            if (PACK / doc).exists():
+                add_if_absent(PACK / doc, agy_plugin / doc)
+        for d in (home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
             install_pack_skills(d, a.upgrade)
             if not a.no_upstream:
                 fetch_upstream(d, a.update_upstream, a.upstream_ref)

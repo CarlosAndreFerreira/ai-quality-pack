@@ -1,0 +1,18 @@
+{
+  "name": "ai-quality-pack",
+  "displayName": "AI Quality Pack",
+  "version": "0.4.1",
+  "description": "Portable quality layer for AI coding agents: deterministic completion gates, long-horizon file memory, independent fresh-context evaluator, OWASP 2025 security review, WCAG 2.2 AA UI/UX review, TDD loop, and measured skill evolution.",
+  "author": {
+    "name": "Carlos André Ferreira",
+    "url": "https://github.com/CarlosAndreFerreira"
+  },
+  "homepage": "https://github.com/CarlosAndreFerreira/ai-quality-pack",
+  "repository": "https://github.com/CarlosAndreFerreira/ai-quality-pack",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Run code-review and security-review (OWASP 2025) on the current diff",
+    "Plan this change with testable acceptance criteria (plan-before-code)",
+    "Grade the running UI against WCAG 2.2 AA criteria (ui-ux-review)"
+  ]
+}

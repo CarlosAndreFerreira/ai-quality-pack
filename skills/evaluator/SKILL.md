@@ -10,9 +10,9 @@ metadata:
 
 A model that grades its own work rates it too highly. A separate evaluator, tuned to be skeptical, gives feedback the implementer can act on. So evaluation runs in a **fresh context**:
 
-- **Claude Code:** delegate to the `evaluator` subagent (`.claude/agents/evaluator.md`). Give it only the feature id, the diff range and the test commands. Do not give it your reasoning.
+- **Claude Code / Antigravity:** delegate to the `evaluator` subagent (`.claude/agents/evaluator.md` or `~/.gemini/config/plugins/ai-quality-pack/agents/evaluator.md` via `invoke_subagent`). Give it only the feature id, the diff range and the test commands. Do not give it your reasoning.
 - Model tier: the evaluator may run on a stronger model than the implementer (subagent `model:` field). Checking is cheaper than building, so it is the best place to spend on a stronger model.
-- **Antigravity / other agents:** start a new agent conversation with the same inputs. If that is not possible, state in the report that the evaluation ran in the same context. That is weaker evidence, and the user should know.
+- **Other agents:** start a new agent conversation with the same inputs. If that is not possible, state in the report that the evaluation ran in the same context. That is weaker evidence, and the user should know.
 
 ## Inputs
 - `memory.py feature show --id <F>` → the acceptance criteria (the contract).
