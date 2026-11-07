@@ -24,12 +24,12 @@ Requires Python 3.9+ and git. No other dependencies. Works on Linux, macOS and W
 
 ```bash
 git clone https://github.com/<you>/ai-quality-pack
-python3 ai-quality-pack/install.py project /path/to/your/repo          # auto-detects python / typescript / go
+python3 ai-quality-pack/install.py project /path/to/your/repo          # auto-detects python / typescript / go / rust
 python3 ai-quality-pack/install.py project . --with-stop-gate           # enforce the gate before Claude Code finishes
 python3 ai-quality-pack/install.py project . --with-egm                 # + Google Elephant-Goldfish design review
 python3 ai-quality-pack/install.py project . --link .codex/skills       # expose skills to another agent folder
 python3 ai-quality-pack/install.py project . --dry-run                  # show what would change
-python3 ai-quality-pack/install.py global                               # user-level skills (Antigravity + Claude Code)
+python3 ai-quality-pack/install.py global                               # Antigravity plugin + Claude Code skills
 ```
 
 The installer never overwrites your files. It merges `.claude/settings.json` instead of replacing it. `--upgrade` replaces pack-owned skills and keeps a backup. Where symlinks are unavailable (Windows without developer mode), it copies.
@@ -96,9 +96,8 @@ Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `
 
 ## Limitations
 - **Not measured end to end.** The design sources report gains for *their* systems, not for this pack.
-- **Antigravity**: no confirmed hooks. The memory digest relies on AGENTS.md, and the evaluator is only independent in a new conversation.
+- **Antigravity**: `install.py global` installs a native Antigravity plugin (`~/.gemini/config/plugins/ai-quality-pack/`) with `plugin.json`, global `rules/AGENTS.md`, and the isolated `evaluator` subagent (`agents/evaluator.md`).
 - **No sandbox.** Agents run with your permissions. Use a devcontainer or VM for unattended runs.
-- `features.json` is not merge-friendly. Resolve its conflicts by keeping both entries.
 - Recurrence counting depends on the agent reusing lesson keys. Duplicate detection is lexical, not semantic.
 
 ## Design sources

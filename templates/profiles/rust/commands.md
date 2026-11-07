@@ -1,0 +1,5 @@
+- Build: `cargo build --workspace`
+- Format: `cargo fmt --all -- --check`
+- Lint: `cargo clippy --workspace --all-targets -- -D warnings`
+- Test: `cargo test --workspace`
+- Dependency audit: `cargo audit`

@@ -297,10 +297,20 @@ class GateTests(unittest.TestCase):
 class EgmTests(unittest.TestCase):
     def test_with_egm_without_clis_prints_instructions(self):
         with tempfile.TemporaryDirectory() as t:
-            env = {"PATH": str(Path(sys.executable).parent)}
+            env = {"PATH": ""}
             r = run([INST, "project", t, "--no-upstream", "--profile", "none", "--with-egm"], t, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("claude plugin install egm@egm", r.stdout)
+
+    def test_rust_profile_detection(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "Cargo.toml").write_text("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n", encoding="utf-8")
+            r = run([INST, "project", root, "--no-upstream"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("cargo clippy", (root / "AGENTS.md").read_text(encoding="utf-8"))
+            gate = json.loads((root / ".agent-memory" / "gate.json").read_text(encoding="utf-8"))
+            self.assertTrue(any("cargo test" in c for c in gate["commands"]))
 
 
 if __name__ == "__main__":
