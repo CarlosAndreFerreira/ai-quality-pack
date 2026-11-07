@@ -1,0 +1,5 @@
+- Install: `go mod download`
+- Format: `gofmt -l . && go vet ./...`
+- Lint: `golangci-lint run`
+- Test: `go test -race ./...`
+- Dependency audit: `govulncheck ./...`

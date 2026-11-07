@@ -1,0 +1,6 @@
+- Install: `npm ci` (or `pnpm install --frozen-lockfile`)
+- Lint: `npx eslint . --max-warnings=0`
+- Format: `npx prettier --check .`
+- Typecheck: `npx tsc --noEmit`
+- Test: `npx vitest run` (or the project's `npm test`)
+- Dependency audit: `npm audit --audit-level=high`
