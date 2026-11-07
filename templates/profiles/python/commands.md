@@ -1,0 +1,5 @@
+- Install: `uv sync --frozen`
+- Lint + format: `uv run ruff check --fix . && uv run ruff format .`
+- Typecheck: `uv run pyright`
+- Test: `uv run pytest -q`
+- Dependency audit: `uvx pip-audit`
