@@ -515,10 +515,13 @@ def cmd_task(a: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------- completion gate
 def workspace_hash() -> str:
-    """Hash of HEAD + tracked diff + untracked files (excluding .agent-memory) — unchanged workspace ⇒ gate can be skipped."""
+    """Hash of gate.json + HEAD + tracked diff + untracked files (excluding .agent-memory) — unchanged ⇒ gate can be skipped."""
     import hashlib
     h = hashlib.sha256()
     h.update(git("rev-parse", "HEAD").encode())
+    # The gate config lives in .agent-memory (excluded below), but changing it must re-run the gate.
+    with contextlib.suppress(OSError):
+        h.update(GATE.read_bytes())
     h.update(git("diff", "HEAD", "--", ".", f":(exclude){ROOT.as_posix()}").encode())
     for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
         if f.startswith(ROOT.as_posix() + "/"):

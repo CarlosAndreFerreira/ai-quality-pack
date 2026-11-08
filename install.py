@@ -225,6 +225,9 @@ def merge_settings(path: Path, stop_gate: bool = False) -> None:
         except json.JSONDecodeError:
             log(f"WARN: {path} is not valid JSON; not modified")
             return
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        log(f"WARN: {path} has an unexpected shape; not modified")
+        return
     hooks = data.setdefault("hooks", {})
     changed = False
     for event, entry in ours.items():
