@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2 — 2026-11-08
+Pre-publication security and edge-case review.
+- **Gate cache now covers `gate.json`.** Editing the gate commands after a pass used to report "workspace unchanged — skipped" without running the new commands.
+- **Stop hook fails closed on timeout.** A gate that exceeded the hook's fixed 1800 s let the agent finish silently; the budget is now sized from `gate.json` and a timeout blocks the stop.
+- **Hooks run from the project root** (`CLAUDE_PROJECT_DIR`). Started from a subfolder, the Stop hook found no gate and let the agent stop.
+- **Formatter no longer syncs the project on every edit** (`uv run --no-sync`), and falls back to `ruff` on PATH when the project doesn't pin it.
+- Installer leaves a `settings.json` with an unexpected shape untouched instead of crashing.
+- CI lints the README as English (it was linted with the Portuguese rules and passed vacuously).
+- 3 regression tests, each verified to fail without its fix.
+
 ## 0.4.1 — 2026-11-07
 - Native Google Antigravity plugin support in `install.py global` (`~/.gemini/config/plugins/ai-quality-pack/` with `plugin.json`, `agents/evaluator.md`, `rules/AGENTS.md`, and `assets/logo.svg`).
 - Added `rust` language profile (`Cargo.toml` auto-detection, `cargo fmt`, `cargo clippy`, `cargo test` gates).

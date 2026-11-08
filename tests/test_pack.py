@@ -281,6 +281,46 @@ class GateTests(unittest.TestCase):
             s = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
             self.assertIn("Stop", s["hooks"])
 
+    def test_gate_config_change_invalidates_cache(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+            py = sys.executable.replace("\\", "/")
+            m = lambda *a: run([MEM, *a], root)
+            m("init")
+            gate = root / ".agent-memory/gate.json"
+            gate.write_text(json.dumps({"commands": [f'"{py}" -c "pass"']}), encoding="utf-8")
+            self.assertIn("PASSED", m("gate").stdout)
+            gate.write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            r = m("gate")
+            self.assertNotIn("skipped", r.stdout)
+            self.assertEqual(r.returncode, 1)
+
+    def test_stop_hook_uses_project_dir_from_subfolder(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate"], root)
+            py = sys.executable.replace("\\", "/")
+            (root / ".agent-memory/gate.json").write_text(
+                json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            sub = root / "src" / "pkg"
+            sub.mkdir(parents=True)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+            r = run([root / ".claude/hooks/gate_on_stop.py"], sub, stdin=json.dumps({}), env=env)
+            self.assertEqual(r.returncode, 2)  # without the fix the hook found no gate and let the agent stop
+
+    def test_merge_settings_leaves_unexpected_shape_alone(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / ".claude").mkdir()
+            (root / ".claude/settings.json").write_text("[]", encoding="utf-8")
+            r = run([INST, "project", root, "--no-upstream", "--profile", "none"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((root / ".claude/settings.json").read_text(encoding="utf-8"), "[]")
+
     def test_stuck_feature_in_digest(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)

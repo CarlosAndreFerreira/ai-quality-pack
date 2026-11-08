@@ -23,7 +23,7 @@ Coding agents fail in predictable ways. They declare victory early, grade their 
 Requires Python 3.9+ and git. No other dependencies. Works on Linux, macOS and Windows.
 
 ```bash
-git clone https://github.com/<you>/ai-quality-pack
+git clone https://github.com/CarlosAndreFerreira/ai-quality-pack
 python3 ai-quality-pack/install.py project /path/to/your/repo          # auto-detects python / typescript / go / rust
 python3 ai-quality-pack/install.py project . --with-stop-gate           # enforce the gate before Claude Code finishes
 python3 ai-quality-pack/install.py project . --with-egm                 # + Google Elephant-Goldfish design review
@@ -92,7 +92,7 @@ Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).
 - Append-only logs with `merge=union`. Duplicates and conflict markers are folded on read, and task-id collisions after a merge are flagged.
 - The memory digest is sanitised and wrapped as data (`<project-memory>`). Obvious secrets are refused at write time.
-- 20 `unittest` tests. CI on Linux, macOS and Windows (Python 3.9 and 3.13).
+- `unittest` suite (installer, memory, gate, evals, concurrency). CI on Linux, macOS and Windows (Python 3.9 and 3.13).
 
 ## Limitations
 - **Not measured end to end.** The design sources report gains for *their* systems, not for this pack.
