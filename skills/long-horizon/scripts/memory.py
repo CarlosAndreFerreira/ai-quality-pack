@@ -189,10 +189,34 @@ def log_event(ev: str, **fields) -> None:
         pass
 
 
+def stdin_ready(fd: int, timeout: float) -> bool:
+    """True when a read of `fd` returns at once (data, end of file, or not a pipe). Waits at most `timeout`."""
+    if os.name != "nt":
+        import select
+        try:
+            return bool(select.select([fd], [], [], max(0.0, timeout))[0])
+        except (OSError, ValueError):
+            return True
+    import ctypes
+    import msvcrt
+    try:
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(fd))
+    except OSError:
+        return True
+    avail, end = ctypes.c_ulong(0), time.time() + timeout
+    while True:
+        # fails for a file or NUL, and for a pipe whose writer closed: in each case the read does not wait
+        if not ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None) or avail.value:
+            return True
+        if time.time() >= end:
+            return False
+        time.sleep(0.02)
+
+
 def hook_input(wait: float = 0.5) -> dict:
     """The JSON that a hook runner (Claude Code) writes on stdin. It never blocks: an agent that runs the
-    command by hand sends no data, and a pipe that stays open is abandoned after `wait` seconds."""
-    import threading
+    command by hand sends no data, and a pipe that stays open is abandoned after `wait` seconds.
+    No reader thread: on Windows a thread that waits in a read of stdin stops the process from exiting."""
     try:
         if sys.stdin is None or sys.stdin.isatty():
             return {}
@@ -200,20 +224,15 @@ def hook_input(wait: float = 0.5) -> dict:
     except Exception:
         return {}
     chunks: List[bytes] = []
-
-    def _read() -> None:
-        with contextlib.suppress(Exception):
-            while True:
-                b = os.read(fd, 65536)  # raw read: a buffered read would hold the stdin lock at exit
-                if not b:
-                    return
-                chunks.append(b)
-
-    t = threading.Thread(target=_read, daemon=True)
-    t.start()
-    t.join(wait)
-    if t.is_alive():
-        return {}
+    end = time.time() + wait
+    try:
+        while stdin_ready(fd, end - time.time()):
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            chunks.append(b)
+    except Exception:
+        pass
     try:
         data = json.loads(b"".join(chunks).decode("utf-8", "replace"))
     except ValueError:
