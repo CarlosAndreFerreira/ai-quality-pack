@@ -312,6 +312,81 @@ class GateTests(unittest.TestCase):
             r = run([root / ".claude/hooks/gate_on_stop.py"], sub, stdin=json.dumps({}), env=env)
             self.assertEqual(r.returncode, 2)  # without the fix the hook found no gate and let the agent stop
 
+    def _project_with_failing_gate(self, root):
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+        r = run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate"], root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        py = sys.executable.replace("\\", "/")
+        (root / ".agent-memory/gate.json").write_text(
+            json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+        sub = root / "src" / "pkg"
+        sub.mkdir(parents=True)
+        return sub, json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+
+    def test_hook_commands_do_not_depend_on_the_current_directory(self):
+        with tempfile.TemporaryDirectory() as t:
+            _, s = self._project_with_failing_gate(Path(t))
+            for event in ("SessionStart", "PostToolUse", "Stop"):
+                for entry in s["hooks"][event]:
+                    for hook in entry["hooks"]:
+                        self.assertIn('"$CLAUDE_PROJECT_DIR"/', hook["command"], event)
+
+    @unittest.skipIf(os.name == "nt", "needs a POSIX shell to expand $CLAUDE_PROJECT_DIR")
+    def test_stop_hook_command_blocks_from_a_subfolder(self):
+        """The command line of settings.json, run as Claude Code runs it after the agent did `cd src/pkg`."""
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            sub, s = self._project_with_failing_gate(root)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+            shell = lambda command: subprocess.run(command, shell=True, cwd=sub, input="{}", capture_output=True,
+                                                   text=True, env=env)
+            r = shell(s["hooks"]["Stop"][0]["hooks"][0]["command"])
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Completion gate failed", r.stderr)
+            # the command that versions up to 0.4.2 wrote: the script is not found, so the gate never ran
+            old = shell("python3 .claude/hooks/gate_on_stop.py")
+            self.assertNotIn("Completion gate failed", old.stderr)
+            self.assertIn("No such file", old.stderr)
+            # the digest hook, from the same subfolder, still reads the project's memory
+            r = shell(s["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+            self.assertIn("Session start digest", r.stdout)
+
+    def test_installer_repairs_relative_hook_commands(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / ".claude").mkdir()
+            old = {"hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "python3 .agents/skills/long-horizon/scripts/memory.py start"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "python .claude/hooks/gate_on_stop.py"}]},
+                         {"hooks": [{"type": "command", "command": "echo mine"}]}]}}
+            (root / ".claude/settings.json").write_text(json.dumps(old), encoding="utf-8")
+            r = run([INST, "project", root, "--no-upstream", "--profile", "none"], root)  # no --with-stop-gate
+            self.assertEqual(r.returncode, 0, r.stderr)
+            s = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            commands = {event: [h["command"] for e in entries for h in e["hooks"]] for event, entries in s["hooks"].items()}
+            self.assertEqual(len(commands["SessionStart"]), 1)
+            self.assertEqual(len(commands["Stop"]), 2)
+            self.assertIn("echo mine", commands["Stop"])
+            for event in ("SessionStart", "PostToolUse"):
+                self.assertTrue(all("CLAUDE_PROJECT_DIR" in c for c in commands[event]), commands[event])
+            self.assertTrue(any("CLAUDE_PROJECT_DIR" in c and "gate_on_stop.py" in c for c in commands["Stop"]))
+            self.assertFalse(any(c.endswith(" .claude/hooks/gate_on_stop.py") for c in commands["Stop"]))
+
+    def test_digest_reports_hooks_that_will_not_run(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            _, s = self._project_with_failing_gate(root)
+            self.assertNotIn("hook:", run([MEM, "start"], root).stdout)
+            s["hooks"]["Stop"][0]["hooks"][0]["command"] = "python3 .claude/hooks/gate_on_stop.py"
+            (root / ".claude/settings.json").write_text(json.dumps(s), encoding="utf-8")
+            out = run([MEM, "start"], root).stdout
+            self.assertIn("Needs you", out)
+            self.assertIn("Stop hook: `.claude/hooks/gate_on_stop.py` has a relative path", out)
+            (root / ".claude/hooks/format_on_edit.py").unlink()
+            out = run([MEM, "start"], root).stdout
+            self.assertIn("PostToolUse hook: script `.claude/hooks/format_on_edit.py` is missing", out)
+
     def test_merge_settings_leaves_unexpected_shape_alone(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)

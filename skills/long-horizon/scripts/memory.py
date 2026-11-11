@@ -58,6 +58,44 @@ SECRET_RE = re.compile(
 )
 TASK_STATES = ("open", "in-progress", "blocked", "needs-human", "done", "dropped")
 DUP_RATIO = 0.82
+SETTINGS = Path(".claude/settings.json")
+HOOK_SCRIPT_RE = re.compile(r"(\S*?)(\.claude/hooks/[\w.-]+\.py|\.agents/skills/[\w./-]+\.py)")
+
+
+def enter_project_root() -> None:
+    """Work from the project root when started in a subfolder (a hook, or an agent after `cd tests`).
+
+    All paths here are relative to the project root. Without this, a call from a subfolder finds no
+    .agent-memory/ and reports an empty state.
+    """
+    project = os.environ.get("CLAUDE_PROJECT_DIR")
+    if "AGENT_MEMORY_DIR" in os.environ or ROOT.exists() or not project:
+        return
+    if (Path(project) / ROOT).is_dir():
+        os.chdir(project)
+
+
+def hook_problems() -> List[str]:
+    """Hooks of .claude/settings.json that will not run: the script is missing, or its path is relative.
+
+    Claude Code runs a hook in the agent's current directory. A relative script path is not found after
+    the agent changes directory, and a Stop hook that does not start does not block: the gate is skipped.
+    """
+    try:
+        hooks = json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks", {})
+        commands = [(event, h.get("command", "")) for event, entries in hooks.items() for e in entries
+                    for h in e.get("hooks", []) if h.get("type", "command") == "command"]
+    except Exception:
+        return []
+    out = []
+    for event, command in commands:
+        for prefix, script in HOOK_SCRIPT_RE.findall(command):
+            if not Path(script).is_file():
+                out.append(f"{event} hook: script `{script}` is missing, so this hook does nothing. Run the pack installer again.")
+            elif "CLAUDE_PROJECT_DIR" not in prefix and "CLAUDE_PROJECT_DIR" not in command.split(script)[0]:
+                out.append(f"{event} hook: `{script}` has a relative path. It is skipped when the agent works in "
+                           "another folder. Run the pack installer again to repair it.")
+    return out
 
 
 # ---------------------------------------------------------------- utilities
@@ -277,9 +315,11 @@ def cmd_start(a: argparse.Namespace) -> None:
     tasks = load_tasks()
     human = [t for t in tasks.values() if t["status"] == "needs-human"]
     stuck = [f for f in load_features() if f.get("fail_streak", 0) >= STUCK_AFTER and not f.get("passes")]
-    if human or stuck:  # attention first (Super-agent: speak only when a person must act)
+    broken = hook_problems()
+    if human or stuck or broken:  # attention first (Super-agent: speak only when a person must act)
         out += ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
         out += [f"- {f['id']} stuck: evaluator failed it {f['fail_streak']}× in a row — needs a human decision" for f in stuck]
+        out += [f"- {b} Tell the user." for b in broken]
         out.append("")
     branch, status = git("rev-parse", "--abbrev-ref", "HEAD"), git("status", "--porcelain")
     if branch:
@@ -621,6 +661,7 @@ def main() -> None:
     s.set_defaults(fn=cmd_gate)
 
     a = p.parse_args()
+    enter_project_root()
     a.fn(a)
 
 

@@ -47,6 +47,25 @@ EGM_CMDS = {
 }
 PY = "python" if os.name == "nt" else "python3"
 DRY = False
+# Claude Code runs a hook command in the agent's current directory, and that directory follows the agent's
+# `cd`. A script path relative to the project root is then not found: the hook does not start, and for a
+# Stop hook that is a non-blocking error, so the completion gate is skipped without a word.
+# "$CLAUDE_PROJECT_DIR" is the project root, whatever the current directory is.
+HOOK_SCRIPTS = {
+    "SessionStart": (".agents/skills/long-horizon/scripts/memory.py", "start"),
+    "PostToolUse": (".claude/hooks/format_on_edit.py",),
+    "Stop": (".claude/hooks/gate_on_stop.py",),
+}
+
+
+def hook_command(event: str) -> str:
+    script, *args = HOOK_SCRIPTS[event]
+    return " ".join([PY, f'"$CLAUDE_PROJECT_DIR"/{script}', *args])
+
+
+def legacy_hook_commands(event: str) -> list:
+    """The relative-path commands that pack versions up to 0.4.2 wrote (with either interpreter name)."""
+    return [" ".join([py, *HOOK_SCRIPTS[event]]) for py in ("python", "python3")]
 
 
 def log(msg: str) -> None:
@@ -213,11 +232,11 @@ def add_if_absent(src: Path, dst: Path, text: str = None) -> None:
 
 def merge_settings(path: Path, stop_gate: bool = False) -> None:
     ours = {
-        "SessionStart": {"hooks": [{"type": "command", "command": f"{PY} .agents/skills/long-horizon/scripts/memory.py start"}]},
-        "PostToolUse": {"matcher": "Edit|MultiEdit|Write", "hooks": [{"type": "command", "command": f"{PY} .claude/hooks/format_on_edit.py"}]},
+        "SessionStart": {"hooks": [{"type": "command", "command": hook_command("SessionStart")}]},
+        "PostToolUse": {"matcher": "Edit|MultiEdit|Write", "hooks": [{"type": "command", "command": hook_command("PostToolUse")}]},
     }
     if stop_gate:
-        ours["Stop"] = {"hooks": [{"type": "command", "command": f"{PY} .claude/hooks/gate_on_stop.py"}]}
+        ours["Stop"] = {"hooks": [{"type": "command", "command": hook_command("Stop")}]}
     data = {}
     if path.exists():
         try:
@@ -230,6 +249,13 @@ def merge_settings(path: Path, stop_gate: bool = False) -> None:
         return
     hooks = data.setdefault("hooks", {})
     changed = False
+    for event in HOOK_SCRIPTS:  # an older install: rewrite its relative-path commands in place, also for a
+        # Stop gate that this run was not asked to add
+        for e in hooks.get(event, []) if isinstance(hooks.get(event), list) else []:
+            for h in e.get("hooks", []) if isinstance(e, dict) else []:
+                if isinstance(h, dict) and h.get("command") in legacy_hook_commands(event):
+                    h["command"] = hook_command(event)
+                    changed = True
     for event, entry in ours.items():
         cmd = entry["hooks"][0]["command"]
         existing = hooks.setdefault(event, [])
