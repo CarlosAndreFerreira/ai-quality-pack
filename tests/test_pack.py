@@ -466,11 +466,13 @@ class ObservabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
             p = subprocess.Popen([sys.executable, str(MEM), "start"], cwd=root, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=dict(os.environ, PYTHONIOENCODING="utf-8"))  # as run(): the digest has non-ASCII text
             try:
                 p.stdin.write(json.dumps({"session_id": "open-pipe"}).encode())
                 p.stdin.flush()
-                self.assertEqual(p.wait(timeout=20), 0)  # stdin is still open: the command must not wait for it
+                rc = p.wait(timeout=20)  # stdin is still open: the command must not wait for it
+                self.assertEqual(rc, 0, p.stderr.read().decode("utf-8", "replace"))
                 self.assertIn(b"<project-memory", p.stdout.read())
                 self.assertEqual(self._events(root)[0]["session"], "open-pipe")  # what was written is still used
             finally:
