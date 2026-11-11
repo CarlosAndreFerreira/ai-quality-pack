@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — proposed fix P1 (benchmark report, 2026-11-11)
+- **Hook commands no longer depend on the agent's current directory.** The installer wrote `python3 .claude/hooks/gate_on_stop.py`. Claude Code runs a hook in the current directory, which follows the agent's `cd`. After `cd tests` the script was not found, the CLI reported "Stop hook error" and the agent stopped without the gate. The commands are now `python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/...`. The 0.4.2 fix moved into the project root inside the script, but the script never started. Seen in 2 of 10 benchmark runs on SWE-bench.
+- **The installer repairs the commands of an older install** in place, without adding a second copy.
+- **The session-start digest reports hooks that will not run** (script missing, or relative path) under "Needs you".
+- `memory.py` works from the project root when it is started in a subfolder and `CLAUDE_PROJECT_DIR` is set.
+- 4 regression tests. `test_stop_hook_command_blocks_from_a_subfolder` runs the command line of `settings.json` through a shell, as the CLI does; the 0.4.2 test called the script by its absolute path and so did not see the problem.
+
 ## 0.4.2 — 2026-11-08
 Pre-publication security and edge-case review.
 - **Gate cache now covers `gate.json`.** Editing the gate commands after a pass used to report "workspace unchanged — skipped" without running the new commands.
