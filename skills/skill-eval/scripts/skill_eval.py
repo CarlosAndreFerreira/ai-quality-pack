@@ -123,6 +123,44 @@ def leakage(diff: str, tasks: List[dict]) -> List[str]:
     return sorted(set(hits))
 
 
+# ---------------------------------------------------------------- what the agent reported
+TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+LOG_LIMIT = 200_000
+
+
+def _text(x) -> str:
+    return x.decode("utf-8", "replace") if isinstance(x, bytes) else (x or "")
+
+
+def parse_usage(stdout: str) -> dict:
+    """Tokens, cost and turns from an agent that prints a JSON result (e.g. `claude -p ... --output-format json`,
+    or the last line of `stream-json`). Any other output gives {} and the run is costed by its duration."""
+    lines = [l for l in stdout.strip().splitlines() if l.strip()]
+    for cand in ([stdout.strip()] + lines[-1:]) if lines else []:
+        try:
+            d = json.loads(cand)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        out = {}
+        if isinstance(d.get("total_cost_usd"), (int, float)):
+            out["cost_usd"] = round(float(d["total_cost_usd"]), 4)
+        u = d.get("usage")
+        if isinstance(u, dict) and any(isinstance(u.get(k), int) for k in TOKEN_KEYS):
+            out["tokens"] = sum(u[k] for k in TOKEN_KEYS if isinstance(u.get(k), int))
+        if isinstance(d.get("num_turns"), int):
+            out["turns"] = d["num_turns"]
+        return out
+    return {}
+
+
+def new_logdir(kind: str) -> Path:
+    d = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-{kind}-transcripts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ---------------------------------------------------------------- worktree runs
 def prepare_worktree(repo: Path, skills_src: Path, mutate: Optional[Callable[[Path], None]]) -> Path:
     wt = Path(tempfile.mkdtemp(prefix="skill-eval-"))
@@ -178,7 +216,8 @@ def remove_skill(name: str) -> Callable[[Path], None]:
     return _m
 
 
-def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeout: int) -> dict:
+def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeout: int,
+             log: Optional[Path] = None) -> dict:
     wt = prepare_worktree(repo, skills, mutate)
     t0 = time.time()
     try:
@@ -188,9 +227,17 @@ def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeo
         pfile.write_text(task["prompt"], encoding="utf-8")
         cmd = agent_cmd.format(prompt=q(task["prompt"]), prompt_file=q(str(pfile)), workdir=q(str(wt)))
         try:
-            agent_rc = sh(cmd, wt, timeout).returncode
-        except subprocess.TimeoutExpired:
-            agent_rc = "timeout"
+            r = sh(cmd, wt, timeout)
+            agent_rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
+        except subprocess.TimeoutExpired as e:
+            agent_rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
+        usage = parse_usage(stdout)
+        if log:  # the transcript explains a verdict; results/ is git-ignored
+            try:
+                log.write_text(f"$ {cmd}\nexit: {agent_rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n",
+                               encoding="utf-8")
+            except OSError:
+                pass
         agent_seconds = round(time.time() - t0, 1)
         # reward-hacking guard: the agent must not change the files that judge it
         tampered = []
@@ -204,21 +251,24 @@ def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeo
             passed = False
         if tampered:
             passed = False
-        return {"passed": passed, "agent_rc": agent_rc, "seconds": agent_seconds, "tampered": tampered}
+        return {"passed": passed, "agent_rc": agent_rc, "seconds": agent_seconds, "tampered": tampered, **usage,
+                **({"transcript": log.name} if log else {})}
     finally:
         cleanup(repo, wt)
 
 
-def measure(repo, skills, tasks, agent_cmd, repeats, timeout, variants) -> Dict[str, dict]:
+def measure(repo, skills, tasks, agent_cmd, repeats, timeout, variants, logdir: Optional[Path] = None) -> Dict[str, dict]:
     per_task: Dict[str, dict] = {}
     for t in tasks:
         res = {name: [] for name, _ in variants}
-        for _ in range(repeats):
+        for i in range(repeats):
             for name, mutate in variants:
-                r = run_once(repo, skills, mutate, t, agent_cmd, timeout)
+                log = logdir / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', t['id'])}-{name}-{i + 1}.log" if logdir else None
+                r = run_once(repo, skills, mutate, t, agent_cmd, timeout, log)
                 res[name].append(r)
                 flag = " TAMPERED " + ",".join(r["tampered"]) if r["tampered"] else ""
-                print(f"  {t['id']:<8} [{t['split']:<7}] {name:<9} {'PASS' if r['passed'] else 'fail'}  {r['seconds']}s{flag}")
+                spent = (f"  {r['tokens']} tok" if "tokens" in r else "") + (f"  ${r['cost_usd']}" if "cost_usd" in r else "")
+                print(f"  {t['id']:<8} [{t['split']:<7}] {name:<9} {'PASS' if r['passed'] else 'fail'}  {r['seconds']}s{spent}{flag}")
         per_task[t["id"]] = {"split": t["split"], **res}
     return per_task
 
@@ -257,14 +307,20 @@ def summarise(per_task: Dict[str, dict], a: str, b: str) -> dict:
         losses = sum(rate(v[b]) < rate(v[a]) for v in rows.values())
         hard_losses = [k for k, v in rows.items() if rate(v[a]) == 1.0 and rate(v[b]) < 1.0]
         tampered = [k for k, v in rows.items() if any(r["tampered"] for r in v[b])]
-        secs_a = sum(r["seconds"] for v in rows.values() for r in v[a]) or 1e-9
-        secs_b = sum(r["seconds"] for v in rows.values() for r in v[b])
+
+        def total(key: str, name: str) -> Optional[float]:
+            vals = [r.get(key) for v in rows.values() for r in v[name]]
+            return sum(vals) if vals and all(isinstance(x, (int, float)) for x in vals) else None
+
+        # cost basis: money, else tokens, when every run of both variants reported it; else wall-clock time
+        basis = next((k for k in ("cost_usd", "tokens") if total(k, a) and total(k, b) is not None), "seconds")
+        spent = {name: {k: round(total(k, name), 4) for k in ("cost_usd", "tokens") if total(k, name) is not None} for name in (a, b)}
         out[split] = {
-            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n)},
-            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n)},
+            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n), **spent[a]},
+            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n), **spent[b]},
             "delta": round((bp - ap) / n, 3), "tasks_better": wins, "tasks_worse": losses,
             "sign_test_p": round(sign_test(wins, losses), 3), "hard_losses": hard_losses,
-            "tampered": tampered, "cost_ratio": round(secs_b / secs_a, 2),
+            "tampered": tampered, "cost_ratio": round(total(basis, b) / (total(basis, a) or 1e-9), 2), "cost_basis": basis,
         }
     return out
 
@@ -290,7 +346,7 @@ def verdict(s: dict, noise: float, mode: str) -> tuple:
     if ev["delta"] <= noise:
         return "INCONCLUSIVE", [f"gain {ev['delta']:+.0%} is within the noise band ±{noise:.0%}"]
     if ev["cost_ratio"] > COST_TOLERANCE and ev["delta"] < 2 * noise:
-        return "INCONCLUSIVE", [f"gain {ev['delta']:+.0%} does not justify {ev['cost_ratio']}× runtime"]
+        return "INCONCLUSIVE", [f"gain {ev['delta']:+.0%} does not justify {ev['cost_ratio']}× cost ({ev['cost_basis']})"]
     strength = "" if ev["sign_test_p"] <= 0.1 else " (weak evidence)"
     return "IMPROVES" + strength, [f"gain {ev['delta']:+.0%} > noise ±{noise:.0%}; sign test p={ev['sign_test_p']}"]
 
@@ -337,8 +393,9 @@ def report(kind, label, s, v, reasons, noise, per_task, a, agent_cmd, extra=None
         b, c = x[names[0]], x[names[1]]
         print(f"\n[{split}] {names[0]} {b['passed']}/{b['runs']} ({b['rate']:.0%}, CI {b['ci95']}) → "
               f"{names[1]} {c['passed']}/{c['runs']} ({c['rate']:.0%}, CI {c['ci95']}); Δ {x['delta']:+.0%}; "
-              f"tasks +{x['tasks_better']}/-{x['tasks_worse']}; p={x['sign_test_p']}; cost ×{x['cost_ratio']}")
-    print(f"\nVERDICT: {v}\n  - " + "\n  - ".join(reasons) + f"\nreport: {out.as_posix()}")
+              f"tasks +{x['tasks_better']}/-{x['tasks_worse']}; p={x['sign_test_p']}; cost ×{x['cost_ratio']} ({x['cost_basis']})")
+    print(f"\nVERDICT: {v}\n  - " + "\n  - ".join(reasons) + f"\nreport: {out.as_posix()}"
+          + (f"\ntranscripts: {extra['transcripts']}" if extra and extra.get("transcripts") else ""))
     return out
 
 
@@ -356,7 +413,8 @@ def cmd_init(a) -> None:
 def cmd_calibrate(a) -> None:
     """A/A run: baseline vs baseline. The disagreement rate estimates evaluation noise."""
     repo, agent_cmd, skills, tasks, _ = common_setup(a)
-    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("replica", None)])
+    logdir = new_logdir("calibrate")
+    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("replica", None)], logdir)
     deltas = [abs(rate(v["baseline"]) - rate(v["replica"])) for v in per_task.values()]
     band = round(max(a.min_band, sum(deltas) / len(deltas)), 3)
     EVALS.mkdir(parents=True, exist_ok=True)
@@ -376,10 +434,11 @@ def cmd_run(a) -> None:
     noise = noise_band(a.min_band)
     print(f"measuring {proposal.name}: {len(tasks)} tasks × {a.repeats} repeats × 2 = {runs} runs; noise band ±{noise:.0%}"
           + ("" if NOISE.exists() else " (default — run `calibrate` for a measured band)"))
-    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("candidate", apply_diff(diff))])
+    logdir = new_logdir("proposal")
+    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("candidate", apply_diff(diff))], logdir)
     s = summarise(per_task, "baseline", "candidate")
     v, reasons = verdict(s, noise, "run")
-    out = report("proposal", str(proposal), s, v, reasons, noise, per_task, a, agent_cmd)
+    out = report("proposal", str(proposal), s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix()})
     m = re.search(r"\.agents/skills/([\w-]+)/", diff)
     hyp = re.search(r"^Change:\s*(.+)$", proposal.read_text(encoding="utf-8"), re.M)
     append_history({"date": dt.date.today().isoformat(), "skill": m.group(1) if m else "", "proposal": proposal.name,
@@ -399,10 +458,11 @@ def cmd_ablate(a) -> None:
         print("note: upstream skill — pruning means uninstalling it, not editing it")
     noise = noise_band(a.min_band)
     print(f"ablating {a.skill}: {len(tasks)} tasks × {a.repeats} repeats × 2 = {runs} runs; noise band ±{noise:.0%}")
-    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("with", None), ("without", remove_skill(a.skill))])
+    logdir = new_logdir("ablation")
+    per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("with", None), ("without", remove_skill(a.skill))], logdir)
     s = summarise(per_task, "with", "without")
     v, reasons = verdict(s, noise, "ablate")
-    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd)
+    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix()})
     append_history({"date": dt.date.today().isoformat(), "skill": a.skill, "proposal": "ablation", "hypothesis": "skill still adds value",
                     "verdict": v, "delta": (s.get("evolve") or s.get("holdout"))["delta"], "report": out.as_posix(),
                     "decision": "pending-user"})

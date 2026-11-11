@@ -428,5 +428,145 @@ class EgmTests(unittest.TestCase):
             self.assertTrue(any("cargo test" in c for c in gate["commands"]))
 
 
+class ObservabilityTests(unittest.TestCase):
+    """The run log (.agent-memory/events.jsonl), `memory.py stats`, the Stop hook's releases, skill-eval transcripts."""
+
+    def _repo(self, t, gate_ok=True):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+        run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate"], root)
+        py = sys.executable.replace("\\", "/")
+        (root / "ok.flag").write_text("1", encoding="utf-8")
+        gate = {"commands": [f'"{py}" -c "import os,sys; sys.exit(0 if os.path.exists(\'ok.flag\') else 1)"']}
+        (root / ".agent-memory/gate.json").write_text(json.dumps(gate), encoding="utf-8")
+        if not gate_ok:
+            (root / "ok.flag").unlink()
+        return root
+
+    def _events(self, root):
+        f = root / ".agent-memory/events.jsonl"
+        return [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()] if f.exists() else []
+
+    def test_session_id_from_the_hook_tags_later_events(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([MEM, "start"], root, stdin=json.dumps({"session_id": "sess-1", "source": "startup"}))
+            self.assertIn("<project-memory", r.stdout)
+            run([MEM, "gate"], root, stdin="")
+            ev = self._events(root)
+            self.assertEqual([(e["ev"], e["session"]) for e in ev], [("session_start", "sess-1"), ("gate", "sess-1")])
+            self.assertEqual(ev[0]["source"], "startup")
+            self.assertEqual(ev[1]["result"], "pass")
+            ignored = subprocess.run(["git", "check-ignore", ".agent-memory/events.jsonl", ".agent-memory/.session"],
+                                     cwd=root, capture_output=True, text=True).stdout.split()
+            self.assertEqual(len(ignored), 2)  # the run log is local, not committed
+
+    def test_start_does_not_wait_for_a_stdin_that_stays_open(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            p = subprocess.Popen([sys.executable, str(MEM), "start"], cwd=root, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertEqual(p.wait(timeout=20), 0)  # stdin is still open: the command must not wait for it
+                self.assertIn(b"<project-memory", p.stdout.read())
+            finally:
+                p.stdin.close()
+                p.stdout.close()
+                p.stderr.close()
+
+    def test_gate_and_feature_events_and_stats(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t, gate_ok=False)
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"AGENT_SESSION_ID": "s-9"})
+            self.assertEqual(m("gate").returncode, 1)
+            m("feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c")
+            m("feature", "fail", "--id", "F-1")
+            m("feature", "pass", "--id", "F-1", "--evidence", "e", "--verified-by", "evaluator")  # gate is red
+            (root / "ok.flag").write_text("1", encoding="utf-8")
+            self.assertEqual(m("gate").returncode, 0)
+            m("gate")  # skipped
+            m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c")
+            m("feature", "pass", "--id", "F-2", "--evidence", "e", "--verified-by", "human")
+            m("lesson", "add", "--key", "some-rule", "--rule", "Do the thing every time.")
+            m("lesson", "vote", "--key", "some-rule", "--vote", "helpful")
+            d = json.loads(m("stats", "--json").stdout)
+            self.assertEqual((d["gate"]["runs"], d["gate"]["failed"], d["gate"]["skipped"]), (2, 1, 1))
+            self.assertEqual(d["gate"]["fail_rate"], 0.5)
+            self.assertEqual(d["sessions"], 1)
+            self.assertEqual(d["features"]["passed"], 2)
+            self.assertEqual(d["features"]["rounds_per_pass"], 1.5)  # F-1 needed 2 rounds, F-2 needed 1
+            self.assertEqual(d["features"]["passed_without_green_gate"], ["F-1"])
+            self.assertEqual(d["features"]["verified_by"], {"evaluator": 1, "human": 1})
+            self.assertEqual((d["lessons"]["added"], d["lessons"]["helpful"]), (1, 1))
+            text = m("stats").stdout
+            self.assertIn("1 failed (50%)", text)
+            self.assertIn("F-1", text)
+            fail = [e for e in self._events(root) if e["ev"] == "gate" and e["result"] == "fail"][0]
+            self.assertIn("ok.flag", fail["failed"])
+
+    def test_events_can_be_turned_off_and_never_break_a_command(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertEqual(run([MEM, "gate"], root, stdin="", env={"AGENT_MEMORY_EVENTS": "0"}).returncode, 0)
+            self.assertEqual(self._events(root), [])
+            (root / ".agent-memory/events.jsonl").mkdir()  # an unwritable log
+            self.assertEqual(run([MEM, "gate", "--force"], root, stdin="").returncode, 0)
+            self.assertEqual(run([MEM, "event", "--ev", "stop", "--field", "outcome=api_key=abc"], root).returncode, 2)
+
+    def test_stop_hook_records_block_and_release_and_digest_reports_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t, gate_ok=False)
+            hook = root / ".claude/hooks/gate_on_stop.py"
+            self.assertEqual(run([hook], root, stdin=json.dumps({"session_id": "s-1", "stop_hook_active": False})).returncode, 2)
+            self.assertEqual(run([hook], root, stdin=json.dumps({"session_id": "s-1", "stop_hook_active": True})).returncode, 0)
+            stops = [(e["outcome"], e["session"]) for e in self._events(root) if e["ev"] == "stop"]
+            self.assertEqual(stops, [("blocked", "s-1"), ("released-red", "s-1")])
+            digest = run([MEM, "start"], root, stdin="").stdout
+            self.assertIn("Needs you", digest)
+            self.assertIn("completion gate still failing", digest)
+            self.assertIn("1 released with the gate still failing", run([MEM, "stats"], root).stdout)
+            (root / "ok.flag").write_text("1", encoding="utf-8")
+            run([MEM, "gate"], root, stdin="")
+            self.assertNotIn("completion gate still failing", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_upgrade_replaces_an_older_hook_script(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            hook = root / ".claude/hooks/gate_on_stop.py"
+            hook.write_text("# old copy\n", encoding="utf-8")
+            run([INST, "project", root, "--no-upstream", "--profile", "none"], root)
+            self.assertEqual(hook.read_text(encoding="utf-8"), "# old copy\n")  # never without --upgrade
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--upgrade"], root)
+            self.assertIn("released-red", hook.read_text(encoding="utf-8"))
+            self.assertTrue(list((root / ".claude/hooks/.backup").rglob("gate_on_stop.py")))
+
+    def test_skill_eval_keeps_transcripts_and_costs_by_tokens(self):
+        agent = ("import json, pathlib\n"
+                 "s = pathlib.Path('.agents/skills/tdd-loop/SKILL.md').read_text(encoding='utf-8')\n"
+                 "ok = 'EVAL-MARKER' in s\n"
+                 "pathlib.Path('result.txt').write_text('pass' if ok else 'fail', encoding='utf-8')\n"
+                 "print(json.dumps({'total_cost_usd': 0.3 if ok else 0.1, 'num_turns': 2,\n"
+                 "                  'usage': {'input_tokens': 300 if ok else 100, 'output_tokens': 0}}))\n")
+        with tempfile.TemporaryDirectory() as t:
+            se = SkillEvalTests()
+            root, py = se._repo(t)
+            (root / "json_agent.py").write_text(agent, encoding="utf-8")
+            subprocess.run(["git", "add", "json_agent.py"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "agent"], cwd=root, check=True)
+            p = se._proposal(root, "- EVAL-MARKER: check this.")
+            r = run([EVAL, "run", "--proposal", p, "--repeats", "1", "--agent-cmd", f'"{py}" json_agent.py'], root)
+            self.assertIn("VERDICT: IMPROVES", r.stdout, r.stdout + r.stderr)
+            self.assertIn("cost ×3.0 (cost_usd)", r.stdout)
+            res = root / ".agent-memory/evals/results"
+            rec = json.loads(next(res.glob("*-proposal-p.json")).read_text(encoding="utf-8"))
+            run1 = rec["per_task"]["TASK-A"]["candidate"][0]
+            self.assertEqual((run1["tokens"], run1["cost_usd"], run1["turns"]), (300, 0.3, 2))
+            self.assertEqual(rec["summary"]["evolve"]["cost_basis"], "cost_usd")
+            log = Path(rec["transcripts"]) if Path(rec["transcripts"]).is_absolute() else root / rec["transcripts"]
+            self.assertEqual(len(list(log.glob("*.log"))), 4)
+            self.assertIn("total_cost_usd", (log / run1["transcript"]).read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
