@@ -7,7 +7,7 @@ Options:
   --no-upstream        skip mattpocock/skills (grill-me & co.)
   --update-upstream    re-fetch upstream skills (only folders marked .upstream are replaced)
   --upstream-ref REF   upstream revision (default: a pinned, reviewed SHA)
-  --upgrade            replace pack-owned skills with this version (old copies backed up)
+  --upgrade            replace pack-owned skills and hook scripts with this version (old copies backed up)
   --link DIR           also expose skills to another agent folder (repeatable, e.g. .codex/skills)
   --with-egm           install Google's Elephant-Goldfish Model plugin via the agents' own plugin CLIs
   --with-stop-gate     Claude Code Stop hook: the completion gate must pass before the agent finishes
@@ -230,6 +230,19 @@ def add_if_absent(src: Path, dst: Path, text: str = None) -> None:
         dst.write_text(text, encoding="utf-8")
 
 
+def add_or_upgrade(src: Path, dst: Path, upgrade: bool) -> None:
+    """A pack-owned script: added if absent; with --upgrade a different copy is replaced and backed up."""
+    if not dst.exists() or not upgrade or dst.read_bytes() == src.read_bytes():
+        add_if_absent(src, dst)
+        return
+    backup = dst.parent / ".backup" / dt.datetime.now().strftime("%Y%m%d-%H%M%S") / dst.name
+    log(f"upgrade: {dst} (backup → {backup})")
+    if not DRY:
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dst), str(backup))
+        shutil.copy2(src, dst)
+
+
 def merge_settings(path: Path, stop_gate: bool = False) -> None:
     ours = {
         "SessionStart": {"hooks": [{"type": "command", "command": hook_command("SessionStart")}]},
@@ -292,8 +305,8 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     add_if_absent(None, root / "AGENTS.md", agents_md)
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
     add_if_absent(PACK / "templates" / ".claude" / "agents" / "evaluator.md", root / ".claude" / "agents" / "evaluator.md")
-    add_if_absent(PACK / "templates" / ".claude" / "hooks" / "format_on_edit.py", root / ".claude" / "hooks" / "format_on_edit.py")
-    add_if_absent(PACK / "templates" / ".claude" / "hooks" / "gate_on_stop.py", root / ".claude" / "hooks" / "gate_on_stop.py")
+    for hook in ("format_on_edit.py", "gate_on_stop.py"):
+        add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / hook, root / ".claude" / "hooks" / hook, a.upgrade)
     merge_settings(root / ".claude" / "settings.json", a.with_stop_gate)
     for p in profiles:
         pdir = PACK / "templates" / "profiles" / p

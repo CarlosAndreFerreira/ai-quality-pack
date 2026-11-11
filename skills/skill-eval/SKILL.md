@@ -19,7 +19,7 @@ Script: `python3 .agents/skills/skill-eval/scripts/skill_eval.py <command> --hel
 
 ## 2. Agent command
 `export SKILL_EVAL_AGENT_CMD='<template>'`. Placeholders: `{prompt}`, `{prompt_file}`, `{workdir}`.
-- Claude Code: `claude -p {prompt}`, plus the permission flags your setup needs for unattended edits, only inside a sandbox or container.
+- Claude Code: `claude -p {prompt} --output-format json`, plus the permission flags your setup needs for unattended edits, only inside a sandbox or container. With the JSON result, each run records its tokens, cost and turns, and the cost ratio uses money (or tokens) instead of wall-clock time.
 - No headless mode (some IDE agents): this measurement is not available for that agent. Say so.
 
 ## 3. Calibrate noise (once, and again after the model or task set changes)
@@ -28,6 +28,7 @@ Script: `python3 .agents/skills/skill-eval/scripts/skill_eval.py <command> --hel
 ## 4. Measure
 - Proposal: `skill_eval.py run --proposal .agent-memory/proposals/<file>.md --annotate`
 - Existing skill (pruning): `skill_eval.py ablate --skill <name>`
+- Each run keeps the agent's output in `.agent-memory/evals/results/<run>-transcripts/` (git-ignored). Read the transcript of a failed run before you explain a `REGRESSES` or `INCONCLUSIVE` verdict.
 - Past results: `skill_eval.py history [--skill <name>]`. Read this before you propose, so you do not re-propose a falsified idea.
 Runs = tasks × repeats × 2. Above 20 the script asks for `--yes`. **Ask the user first**: it costs tokens.
 
@@ -35,7 +36,7 @@ Runs = tasks × repeats × 2. Above 20 the script asks for `--yes`. **Ask the us
 | Verdict | Rule | Action |
 |---|---|---|
 | `REGRESSES` | Any guard fired: a task the baseline always passed now fails, protected files were tampered with, or the holdout dropped beyond noise | Do not propose it |
-| `INCONCLUSIVE` | Gain within the noise band, or a small gain that costs >25% more runtime | Present it as "no measurable effect"; prefer the smaller skill |
+| `INCONCLUSIVE` | Gain within the noise band, or a small gain that costs >25% more (money, tokens or runtime) | Present it as "no measurable effect"; prefer the smaller skill |
 | `IMPROVES (weak evidence)` | Gain above noise, sign test p > 0.1 | Present it with the numbers and the caveat |
 | `IMPROVES` | Gain above noise, p ≤ 0.1, no guard fired | Present it with the numbers |
 | `PRUNABLE` / `KEEP` (ablate) | Removing the skill changed nothing / hurt | Propose removal to the user / keep it |
