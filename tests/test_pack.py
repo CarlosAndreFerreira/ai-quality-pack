@@ -468,8 +468,11 @@ class ObservabilityTests(unittest.TestCase):
             p = subprocess.Popen([sys.executable, str(MEM), "start"], cwd=root, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
+                p.stdin.write(json.dumps({"session_id": "open-pipe"}).encode())
+                p.stdin.flush()
                 self.assertEqual(p.wait(timeout=20), 0)  # stdin is still open: the command must not wait for it
                 self.assertIn(b"<project-memory", p.stdout.read())
+                self.assertEqual(self._events(root)[0]["session"], "open-pipe")  # what was written is still used
             finally:
                 p.stdin.close()
                 p.stdout.close()
@@ -503,7 +506,8 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("1 failed (50%)", text)
             self.assertIn("F-1", text)
             fail = [e for e in self._events(root) if e["ev"] == "gate" and e["result"] == "fail"][0]
-            self.assertIn("ok.flag", fail["failed"])
+            cmd = json.loads((root / ".agent-memory/gate.json").read_text(encoding="utf-8"))["commands"][0]
+            self.assertTrue(cmd.startswith(fail["failed"].rstrip("…")), fail["failed"])  # bounded to 120 characters
 
     def test_events_can_be_turned_off_and_never_break_a_command(self):
         with tempfile.TemporaryDirectory() as t:
