@@ -18,6 +18,8 @@ Files (default dir .agent-memory/, override with AGENT_MEMORY_DIR):
   lessons.jsonl    playbook items; duplicate keys are merged on read (git merge=union safe)
   tasks.jsonl      append-only task events; current state = fold of events (crash/merge safe)
   proposals/       skill-update proposals (skill-evolve)
+  events.jsonl     run log (git-ignored): session starts, gate runs, feature gradings, lesson votes, Stop-hook
+                   blocks and releases, each with the agent session id. `memory.py stats` summarises it.
 
 Run `memory.py <command> --help`. Never store secrets or personal data here.
 """
@@ -49,6 +51,10 @@ PROPOSALS = ROOT / "proposals"
 LOCK = ROOT / ".lock"
 GATE = ROOT / "gate.json"
 GATE_PASS = ROOT / ".gate-pass"
+EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
+EVENTS_OLD = ROOT / "events.1.jsonl"
+SESSION = ROOT / ".session"
+EVENTS_MAX = 2_000_000
 STUCK_AFTER = 3
 ENTRY_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}", re.M)
 SECRET_RE = re.compile(
@@ -156,6 +162,96 @@ def atomic_write(path: Path, text: str) -> None:
 def append_line(path: Path, obj: dict) -> None:
     with path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------- run log (observability)
+def session_id() -> str:
+    """The agent session that this command belongs to: AGENT_SESSION_ID, or the id the SessionStart hook saved."""
+    sid = os.environ.get("AGENT_SESSION_ID", "")
+    if not sid:
+        with contextlib.suppress(OSError):
+            sid = SESSION.read_text(encoding="utf-8").strip()
+    return CTRL_RE.sub("", sid)[:80]
+
+
+def log_event(ev: str, **fields) -> None:
+    """Append one line to events.jsonl. It records ids, outcomes and durations, never prompt or code text.
+    Set AGENT_MEMORY_EVENTS=0 to turn it off. It must never break the command that calls it."""
+    if os.environ.get("AGENT_MEMORY_EVENTS", "1") == "0" or not ROOT.is_dir():
+        return
+    try:
+        if EVENTS.exists() and EVENTS.stat().st_size > EVENTS_MAX:
+            os.replace(EVENTS, EVENTS_OLD)
+        rec = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "ev": ev, "session": session_id()}
+        rec.update({k: v for k, v in fields.items() if v is not None and v != ""})
+        append_line(EVENTS, rec)
+    except Exception:
+        pass
+
+
+def stdin_ready(fd: int, timeout: float) -> bool:
+    """True when a read of `fd` returns at once (data, end of file, or not a pipe). Waits at most `timeout`."""
+    if os.name != "nt":
+        import select
+        try:
+            return bool(select.select([fd], [], [], max(0.0, timeout))[0])
+        except (OSError, ValueError):
+            return True
+    import ctypes
+    import msvcrt
+    try:
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(fd))
+    except OSError:
+        return True
+    avail, end = ctypes.c_ulong(0), time.time() + timeout
+    while True:
+        # fails for a file or NUL, and for a pipe whose writer closed: in each case the read does not wait
+        if not ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None) or avail.value:
+            return True
+        if time.time() >= end:
+            return False
+        time.sleep(0.02)
+
+
+def hook_input(wait: float = 0.5) -> dict:
+    """The JSON that a hook runner (Claude Code) writes on stdin. It never blocks: an agent that runs the
+    command by hand sends no data, and a pipe that stays open is abandoned after `wait` seconds.
+    No reader thread: on Windows a thread that waits in a read of stdin stops the process from exiting."""
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return {}
+        fd = sys.stdin.fileno()
+    except Exception:
+        return {}
+    chunks: List[bytes] = []
+    end = time.time() + wait
+    try:
+        while stdin_ready(fd, end - time.time()):
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            chunks.append(b)
+    except Exception:
+        pass
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8", "replace"))
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def safe_cmd(c: str) -> str:
+    return "<redacted>" if SECRET_RE.search(c) else clean(c, 120)
+
+
+def gate_fresh():
+    """True when the completion gate passed for exactly this workspace. None when the repo has no gate."""
+    if not GATE.exists():
+        return None
+    try:
+        return GATE_PASS.read_text(encoding="utf-8").strip() == workspace_hash()
+    except OSError:
+        return False
 
 
 def read_jsonl(path: Path) -> List[dict]:
@@ -304,6 +400,11 @@ def cmd_init(a: argparse.Namespace) -> None:
     gi = ROOT / ".gitignore"
     if not gi.exists():
         gi.write_text(".lock\n.*.tmp\n.gate-pass\nevals/results/\n", encoding="utf-8")
+    have = gi.read_text(encoding="utf-8").splitlines()
+    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session") if x not in have]
+    if missing:  # the run log is local telemetry: it is not committed
+        with gi.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(missing) + "\n")
     print(f"initialised {ROOT}/ (schema {SCHEMA})")
 
 
@@ -311,11 +412,24 @@ def cmd_start(a: argparse.Namespace) -> None:
     if not ROOT.exists():
         print("[memory] no .agent-memory/ in this repo (run memory.py init to enable).")
         return
+    hook = hook_input()
+    sid = CTRL_RE.sub("", str(hook.get("session_id") or ""))[:80]
+    if sid:  # later commands of this session (gate, feature, lesson) carry the same id in the run log
+        with contextlib.suppress(OSError):
+            SESSION.write_text(sid + "\n", encoding="utf-8")
+    log_event("session_start", source=clean(hook.get("source") or ("hook" if sid else "manual"), 40))
     out: List[str] = ["# Session start digest", ""]
     tasks = load_tasks()
     human = [t for t in tasks.values() if t["status"] == "needs-human"]
     stuck = [f for f in load_features() if f.get("fail_streak", 0) >= STUCK_AFTER and not f.get("passes")]
     broken = hook_problems()
+    for e in reversed(read_jsonl(EVENTS)):  # the Stop hook blocks once; after that the agent may stop on a red gate
+        if e.get("ev") == "gate" and e.get("result") == "pass":
+            break
+        if e.get("ev") == "stop" and e.get("outcome") == "released-red":
+            broken.append(f"A session stopped with the completion gate still failing ({e.get('ts', '?')}). "
+                          "Run `memory.py gate` and fix it before new work.")
+            break
     if human or stuck or broken:  # attention first (Super-agent: speak only when a person must act)
         out += ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
         out += [f"- {f['id']} stuck: evaluator failed it {f['fail_streak']}× in a row — needs a human decision" for f in stuck]
@@ -418,6 +532,7 @@ def cmd_feature(a: argparse.Namespace) -> None:
                    "evidence": "", "verified_by": "", "updated": now()}
             fs.append(rec)
             save_features(fs, dict(rec, ev="add"))
+            log_event("feature", id=a.id, result="add", criteria=len(a.criterion))
             print(f"added {a.id} with {len(a.criterion)} criteria")
         elif a.action in ("pass", "fail"):
             if a.id not in by_id:
@@ -434,6 +549,8 @@ def cmd_feature(a: argparse.Namespace) -> None:
             f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
                      fail_streak=streak, updated=now())
             save_features(fs, dict(f, ev=a.action))
+            log_event("feature", id=a.id, result=a.action, verified_by=a.verified_by, fail_streak=streak,
+                      gate_fresh=gate_fresh())
             print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
             if streak >= STUCK_AFTER:
                 print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
@@ -466,6 +583,7 @@ def cmd_lesson(a: argparse.Namespace) -> None:
                 if l.get("status") == "retired":
                     l["status"] = "active"
                 print(f"lesson {a.key} recurred → count {l['count']}")
+                log_event("lesson", key=a.key, action="recur", count=l["count"])
             else:
                 dups = similar(a.rule, ls)
                 if dups and not a.force:
@@ -475,6 +593,7 @@ def cmd_lesson(a: argparse.Namespace) -> None:
                            "triggers": [a.trigger] if a.trigger else [], "skill": a.skill or "",
                            "count": 1, "helpful": 0, "harmful": 0, "seen": [now()], "status": "active"})
                 print(f"lesson {a.key} recorded ({a.kind})")
+                log_event("lesson", key=a.key, action="add", kind=a.kind)
             save_lessons(ls)
         elif a.action == "vote":
             if a.key not in by_key or a.vote not in ("helpful", "harmful"):
@@ -482,6 +601,7 @@ def cmd_lesson(a: argparse.Namespace) -> None:
             by_key[a.key][a.vote] = by_key[a.key].get(a.vote, 0) + 1
             save_lessons(ls)
             print(f"{a.key}: +1 {a.vote}")
+            log_event("lesson", key=a.key, action="vote", vote=a.vote)
         elif a.action == "status":
             if a.key not in by_key or a.status not in ("active", "promoted", "retired"):
                 die("lesson status needs a known --key and --status active|promoted|retired")
@@ -583,21 +703,97 @@ def cmd_gate(a: argparse.Namespace) -> None:
     wh = workspace_hash()
     if not a.force and GATE_PASS.exists() and GATE_PASS.read_text(encoding="utf-8").strip() == wh:
         print("gate: workspace unchanged since last pass — skipped")
+        log_event("gate", result="skipped")
         return
+    t0 = time.time()
     for c in cmds:
+        timed_out = None
         try:
             r = subprocess.run(c, shell=True, capture_output=True, text=True, timeout=timeout)
             ok, out = r.returncode == 0, (r.stdout + r.stderr)
         except subprocess.TimeoutExpired:
-            ok, out = False, f"timeout after {timeout}s"
+            ok, out, timed_out = False, f"timeout after {timeout}s", True
         if not ok:
             print(f"gate FAILED: {c}\n" + out[-limit:])
             with contextlib.suppress(FileNotFoundError):
                 GATE_PASS.unlink()
+            log_event("gate", result="fail", failed=safe_cmd(c), timed_out=timed_out, seconds=round(time.time() - t0, 1))
             sys.exit(1)
         print(f"gate ok: {c}")
     GATE_PASS.write_text(wh + "\n", encoding="utf-8")
+    log_event("gate", result="pass", commands=len(cmds), seconds=round(time.time() - t0, 1))
     print("gate PASSED")
+
+
+# ---------------------------------------------------------------- run log commands
+def cmd_event(a: argparse.Namespace) -> None:
+    ensure()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{1,30}", a.ev):
+        die("--ev must be a short lowercase name, e.g. stop")
+    fields = {}
+    for f in a.field:
+        k, sep, v = f.partition("=")
+        if not sep or not re.fullmatch(r"[a-z][a-z0-9_]{0,30}", k) or k in ("ts", "ev", "session"):
+            die("--field needs key=value with a lowercase key")
+        fields[k] = clean(v, 200)
+    guard_secrets(*fields.values())
+    log_event(a.ev, **fields)
+
+
+def cmd_stats(a: argparse.Namespace) -> None:
+    ensure()
+    from collections import Counter
+    since = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
+    evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= since]
+    gates = [e for e in evs if e.get("ev") == "gate"]
+    ran = [g for g in gates if g.get("result") in ("pass", "fail")]
+    failed = [g for g in ran if g["result"] == "fail"]
+    secs = sorted(float(g.get("seconds", 0)) for g in ran)
+    stops = Counter(e.get("outcome", "?") for e in evs if e.get("ev") == "stop")
+    grades = [e for e in evs if e.get("ev") == "feature" and e.get("result") in ("pass", "fail")]
+    passes = [g for g in grades if g["result"] == "pass"]
+    open_fails: Dict[str, int] = {}
+    rounds = []  # evaluator rounds that each pass needed (fails before it + 1)
+    for g in grades:
+        if g["result"] == "fail":
+            open_fails[g.get("id", "?")] = open_fails.get(g.get("id", "?"), 0) + 1
+        else:
+            rounds.append(open_fails.pop(g.get("id", "?"), 0) + 1)
+    lessons = Counter(e.get("action", "?") for e in evs if e.get("ev") == "lesson")
+    votes = Counter(e.get("vote", "?") for e in evs if e.get("ev") == "lesson" and e.get("action") == "vote")
+    data = {
+        "days": a.days, "events": len(evs), "sessions": len({e["session"] for e in evs if e.get("session")}),
+        "gate": {"runs": len(ran), "failed": len(failed), "skipped": len(gates) - len(ran),
+                 "fail_rate": round(len(failed) / len(ran), 2) if ran else None,
+                 "median_seconds": secs[len(secs) // 2] if secs else None,
+                 "fails_by_command": dict(Counter(g.get("failed", "?") for g in failed).most_common(5))},
+        "stop_hook": {"blocked": stops["blocked"] + stops["blocked-timeout"], "released_red": stops["released-red"],
+                      "released_green": stops["released-green"]},
+        "features": {"passed": len(passes), "failed_gradings": len(grades) - len(passes),
+                     "rounds_per_pass": round(sum(rounds) / len(rounds), 1) if rounds else None,
+                     "verified_by": dict(Counter(g.get("verified_by", "?") for g in passes)),
+                     "passed_without_green_gate": sorted({g.get("id", "?") for g in passes if g.get("gate_fresh") is False})},
+        "lessons": {"added": lessons["add"], "recurred": lessons["recur"], "helpful": votes["helpful"], "harmful": votes["harmful"]},
+    }
+    if a.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    if not evs:
+        print(f"no events in the last {a.days} days ({EVENTS} is written by gate, feature, lesson and the hooks)")
+        return
+    g, st, f, l = data["gate"], data["stop_hook"], data["features"], data["lessons"]
+    print(f"# Run statistics: last {a.days} days ({data['events']} events, {data['sessions']} sessions)")
+    print(f"gate: {g['runs']} runs · {g['failed']} failed" + (f" ({g['fail_rate']:.0%})" if g["runs"] else "")
+          + f" · {g['skipped']} skipped (unchanged)" + (f" · median {g['median_seconds']}s" if secs else ""))
+    for c, n in g["fails_by_command"].items():
+        print(f"  {n}× failed: {c}")
+    print(f"stop hook: {st['blocked']} blocked · {st['released_red']} released with the gate still failing")
+    print(f"features: {f['passed']} passed · {f['failed_gradings']} failed gradings"
+          + (f" · {f['rounds_per_pass']} evaluator rounds per pass" if rounds else "")
+          + (" · verified by: " + ", ".join(f"{k} {v}" for k, v in f["verified_by"].items()) if passes else ""))
+    if f["passed_without_green_gate"]:
+        print("  ⚠ marked as passing while the gate was not green for that workspace: " + ", ".join(f["passed_without_green_gate"]))
+    print(f"lessons: {l['added']} added · {l['recurred']} recurred · votes +{l['helpful']}/-{l['harmful']}")
 
 
 def main() -> None:
@@ -660,6 +856,14 @@ def main() -> None:
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_gate)
 
+    s = sub.add_parser("event", help="append one run-log event to events.jsonl (used by hooks)")
+    s.add_argument("--ev", required=True)
+    s.add_argument("--field", action="append", default=[], help="key=value (repeatable)")
+    s.set_defaults(fn=cmd_event)
+    s = sub.add_parser("stats", help="run statistics from events.jsonl: gate failures, evaluator rounds, stop-hook releases")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_stats)
     a = p.parse_args()
     enter_project_root()
     a.fn(a)

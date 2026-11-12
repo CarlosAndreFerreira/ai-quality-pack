@@ -17,6 +17,7 @@ Coding agents fail in predictable ways. They declare victory early, grade their 
 | Repeated mistakes | **Playbook** of root-caused rules, de-duplicated, scored helpful/harmful |
 | Skill drift / overfitting | `skill-evolve` proposes a diff; `skill-eval` measures it (noise floor, guards, holdout); **a human approves** |
 | Insecure code | `security-review` mapped to OWASP Top 10:2025 and the OWASP LLM Top 10 2025 |
+| No record of what happened | Local **run log** (`events.jsonl`) + `memory.py stats`; eval transcripts with tokens and cost |
 
 ## Install
 
@@ -43,6 +44,7 @@ CLAUDE.md                  @AGENTS.md
 .claude/settings.json      SessionStart → memory digest · PostToolUse → formatter · (opt.) Stop → gate
 .claude/agents/evaluator.md
 .agent-memory/             tasks.jsonl · features.json · lessons.jsonl · progress.md · gate.json · evals/
+                           events.jsonl (run log, local, not committed)
 ```
 
 ## Skills
@@ -88,6 +90,40 @@ Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `
 - the holdout dropped beyond the noise band;
 - the proposal leaks task-specific content.
 
+## Observability
+
+The memory files hold the state of the work. The run log holds what happened in each run. `memory.py` and the hooks write one line to `.agent-memory/events.jsonl` for each session start, gate run, feature grading, lesson vote, and Stop-hook block or release. Each line has the agent session id.
+
+The log has ids, outcomes and durations. It has no prompt text and no code. It stays on your machine (git-ignored), and `AGENT_MEMORY_EVENTS=0` turns it off.
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py stats            # last 30 days; --days N, --json
+```
+```
+# Run statistics: last 30 days (41 events, 6 sessions)
+gate: 12 runs · 4 failed (33%) · 9 skipped (unchanged) · median 41.0s
+  3× failed: uv run pytest -q
+stop hook: 3 blocked · 1 released with the gate still failing
+features: 5 passed · 4 failed gradings · 1.8 evaluator rounds per pass · verified by: evaluator 4, human 1
+  ⚠ marked as passing while the gate was not green for that workspace: F-3
+lessons: 3 added · 2 recurred · votes +4/-1
+```
+
+Two cases that were silent before are now visible:
+- The Stop hook blocks one time only, so that it cannot loop. If the agent then stops with a red gate, the log records `released-red` and the next session digest shows it under "Needs you".
+- `feature pass --verified-by evaluator` is a statement by the agent. The log records if the gate was green for that workspace at that moment, and `stats` lists the features where it was not.
+
+`skill-eval` keeps the output of each agent run in `.agent-memory/evals/results/<run>-transcripts/`. If the agent prints a JSON result (`claude -p {prompt} --output-format json`), each run also records tokens, cost and turns, and the cost ratio of a verdict uses money or tokens instead of wall-clock time.
+
+For tokens, cost and tool calls of your normal sessions, use the telemetry that Claude Code already has. The pack does not copy it. The `session.id` attribute there is the `session` field of the run log, so you can join the two.
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317    # your collector
+```
+See [Claude Code: monitoring usage](https://code.claude.com/docs/en/monitoring-usage). Other agents (Antigravity, Codex) get the run log but no session id, unless you set `AGENT_SESSION_ID`.
+
 ## Robustness
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).
 - Append-only logs with `merge=union`. Duplicates and conflict markers are folded on read, and task-id collisions after a merge are flagged.
@@ -98,6 +134,7 @@ Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `
 - **Not measured end to end.** The design sources report gains for *their* systems, not for this pack.
 - **Antigravity**: `install.py global` installs a native Antigravity plugin (`~/.gemini/config/plugins/ai-quality-pack/`) with `plugin.json`, global `rules/AGENTS.md`, and the isolated `evaluator` subagent (`agents/evaluator.md`).
 - **No sandbox.** Agents run with your permissions. Use a devcontainer or VM for unattended runs.
+- The run log sees only what goes through `memory.py` and the pack hooks. It does not see the agent's reasoning or its other tool calls. Two sessions in one checkout at the same time share one session id file, so their events can get the wrong id.
 - Recurrence counting depends on the agent reusing lesson keys. Duplicate detection is lexical, not semantic.
 
 ## Design sources
