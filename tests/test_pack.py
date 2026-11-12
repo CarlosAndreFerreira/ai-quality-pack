@@ -1148,5 +1148,148 @@ class PluginTests(unittest.TestCase):
             self.assertNotIn("hooks are not installed", out)
 
 
+FAKE_GH = """
+import json, pathlib, sys
+log = pathlib.Path(__file__).with_name('gh_calls.jsonl')
+log.open('a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\\n')
+if sys.argv[1:3] == ['pr', 'list']:
+    print(pathlib.Path(__file__).with_name('open_prs.json').read_text(encoding='utf-8'))
+elif sys.argv[1:3] == ['pr', 'create']:
+    body = pathlib.Path(sys.argv[sys.argv.index('--body-file') + 1]).read_text(encoding='utf-8')
+    pathlib.Path(__file__).with_name('pr_body.md').write_text(body, encoding='utf-8')
+    print('https://example.invalid/pull/7')
+"""
+
+
+class PullRequestTests(unittest.TestCase):
+    """Risk label and cost in the evidence block; a draft pull request only after a green gate; the issue workflow."""
+
+    def _git(self, root, *args):
+        r = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def _repo(self, t, good=True):
+        """A clone with a remote, a committed gate on main, and one commit of work on the branch agent/issue-12."""
+        base, tools = Path(t), Path(t) / "tools"
+        tools.mkdir()
+        (tools / "gh.py").write_text(FAKE_GH, encoding="utf-8")
+        (tools / "open_prs.json").write_text("[]", encoding="utf-8")
+        self._git(base, "init", "-q", "--bare", "remote.git")
+        root = base / "work"
+        root.mkdir()
+        self._git(root, "init", "-q", "-b", "main")
+        self.py = sys.executable.replace("\\", "/")
+        (root / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{self.py}" test_calc.py']}), encoding="utf-8")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "base")
+        self._git(root, "remote", "add", "origin", str(base / "remote.git"))
+        self._git(root, "push", "-q", "-u", "origin", "main")
+        self._git(root, "checkout", "-q", "-b", "agent/issue-12")
+        (root / "calc.py").write_text("def add(a, b):\n    return a %s b\n" % ("+" if good else "//"), encoding="utf-8")
+        self._git(root, "commit", "-q", "-am", "fix add")
+        self.env = dict(os.environ, AGENT_GH=f'"{self.py}" "{(tools / "gh.py").as_posix()}"')
+        self.tools = tools
+        return root
+
+    def _calls(self):
+        f = self.tools / "gh_calls.jsonl"
+        return [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()] if f.exists() else []
+
+    def test_pr_opens_a_draft_with_the_evidence_after_a_green_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main", "--cost-usd", "0.4", "--dry-run"], root, env=self.env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("would push `agent/issue-12`", r.stdout)
+            self.assertEqual([c[:2] for c in self._calls()], [["pr", "list"]])  # a dry run opens nothing
+            r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main", "--cost-usd", "0.4"], root, env=self.env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("draft pull request opened", r.stdout)
+            self.assertIn("https://example.invalid/pull/7", r.stdout)
+            create = [c for c in self._calls() if c[:2] == ["pr", "create"]]
+            self.assertEqual(len(create), 1)
+            self.assertIn("--draft", create[0])
+            self.assertEqual(create[0][create[0].index("--base") + 1], "main")
+            self.assertFalse(any("merge" in c for c in self._calls()))
+            body = (self.tools / "pr_body.md").read_text(encoding="utf-8")
+            for text in ("Gate: PASSED for exactly this code", "Review risk: MEDIUM", "Cost: $0.40", "Closes #12",
+                         "no test was shown to fail before the change", "the agent does not merge"):
+                self.assertIn(text, body)
+            self.assertIn("agent/issue-12", self._git(Path(t) / "remote.git", "branch", "--list"))  # the branch was pushed
+
+    def test_pr_refuses_a_red_gate_a_duplicate_and_work_that_is_not_committed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t, good=False)
+            r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main"], root, env=self.env)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("The gate is red. No pull request was opened.".lower(), r.stdout.lower())
+            self.assertEqual(self._calls(), [])  # nothing reached GitHub
+            self.assertNotIn("agent/issue-12", self._git(Path(t) / "remote.git", "branch", "--list"))
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (self.tools / "open_prs.json").write_text(json.dumps([
+                {"number": 3, "title": "Other work", "headRefName": "x", "body": "nothing", "url": "u3"},
+                {"number": 5, "title": "Add fix", "headRefName": "someone/else", "body": "Fixes #12", "url": "u5"}]), encoding="utf-8")
+            r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main"], root, env=self.env)
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+            self.assertIn("#5 Add fix", r.stdout)
+            self.assertNotIn("#3", r.stdout)
+            self.assertFalse([c for c in self._calls() if c[:2] == ["pr", "create"]])
+            (root / "calc.py").write_text("def add(a, b):\n    return b + a\n", encoding="utf-8")
+            r = run([MEM, "pr", "--title", "Fix add", "--base", "origin/main"], root, env=self.env)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("not committed", r.stderr)
+            self._git(root, "checkout", "-q", "--", "calc.py")
+            self._git(root, "checkout", "-q", "main")
+            r = run([MEM, "pr", "--title", "Fix add", "--base", "origin/main"], root, env=self.env)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("its own branch", r.stderr)
+
+    def test_evidence_gives_a_high_review_risk_for_a_change_to_ci_or_dependencies(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertIn("Review risk: HIGH (the gate did not pass)", run([MEM, "evidence", "--base", "origin/main"], root).stdout)
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            out = run([MEM, "evidence", "--base", "origin/main"], root).stdout
+            self.assertIn("Review risk: MEDIUM", out)  # a small change, but checks have no record
+            self.assertIn("Cost: not recorded", out)
+            (root / "requirements.txt").write_text("requests==2.0\n", encoding="utf-8")
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/ci.yml").write_text("name: x\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            out = run([MEM, "evidence", "--base", "origin/main"], root).stdout
+            self.assertIn("Review risk: HIGH", out)
+            self.assertNotIn("the gate did not pass", out)
+            self.assertIn("it changes CI, the hooks or the gate", out)
+            self.assertIn("it changes dependencies", out)
+
+    def test_issue_workflow_template_keeps_the_gate_and_the_pull_request_outside_the_agent(self):
+        wf = (PACK / "templates/ci/agent-issue.yml").read_text(encoding="utf-8")
+        self.assertNotIn("\t", wf)
+        for text in ("types: [labeled]", "github.event.label.name == 'agent'", "--max-turns", "--max-budget-usd",
+                     "$MEMORY pr --title", "gh issue comment", "Do not push. Do not open a pull request. Do not merge."):
+            self.assertIn(text, wf)
+        runs = "\n".join(re.findall(r"^\s+run: \|\n((?:\s{10,}.*\n?)+)", wf, re.M))
+        self.assertTrue(runs)
+        # text from the issue reaches a shell only through an environment variable, never by interpolation
+        self.assertNotIn("github.event.issue.title }}", runs)
+        self.assertNotIn("github.event.issue.body }}", runs)
+        self.assertNotIn("gh pr merge", wf)
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            r = run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-issue-workflow"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((root / ".github/workflows/agent-issue.yml").is_file())
+            self.assertIn("ANTHROPIC_API_KEY", r.stdout)
+            self.assertEqual(run([INST, "uninstall", root], root).returncode, 0)
+            self.assertFalse((root / ".github").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

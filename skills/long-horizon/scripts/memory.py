@@ -984,14 +984,56 @@ def cmd_diff_view(a: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------- evidence for a pull request
-def cmd_evidence(a: argparse.Namespace) -> None:
-    """What was verified for exactly this code, as Markdown for a pull request or a final report.
+# Paths that make a change risky to merge without a careful review. A heuristic: it sorts review effort, it proves nothing.
+RISK_PATHS = (
+    (re.compile(r"(^|/)(\.github/workflows/|\.claude/|\.agents/)|(^|/)\.agent-memory/gate\.json$"), "it changes CI, the hooks or the gate"),
+    (re.compile(r"(^|/)migrations?/|\.sql$"), "it changes a database migration or SQL"),
+    (re.compile(r"(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|requirements[\w.-]*\.txt|pyproject\.toml|uv\.lock|"
+                r"poetry\.lock|go\.(mod|sum)|Cargo\.(toml|lock)|Gemfile(\.lock)?|pom\.xml|build\.gradle(\.kts)?)$"),
+     "it changes dependencies"),
+    (re.compile(r"(^|/)(Dockerfile|docker-compose[\w.-]*\.ya?ml)$|(^|/)(infra|terraform|k8s|helm)/|\.tf$"), "it changes infrastructure"),
+    (re.compile(r"auth|secur|crypt|permission|password|credential", re.I), "a path names authentication or security code"),
+)
+RISK_LINES_HIGH, RISK_LINES_MEDIUM, RISK_FILES_MEDIUM = 400, 100, 5
+
+
+def change_size(ref: str) -> tuple:
+    """(files, changed lines, paths) of the tracked change against ref, without the memory directory."""
+    files, lines, paths = 0, 0, []
+    for row in git("diff", "--numstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}").splitlines():
+        parts = row.split("\t")
+        if len(parts) != 3:
+            continue
+        files += 1
+        lines += sum(int(x) for x in parts[:2] if x.isdigit())
+        paths.append(parts[2])
+    return files, lines, paths
+
+
+def change_risk(ref: str, gaps: List[str], warnings: List[str]) -> tuple:
+    """(LOW|MEDIUM|HIGH, reasons). HIGH: where a wrong merge costs most. MEDIUM: large, or a check has no record."""
+    files, lines, paths = change_size(ref)
+    high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
+    if warnings:
+        high.append("tests or the gate file changed (see the warnings)")
+    if any("gate did not pass" in g for g in gaps):
+        high.append("the gate did not pass")
+    if lines > RISK_LINES_HIGH:
+        high.append(f"{lines} changed lines (more than {RISK_LINES_HIGH})")
+    medium = []
+    if lines > RISK_LINES_MEDIUM or files > RISK_FILES_MEDIUM:
+        medium.append(f"{lines} changed lines in {files} files")
+    if gaps:
+        medium.append(f"{len(gaps)} check(s) without a record")
+    return ("HIGH", high) if high else ("MEDIUM", medium) if medium else ("LOW", ["small change, every check has a record"])
+
+
+def evidence_report(ref: str, cost: Optional[float] = None) -> tuple:
+    """(Markdown text, gaps, warnings, risk label) for exactly this code.
 
     It states what is not verified as plainly as what is: a reviewer decides faster with the gaps in view.
     Everything comes from records that the checks wrote; nothing here is the agent's own claim.
     """
-    ensure()
-    ref = a.base
     lines, gaps = ["## Verification evidence", ""], []
     events = read_jsonl(EVENTS)
     last_gate = next((e for e in reversed(events) if e.get("ev") == "gate" and e.get("result") in ("pass", "fail")), None)
@@ -1034,10 +1076,93 @@ def cmd_evidence(a: argparse.Namespace) -> None:
         lines.append(f"- Warning: {clean(w, 200)}")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
+    risk, reasons = change_risk(ref, gaps, warnings)
+    lines.append(f"- Review risk: {risk} ({'; '.join(reasons)})")
+    lines.append(f"- Cost: ${cost:.2f} (given by the caller)" if cost is not None else "- Cost: not recorded")
     lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])
-    print("\n".join(lines))
+    return "\n".join(lines), gaps, warnings, risk
+
+
+def cmd_evidence(a: argparse.Namespace) -> None:
+    """What was verified for exactly this code, as Markdown for a pull request or a final report."""
+    ensure()
+    text, gaps, warnings, _ = evidence_report(a.base, a.cost_usd)
+    print(text)
     if a.strict and (gaps or warnings):
         sys.exit(1)
+
+
+# ---------------------------------------------------------------- draft pull request
+def gh(*args: str, check: bool = True) -> str:
+    """Runs the GitHub CLI (`AGENT_GH` names another command, for example in a test)."""
+    import shlex
+    cmd = shlex.split(os.environ.get("AGENT_GH", "gh"), posix=os.name != "nt")
+    try:
+        r = subprocess.run([c.strip('"') for c in cmd] + list(args), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        die(f"the GitHub CLI did not run ({e}). Install `gh` and log in, or open the pull request by hand with `memory.py evidence`.")
+    if check and r.returncode != 0:
+        die(f"`gh {' '.join(args[:3])}` failed: {clean(r.stderr or r.stdout, 300)}", 1)
+    return r.stdout
+
+
+def cmd_pr(a: argparse.Namespace) -> None:
+    """Open a draft pull request with the evidence block, only after a green gate. It never merges.
+
+    Order: clean tree, own branch, gate, duplicate check, push, draft PR. A person reviews and merges.
+    """
+    ensure()
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    base = a.base or (git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip() or "origin/main")
+    base_name = base.split("/", 1)[1] if base.startswith("origin/") else base
+    if not branch or branch in ("HEAD", base_name, "main", "master"):
+        die(f"the work is on `{branch or '?'}`: put it on its own branch first (one issue, one branch, one pull request)")
+    if git("status", "--porcelain").strip():
+        die("there are changes that are not committed: commit the work first, the pull request holds commits")
+    if not git("log", "--oneline", f"{base}..HEAD").strip():
+        die(f"`{branch}` has no commit that `{base}` does not have")
+    if not GATE.exists():
+        die(f"no {GATE}: a pull request needs a gate that passed. Create it with {{\"commands\": [...]}}")
+    g = subprocess.run([sys.executable, str(Path(__file__).resolve()), "gate", "--ref", base], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if g.returncode != 0:
+        print((g.stdout + g.stderr).strip())
+        log_event("pr", result="refused-red-gate")
+        print("pr: the gate is red. No pull request was opened.")
+        sys.exit(1)
+    text, gaps, warnings, risk = evidence_report(base, a.cost_usd)
+    issue = str(a.issue) if a.issue else ""
+    if not a.dry_run or os.environ.get("AGENT_GH"):
+        try:
+            open_prs = json.loads(gh("pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,headRefName,body,url") or "[]")
+        except ValueError:
+            open_prs = []
+        closes = re.compile(rf"(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#{re.escape(issue)}\b", re.I) if issue else None
+        dup = [p for p in open_prs if p.get("headRefName") == branch
+               or (closes and (closes.search(p.get("body") or "") or re.search(rf"#{re.escape(issue)}\b", p.get("title") or "")))]
+        if dup:
+            for p in dup[:5]:
+                print(f"pr: an open pull request covers this already: #{p.get('number')} {clean(p.get('title') or '', 80)} {p.get('url') or ''}")
+            log_event("pr", result="refused-duplicate")
+            print("pr: no pull request was opened. Add your commits to the open one, or close it first.")
+            sys.exit(3)
+    body = text + "\n\n" + (f"Closes #{issue}\n\n" if issue else "") + \
+        "Opened as a draft by an agent run. A person reviews it and merges it; the agent does not merge.\n"
+    if a.dry_run:
+        print(f"pr (dry run): would push `{branch}` and open a draft pull request into `{base_name}` with this text:\n\n{body}")
+        return
+    push = subprocess.run(["git", "push", "-u", "origin", branch], capture_output=True, text=True)
+    if push.returncode != 0:
+        die(f"`git push` failed: {clean(push.stderr, 300)}", 1)
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
+        fh.write(body)
+    try:
+        url = gh("pr", "create", "--draft", "--base", base_name, "--head", branch, "--title", a.title, "--body-file", fh.name).strip()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(fh.name)
+    log_event("pr", result="opened", risk=risk, gaps=len(gaps), url=clean(url.splitlines()[-1] if url else "", 200))
+    print(f"pr: draft pull request opened ({risk} review risk, {len(gaps)} check(s) without a record): {url.splitlines()[-1] if url else ''}")
 
 
 # ---------------------------------------------------------------- doctor
@@ -1261,8 +1386,16 @@ def main() -> None:
     sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
     s = sub.add_parser("evidence", help="Markdown block for a pull request: what was verified for this code, and what was not")
     s.add_argument("--base", default="HEAD", help="ref to compare with (in a pull request: the base branch)")
+    s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--strict", action="store_true", help="exit 1 when something is not verified or a warning exists")
     s.set_defaults(fn=cmd_evidence)
+    s = sub.add_parser("pr", help="open a draft pull request with the evidence block, only after a green gate; it never merges")
+    s.add_argument("--title", required=True)
+    s.add_argument("--base", help="base ref (default: the remote's default branch, else origin/main)")
+    s.add_argument("--issue", type=int, help="issue that the pull request closes; also used to find a duplicate")
+    s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
+    s.add_argument("--dry-run", action="store_true", help="run the checks and print the text; push nothing, open nothing")
+    s.set_defaults(fn=cmd_pr)
     s = sub.add_parser("diff-view", help="the change since a base, without the comments it added (for the evaluator)")
     s.add_argument("--base", default="HEAD")
     s.set_defaults(fn=cmd_diff_view)

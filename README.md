@@ -161,6 +161,21 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
 - `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved.
 
+### From an issue to a draft pull request
+
+```bash
+python3 ai-quality-pack/install.py project . --with-issue-workflow      # adds .github/workflows/agent-issue.yml
+python3 .agents/skills/long-horizon/scripts/memory.py pr --title "Fix add" --issue 12 --dry-run
+```
+
+- The workflow starts when a person adds the label `agent` to an issue. The agent works on the branch `agent/issue-<number>`, with a limit of turns and of US dollars.
+- The workflow runs the gate and opens the pull request. The agent does not push, does not open the pull request and does not merge.
+- `memory.py pr` opens a draft pull request with the evidence block. It needs the GitHub CLI (`gh`).
+- It stops without a pull request if the gate is red (exit code 1), if an open pull request has the same branch or closes the same issue (exit code 3), or if work is not committed (exit code 2). The workflow then writes a comment on the issue.
+- The evidence block has a review risk: `HIGH` for changes to CI, hooks, the gate, dependencies, migrations, infrastructure or security code, for changed tests and for more than 400 lines. `MEDIUM` for more than 100 lines or 5 files, or for a check without a record. `LOW` for the rest. The label is a guide for the reviewer, not a proof.
+- `--cost-usd` puts the cost of the run in the block.
+- Limit: the workflow template was not run on GitHub. Run it on a test issue first, and read the comments at the top of the file.
+
 ### Unattended runs: the gate without hooks
 
 ```bash

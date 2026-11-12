@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — from an issue to a draft pull request (docs/EVOLUTION.md: F3, F5)
+- **`memory.py pr`**: opens a draft pull request with the evidence block, only after a green gate. It stops if an open pull request has the same branch or closes the same issue, and if work is not committed. It never merges. It needs the GitHub CLI.
+- **The evidence block has a review risk and the cost.** The risk is `HIGH`, `MEDIUM` or `LOW`, from the paths that changed, the size of the change and the checks without a record. The cost comes from the caller (`--cost-usd`).
+- **`install.py --with-issue-workflow`**: a GitHub Actions workflow. The label `agent` on an issue starts an agent run with a limit of turns and of US dollars. The workflow, not the agent, runs the gate and opens the draft pull request. Without a pull request, it writes a comment on the issue. Not run on GitHub yet.
+- 4 tests.
+
 ## Unreleased — old Python, and the gate without hooks (docs/EVOLUTION.md: F2)
 - **The scripts start on Python 3.6 to 3.8.** In two repositories with Python 3.6, `memory.py` stopped with a `SyntaxError`, so `repro` and the gate did not run. Each script and hook now starts again with a newer Python from `PATH` (or `AGENT_PACK_PYTHON`). If none is found, it prints the cause and exits with code 1.
 - **`memory.py gated-run`**: runs an agent command, then the gate. A red gate goes back to the agent with the gate output, for a set number of rounds. Exit code 1 means that the gate still fails. Use it in unattended runs: hooks do not run in `claude -p --bare`.

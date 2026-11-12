@@ -337,6 +337,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
         add_if_absent(PACK / "templates" / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml")
         log("NOTE: the CI gate needs `.agent-memory/gate.json` committed, and your dependencies installed in the workflow. "
             "Protect it with CODEOWNERS: see the comments in .github/workflows/quality-gate.yml.")
+    if a.with_issue_workflow:
+        add_if_absent(PACK / "templates" / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml")
+        log("NOTE: the issue workflow needs the secret ANTHROPIC_API_KEY and a committed `.agent-memory/gate.json`. "
+            "Read the comments at the top of .github/workflows/agent-issue.yml before the first use.")
     for hook in ("format_on_edit.py", "gate_on_stop.py"):
         add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / hook, root / ".claude" / "hooks" / hook, a.upgrade)
     merge_settings(root / ".claude" / "settings.json", a.with_stop_gate)
@@ -466,6 +470,7 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     for rel in ("agents/evaluator.md", "agents/criteria.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py"):
         remove_pack_file(tpl / ".claude" / rel, root / ".claude" / rel, a.force)
     remove_pack_file(tpl / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml", a.force)
+    remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
     remove_pack_file(tpl / "CLAUDE.md", root / "CLAUDE.md", False)
     unmerge_settings(root / ".claude" / "settings.json")
     for d in ("hooks", "agents"):
@@ -515,6 +520,8 @@ def main() -> None:
     ap.add_argument("--with-egm", action="store_true", help="install Google's Elephant-Goldfish Model plugin")
     ap.add_argument("--with-stop-gate", action="store_true", help="Claude Code Stop hook enforcing the completion gate")
     ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
+    ap.add_argument("--with-issue-workflow", action="store_true",
+                    help="GitHub Actions workflow: the label `agent` on an issue starts an agent run that ends in a draft pull request")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--global", dest="global_", action="store_true", help="uninstall: remove the global install")
     ap.add_argument("--force", action="store_true", help="uninstall: also remove pack files that you changed")
