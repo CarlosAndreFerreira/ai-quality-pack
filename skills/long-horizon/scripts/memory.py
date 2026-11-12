@@ -800,13 +800,14 @@ def gate_config(ref: str) -> tuple:
                        "A person reviews and commits a change of the gate")
 
 
-def test_changes(ref: str) -> List[str]:
-    """Test files deleted and skip markers added since `ref`. Reported, not blocked: a person decides."""
-    out: List[str] = []
+def test_change_items(ref: str) -> List[tuple]:
+    """(kind, path, text) for each change to the tests since `ref`. Kinds: `deleted` (a test file),
+    `skip` (a new skip marker), `changed` (lines of an existing test removed or replaced)."""
+    out: List[tuple] = []
     for line in git("diff", "--name-status", "--no-renames", ref, "--").splitlines():
         status, _, path = line.partition("\t")
         if status.startswith("D") and TEST_PATH_RE.search(path):
-            out.append(f"test file deleted: {path}")
+            out.append(("deleted", path, f"test file deleted: {path}"))
     cur, rewritten = "", {}
     for line in git("diff", "-U0", "--no-renames", ref, "--").splitlines():
         if line.startswith("+++ "):
@@ -814,12 +815,30 @@ def test_changes(ref: str) -> List[str]:
         elif line.startswith("--- "):
             continue
         elif line.startswith("+") and cur and TEST_PATH_RE.search(cur) and SKIP_RE.search(line):
-            out.append(f"skip marker added in {cur}: {clean(line[1:].strip(), 80)}")
+            out.append(("skip", cur, f"skip marker added in {cur}: {clean(line[1:].strip(), 80)}"))
         elif line.startswith("-") and cur and TEST_PATH_RE.search(cur) and line[1:].strip() and not line[1:].lstrip().startswith(("#", "//")):
             rewritten[cur] = rewritten.get(cur, 0) + 1  # a line of an existing test was removed or replaced
     # a new test is normal work. A changed expectation in an existing test is the usual way to make a red test green.
-    out += [f"existing test changed: {path} ({n} line(s) removed or replaced)" for path, n in sorted(rewritten.items())]
-    return out[:20]
+    out += [("changed", path, f"existing test changed: {path} ({n} line(s) removed or replaced)") for path, n in sorted(rewritten.items())]
+    return out
+
+
+def test_changes(ref: str) -> List[str]:
+    """The same changes as text for a warning. Reported, not blocked, unless gate.json has `block_test_changes`."""
+    return [text for _, _, text in test_change_items(ref)][:20]
+
+
+def blocked_test_changes(ref: str, cfg: dict) -> List[str]:
+    """With `"block_test_changes": true`: the test files deleted and the skip markers added that no person approved.
+    A person approves a path (or a glob) in `"allowed_test_changes"` and commits gate.json: the gate reads the
+    committed file, so the agent cannot approve its own change. A changed line in an existing test does not
+    block: that warning is as frequent on correct work as on wrong work (docs/RESULTS.md, section 4)."""
+    if not cfg.get("block_test_changes"):
+        return []
+    import fnmatch
+    allowed = [str(g) for g in (cfg.get("allowed_test_changes") or [])]
+    return [text for kind, path, text in test_change_items(ref)
+            if kind in ("deleted", "skip") and not any(fnmatch.fnmatchcase(path, g) for g in allowed)]
 
 
 def cmd_gate(a: argparse.Namespace) -> None:
@@ -844,6 +863,15 @@ def cmd_gate(a: argparse.Namespace) -> None:
         warnings += complexity_findings(ref, int(cfg["max_complexity"]))[:10]
     for w in warnings:
         print(f"gate WARNING: {w}")
+    blocked = blocked_test_changes(ref, cfg)
+    if blocked:  # before the commands, and before the "unchanged" shortcut: no pass exists with these changes
+        print("gate FAILED: test changes that need a person\n" + "\n".join(blocked[:20])
+              + "\nRestore the test, or tell the user why it must go. A person who agrees adds the path to "
+              f"\"allowed_test_changes\" in {GATE.as_posix()} and commits it.")
+        with contextlib.suppress(FileNotFoundError):
+            GATE_PASS.unlink()
+        log_event("gate", result="fail", failed="test changes", blocked=len(blocked), warnings=warnings or None)
+        sys.exit(1)
     wh = workspace_hash()
     if not a.force and GATE_PASS.exists() and GATE_PASS.read_text(encoding="utf-8").strip() == wh:
         print("gate: workspace unchanged since last pass — skipped")

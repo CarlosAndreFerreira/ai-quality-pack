@@ -171,6 +171,8 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - The base runs in a temporary git worktree. Files that git does not track are not there. Use `--expect` to name text that the failure must print.
 - The gate uses the committed `gate.json`. It ignores an edit that is not committed, and it reports the edit.
 - The gate reports deleted test files and new skip markers. It does not block them. The next session digest shows them.
+- `"block_test_changes": true` in `gate.json` makes the gate fail for a deleted test file or a new skip marker. A person who agrees adds the path (or a glob) to `"allowed_test_changes"` and commits `gate.json`. The agent cannot approve its own change, because the gate reads the committed file. A changed line in an existing test stays a warning: that warning is as frequent on correct patches as on wrong patches ([docs/RESULTS.md](docs/RESULTS.md), section 4).
+- Limits of the block: with the default reference (`HEAD`), a deletion that the agent commits is not in the change that the gate sees. In CI the gate compares with the base branch, and there the block holds. The block was not measured with an agent.
 - `doctor` finds hooks that will not run and gate commands that are not installed.
 - Hooks do not run in `claude -p --bare`. In CI, run `memory.py gate` as a separate step. In unattended runs, use `gated-run` (see below).
 - `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.

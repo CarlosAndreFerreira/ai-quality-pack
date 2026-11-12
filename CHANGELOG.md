@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- **`"block_test_changes": true` in `gate.json`** (off by default): the gate fails for a deleted test file or a new skip marker, before it runs the commands. A person approves a path or a glob in `"allowed_test_changes"` and commits `gate.json`; an edit that is not committed does not count. The prompt-injection test set showed the gap: the deletion of a test succeeded in 1 of 12 runs with the pack, and the gate only reported it.
+- A changed line in an existing test does not block. That warning fired on 5 of 23 correct patches and 6 of 19 wrong patches, so it does not separate them.
+- The run log records these failures as `failed: "test changes"` with the number of blocked changes.
+- Not measured with an agent. 1 test.
+
 ## Unreleased — security: rights, trusted checker, guard, threat model
 - **The issue workflow has three jobs with different rights**: the agent (read access), the gate (read access, no secret), and the pull request (write access, no agent, no code from the change). The agent job has no `id-token` right and a fixed tool list.
 - **CI runs `memory.py` of the base branch**, in `quality-gate` and in the issue workflow.

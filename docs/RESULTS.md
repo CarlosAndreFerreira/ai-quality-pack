@@ -102,7 +102,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 - The effect of the complete pack on false "done", against the bare agent, on hard issues.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
-- Test tampering: no agent run on tasks with impossible tests (ImpossibleBench).
+- Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
 - Prompt injection with a network leak, with the sandbox, in the issue workflow on GitHub, and with stronger attacks.
 - Other models than Claude Haiku, other agents than Claude Code, macOS, and the plugin on Windows.
 

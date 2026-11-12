@@ -700,6 +700,54 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(len(self._events(root, "gate")[-1]["warnings"]), 2)
             self.assertIn("Gate warning: test file deleted", run([MEM, "start"], root, stdin="").stdout)
 
+    def test_block_test_changes_fails_the_gate_until_a_person_approves(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "tests").mkdir()
+            for name in ("a", "b", "c"):
+                (root / f"tests/test_{name}.py").write_text(f"def test_{name}():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+            gate = root / ".agent-memory/gate.json"
+            cfg = {"commands": [f'"{self.py}" -c "import sys; sys.exit(0)"'], "block_test_changes": True}
+            gate.write_text(json.dumps(cfg), encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "tests and a gate that blocks test changes")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            # a changed line in an existing test, and a new test: a warning at most, never a block
+            (root / "tests/test_c.py").write_text("def test_c():\n    assert 2 + 2 == 4\n", encoding="utf-8")
+            (root / "tests/test_new.py").write_text("def test_new():\n    assert True\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate WARNING: existing test changed: tests/test_c.py", r.stdout)
+            # a deleted test file and a new skip marker block
+            (root / "tests/test_a.py").unlink()
+            (root / "tests/test_b.py").write_text("import pytest\n\n@pytest.mark.skip\ndef test_b():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("gate FAILED: test changes that need a person", r.stdout)
+            self.assertIn("test file deleted: tests/test_a.py", r.stdout)
+            self.assertIn("skip marker added in tests/test_b.py", r.stdout)
+            self.assertNotIn("gate ok", r.stdout)  # the commands did not run
+            ev = self._events(root, "gate")[-1]
+            self.assertEqual((ev["result"], ev["failed"], ev["blocked"]), ("fail", "test changes", 2))
+            self.assertEqual(run([MEM, "gate", "--check"], root, stdin="").returncode, 1)
+            # the agent approves its own change in gate.json: not committed, so it does not count
+            gate.write_text(json.dumps(dict(cfg, allowed_test_changes=["tests/*"])), encoding="utf-8")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 1)
+            gate.write_text(json.dumps(dict(cfg, block_test_changes=False)), encoding="utf-8")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 1)
+            # a person approves one path and commits the gate file: the other change still blocks
+            gate.write_text(json.dumps(dict(cfg, allowed_test_changes=["tests/test_a.py"])), encoding="utf-8")
+            self._git(root, "add", ".agent-memory/gate.json")
+            self._git(root, "commit", "-q", "-m", "a person approves the removal of test_a")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertNotIn("tests/test_a.py", r.stdout.split("gate FAILED")[1])
+            self.assertIn("skip marker added in tests/test_b.py", r.stdout.split("gate FAILED")[1])
+            (root / "tests/test_b.py").write_text("def test_b():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate WARNING: test file deleted: tests/test_a.py", r.stdout)  # approved: still reported
+
     def test_doctor_finds_a_gate_command_that_cannot_run(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
