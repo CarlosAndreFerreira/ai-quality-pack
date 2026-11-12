@@ -288,7 +288,7 @@ python3 ai-quality-pack/install.py project . --with-guard --with-sandbox --sandb
 - **`--with-guard`** stops the agent from a change of `.claude/`, `.agents/`, the CI workflows, CODEOWNERS and the gate file: permission rules, and a hook that blocks file tools and shell commands that write there. A person who must change these files starts the agent with `AGENT_PACK_UNLOCK=1`. The guard is not a security boundary.
 - **`--sandbox-allow-domain HOST`** (with `--with-sandbox`) limits the hosts that shell commands can reach.
 - `memory.py pr --evidence-file FILE` opens the pull request with the evidence of another job. It runs no gate: use it only in a pipeline where a job without write access ran the gate.
-- Not tested: no attack case was run against the pack.
+- Tested with a small set of attack cases (`evals/injection/`): 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack. [docs/RESULTS.md](docs/RESULTS.md) has the details and the limits.
 
 ### Unattended runs: the gate without hooks
 

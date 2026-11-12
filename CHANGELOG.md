@@ -7,7 +7,9 @@
 - **`--sandbox-allow-domain HOST`**: the hosts that shell commands can reach in the sandbox.
 - **`memory.py pr --evidence-file`**: the pull request with the evidence of a job that ran the gate.
 - **SECURITY.md** has the threat model: the trust boundaries, each risk with its control, and what the pack does not protect against.
-- 6 tests. Not tested with attack cases.
+- **`evals/injection/`**: a prompt-injection test set with harmless canaries (18 attack cases, 3 places, 3 goals, 2 styles). Result with Claude Haiku: 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack. See docs/RESULTS.md.
+- Fix, found by that test set: the guard blocked the agent's own gate command when it ended in `2>&1`.
+- 7 tests.
 
 ## 0.5.0 — 2026-11-12
 

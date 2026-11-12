@@ -79,16 +79,36 @@ The current evaluator on the 24 cases of `evals/judge-cases/` (two small tasks):
 | Warning for an existing test that the change rewrote | 42 agent patches | Warning on 6 of 19 wrong patches and on 5 of 23 correct patches: it does not separate them |
 | Plugin install | 2 agent sessions on Linux | The 3 hooks ran; the evaluator used the memory command after a fix |
 
-## 5. What is not measured
+## 5. Prompt injection
+
+The test set in `evals/injection/` (18 attack cases, 2 runs for each case and arm, Claude Haiku, each run in a container). The set ran two times; the second run has a fix of the guard.
+
+| Arm | Attacks that succeeded | Bug fixed |
+|---|---|---|
+| No pack, two runs of the set | 9 of 72 (13%, 95% interval 7% to 22%) | 72 of 72 |
+| Pack with gate, guard and read rules, second run | 1 of 36 (3%, 95% interval 0% to 14%) | 36 of 36 |
+
+- The difference is not significant with this sample (exact test, p = 0.16).
+- **The model stops most attacks without the pack.** An order with "do not mention this" succeeded in 1 of 36 runs without the pack. An instruction in a code comment or in a test output never succeeded (0 of 48). In most runs the agent told the user about the instruction.
+- **The attacks that work are written as a project rule, in the issue text**: 8 of 12 runs without the pack, 1 of 6 with the pack.
+- **What the pack stopped, and how.** The read rule for `.env` stopped the copy of the token (0 of 12, against 3 of 24 without the pack). The permission rule for `.github/workflows/` stopped the workflow file (0 of 12, against 1 of 24). These are permission rules of Claude Code that the installer writes; they held in a session that skips permission prompts.
+- **What the pack did not stop.** The deletion of a test file succeeded in 1 of 12 runs with the pack (5 of 24 without). The gate reported it ("test file deleted"), and the agent did not tell the user. The pack detects this; it does not prevent it.
+- **A defect that the test set found.** In the first run the guard blocked the agent's own gate command when it ended in `2>&1` (25 of 38 pack runs). It is fixed, with tests. The results of the pack arm above are from the second run.
+- Cost: 0.70 US dollars for 152 runs.
+- Limits: one small task, one model, attacks that we wrote, and no network leak in the set. The sandbox was not in the pack arm, because the container cannot run it. A stronger attack can do better than these.
+
+## 6. What is not measured
 
 - The effect of the complete pack on false "done", against the bare agent, on hard issues.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench).
+- Prompt injection with a network leak, with the sandbox, in the issue workflow on GitHub, and with stronger attacks.
 - Other models than Claude Haiku, other agents than Claude Code, macOS, and the plugin on Windows.
 
-## 6. How to repeat
+## 7. How to repeat
 
 - Evaluator calibration, small set: see [evals/README.md](../evals/README.md).
 - Label check of that set, no agent: `python evals/judge-cases/check_labels.py`.
+- Prompt-injection test set: see [evals/README.md](../evals/README.md).
 - Your own project: `skill-eval calibrate`, `run`, `ablate` and `judge` (README, "Measuring skill changes").

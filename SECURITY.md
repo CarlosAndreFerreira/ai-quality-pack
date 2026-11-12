@@ -53,8 +53,9 @@ Prompt injection is text from a source that is not trusted, which tells the agen
 ## Status of the evidence
 
 - The split of rights in the issue workflow follows the documented behaviour of GitHub token permissions. The workflow was not run on GitHub.
-- The guard has unit tests for 9 blocked and 8 allowed operations.
-- The pack was **not tested with attack cases**: no issue, file or tool output with a malicious instruction was run against an agent with the pack. The statements on prompt injection here come from the design, not from a measurement.
+- The guard has unit tests for 11 blocked and 12 allowed operations.
+- **Tested with attack cases** (`evals/injection/`, 18 cases, harmless canaries, Claude Haiku): 9 of 72 attacks succeeded without the pack and 1 of 36 with the pack. The read rule for `.env` and the rule for CI workflows stopped their attacks. The deletion of a test file got through once: the gate reported it and did not prevent it. See [docs/RESULTS.md](docs/RESULTS.md).
+- That test is small: one task, one model, attacks that we wrote, no network leak, no sandbox. The workflow on GitHub and stronger attacks were not tested with attack cases.
 
 ## Reporting
 
