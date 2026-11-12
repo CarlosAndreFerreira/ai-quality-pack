@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — observability
+- **Run log.** `memory.py` and the hooks append to `.agent-memory/events.jsonl` (local, git-ignored): session start, gate pass/fail/skip with duration and the failing command, feature gradings, lesson adds and votes, Stop-hook blocks and releases. Each line has the agent session id (from the SessionStart hook input, or `AGENT_SESSION_ID`). No prompt or code text. `AGENT_MEMORY_EVENTS=0` turns it off; a log that cannot be written never fails a command.
+- **`memory.py stats`** (`--days`, `--json`): gate failure rate and top failing commands, evaluator rounds per pass, who verified, features marked as passing while the gate was not green, stops released on a red gate.
+- **The Stop hook's one-time release is no longer silent.** A stop on a red gate is logged as `released-red` and reported under "Needs you" in the next digest, until a gate pass.
+- **`skill-eval` keeps each agent transcript** and, when the agent prints a JSON result, records tokens, cost and turns per run. The cost ratio uses money, else tokens, else runtime (`cost_basis` in the report).
+- `--upgrade` also replaces the pack's hook scripts (old copy backed up), so an older install gets the new Stop hook.
+- README: how to join the run log with Claude Code's own OpenTelemetry export by session id.
+- 7 tests.
+
 ## Unreleased — proposed fix P1 (benchmark report, 2026-11-11)
 - **Hook commands no longer depend on the agent's current directory.** The installer wrote `python3 .claude/hooks/gate_on_stop.py`. Claude Code runs a hook in the current directory, which follows the agent's `cd`. After `cd tests` the script was not found, the CLI reported "Stop hook error" and the agent stopped without the gate. The commands are now `python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/...`. The 0.4.2 fix moved into the project root inside the script, but the script never started. Seen in 2 of 10 benchmark runs on SWE-bench.
 - **The installer repairs the commands of an older install** in place, without adding a second copy.
