@@ -2012,5 +2012,117 @@ class InjectionSetTests(unittest.TestCase):
             self.assertIn("costs tokens", r.stderr)
 
 
+class AuditChainTests(unittest.TestCase):
+    """Who wrote each run log line, and the hash chain that `audit --verify` checks."""
+
+    def _repo(self, t):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        py = sys.executable.replace("\\", "/")
+        (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "pass"']}), encoding="utf-8")
+        return root
+
+    def _lines(self, root):
+        return [json.loads(l) for l in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines()]
+
+    def _write(self, root, events):
+        (root / ".agent-memory/events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+
+    def _some_events(self, root, env=None):
+        m = lambda *a: run([MEM, *a], root, stdin="", env=env)
+        m("gate")
+        m("feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c")
+        m("feature", "fail", "--id", "F-1")
+        m("gate", "--force")
+
+    def test_each_line_says_who_ran_it_and_with_which_rules(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            start = json.dumps({"session_id": "s-1", "source": "startup", "model": {"id": "model-x", "display_name": "Model X"}})
+            run([MEM, "start"], root, stdin=start, env={"GITHUB_ACTOR": "", "AGENT_ACTOR": "", "AGENT_MODEL": ""})
+            run([MEM, "gate"], root, stdin="", env={"GITHUB_ACTOR": "", "AGENT_ACTOR": "", "AGENT_MODEL": ""})
+            first, gate = self._lines(root)
+            pack = json.loads((PACK / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
+            for e in (first, gate):
+                self.assertEqual((e["actor"], e["pack"], e["session"]), ("dev@example.com", pack, "s-1"))
+            self.assertEqual(gate["model"], "model-x")  # from the hook input of the session start
+            self.assertRegex(gate["policy"], r"^[0-9a-f]{12}$")
+            self.assertNotIn("policy", first)
+            # other rules, other policy hash; the environment names the actor and the model of a CI run
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [], "max_changed_lines": 5}), encoding="utf-8")
+            run([MEM, "gate"], root, stdin="", env={"GITHUB_ACTOR": "ci-bot", "AGENT_MODEL": "model-y"})
+            last = self._lines(root)[-1]
+            self.assertEqual((last["actor"], last["model"]), ("ci-bot", "model-y"))
+            self.assertNotEqual(last["policy"], gate["policy"])
+
+    def test_verify_accepts_an_untouched_log_and_finds_each_kind_of_change(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self._some_events(root)
+            good = self._lines(root)
+            self.assertGreaterEqual(len(good), 4)
+            self.assertEqual(good[0]["prev"], "0" * 32)
+            self.assertEqual([e["prev"] for e in good[1:]], [e["h"] for e in good[:-1]])
+            r = run([MEM, "audit", "--verify"], root)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn(f"audit chain: ok · {len(good)} lines in the chain · head {good[-1]['h']}", r.stdout)
+            self.assertIn(f"audit chain: ok · head {good[-1]['h']}", run([MEM, "audit"], root).stdout)
+
+            def broken(events, *args):
+                self._write(root, events)
+                r = run([MEM, "audit", "--verify", *args], root)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("audit chain: BROKEN", r.stdout)
+                return r.stdout
+
+            edited = [dict(e) for e in good]
+            fail = next(e for e in edited if e.get("result") == "fail")
+            fail["result"] = "pass"  # a failed grading that now says "pass"
+            self.assertIn("was changed after it was written", broken(edited))
+            self.assertIn("a line was removed or inserted", broken(good[:1] + good[2:]))
+            self.assertIn("has no hash", broken(good[:2] + [{"ts": "2026-01-01T00:00:00", "ev": "gate", "result": "pass"}] + good[2:]))
+            # a cut at the end leaves a chain that is whole: only the head of an earlier run shows it
+            self._write(root, good[:-1])
+            self.assertEqual(run([MEM, "audit", "--verify"], root).returncode, 0)
+            self.assertIn("lines were removed at the end", broken(good[:-1], "--head", good[-1]["h"]))
+            self._write(root, good)
+            self.assertEqual(run([MEM, "audit", "--verify", "--head", good[-1]["h"]], root).returncode, 0)
+            self.assertIn("BROKEN (run audit --verify)", (self._write(root, good[:1] + good[2:]), run([MEM, "audit"], root).stdout)[1])
+
+    def test_lines_of_an_older_version_come_before_the_chain_and_do_not_break_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self._write(root, [{"ts": "2026-11-11T10:00:00", "ev": "gate", "session": "old", "result": "pass"}] * 2)
+            self._some_events(root)
+            r = run([MEM, "audit", "--verify"], root)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("2 older lines without a hash", r.stdout)
+            self.assertEqual(self._lines(root)[2]["prev"], "0" * 32)
+
+    def test_parallel_writers_and_a_rotated_file_keep_one_chain(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                list(ex.map(lambda i: run([MEM, "event", "--ev", "note", "--field", f"n={i}"], root), range(24)))
+            self.assertEqual(len(self._lines(root)), 24)
+            self.assertEqual(run([MEM, "audit", "--verify"], root).returncode, 0, run([MEM, "audit", "--verify"], root).stdout)
+            # the log is moved to events.1.jsonl when it is large: the chain goes on in the new file
+            log = root / ".agent-memory/events.jsonl"
+            head = self._lines(root)[-1]["h"]
+            os.replace(log, root / ".agent-memory/events.1.jsonl")
+            run([MEM, "event", "--ev", "note", "--field", "n=after"], root)
+            self.assertEqual(self._lines(root)[0]["prev"], head)
+            r = run([MEM, "audit", "--verify"], root)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("25 lines in the chain", r.stdout)
+
+    def test_pack_version_is_the_plugin_version(self):
+        version = json.loads((PACK / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
+        self.assertIn(f'PACK_VERSION = "{version}"', MEM.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

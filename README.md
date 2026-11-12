@@ -241,6 +241,9 @@ python3 .agents/skills/long-horizon/scripts/memory.py audit --out audit.jsonl
 - The scan is a set of patterns. It does not replace a dedicated scanner such as gitleaks: add one to the gate commands if you have it.
 - `provenance` is off until a person sets a trailer. Then the agent adds the trailer to its commits, `--check` finds commits without it, and `memory.py pr` puts it in the pull request text.
 - `audit` writes the run log (sessions, gate runs, gradings, pull requests, triage) with a checksum. The issue workflow keeps it as an artifact for 90 days.
+- Each line of the run log says who ran it: `actor` (`AGENT_ACTOR`, else `GITHUB_ACTOR`, else the git user e-mail), `model` (`AGENT_MODEL`, else the model that the Claude Code session start reported) and `pack` (the pack version). A gate line has `policy` also: a hash of the gate rules that gave the result.
+- Each line has the hash of the line before it. `memory.py audit --verify` exits 1 when a line was changed, removed or inserted. `audit` prints the head of the chain; `audit --verify --head HASH` finds a log that was cut at the end.
+- Limit: the chain has no secret. An agent that writes the complete log again, with new hashes, gives a chain that verifies. The chain is proof only against a head that the agent cannot change: keep the head (the output of `audit`) in a CI log or an artifact. Lines from before this version have no hash, and `--verify` counts them apart.
 
 ### Memory: small and confirmed
 

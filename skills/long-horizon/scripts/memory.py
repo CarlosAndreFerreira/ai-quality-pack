@@ -79,6 +79,9 @@ GATE = ROOT / "gate.json"
 GATE_PASS = ROOT / ".gate-pass"
 EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
 EVENTS_OLD = ROOT / "events.1.jsonl"
+EVENTS_LOCK = ROOT / ".events.lock"
+PACK_VERSION = "0.5.0"  # the same as .claude-plugin/plugin.json (a test checks it)
+CHAIN_START = "0" * 32  # `prev` of the first event of a chain
 SESSION = ROOT / ".session"
 REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
 # test files, and markers that turn a test off (the gate reports deleted tests and new markers)
@@ -212,24 +215,135 @@ def session_id() -> str:
     """The agent session that this command belongs to: AGENT_SESSION_ID, or the id the SessionStart hook saved."""
     sid = os.environ.get("AGENT_SESSION_ID", "")
     if not sid:
-        with contextlib.suppress(OSError):
-            sid = SESSION.read_text(encoding="utf-8").strip()
+        with contextlib.suppress(OSError, IndexError):
+            sid = SESSION.read_text(encoding="utf-8").splitlines()[0].strip()
     return CTRL_RE.sub("", sid)[:80]
+
+
+_IDENTITY: Dict[str, str] = {}
+_POLICY = ""  # hash of the gate configuration that this run used; cmd_gate sets it
+
+
+def identity() -> Dict[str, str]:
+    """Who this run log line belongs to. `actor`: AGENT_ACTOR, else GITHUB_ACTOR, else the git user e-mail.
+    `model`: AGENT_MODEL, else the model that the SessionStart hook reported. `pack`: the version of this script."""
+    if not _IDENTITY:
+        model = os.environ.get("AGENT_MODEL", "")
+        if not model:
+            with contextlib.suppress(OSError, IndexError):
+                model = SESSION.read_text(encoding="utf-8").splitlines()[1].strip()
+        _IDENTITY.update(actor=os.environ.get("AGENT_ACTOR") or os.environ.get("GITHUB_ACTOR") or git("config", "user.email"),
+                         model=model, pack=PACK_VERSION)
+        for k in _IDENTITY:
+            _IDENTITY[k] = CTRL_RE.sub("", _IDENTITY[k])[:80]
+    return _IDENTITY
+
+
+def event_hash(rec: dict) -> str:
+    """Hash of one run log line. `prev` is part of the line, so each hash covers all the lines before it."""
+    import hashlib
+    body = json.dumps({k: v for k, v in rec.items() if k != "h"}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+
+
+def last_event_hash() -> str:
+    """`h` of the last line of the run log (the rotated file, if the current file is new)."""
+    for path in (EVENTS, EVENTS_OLD):
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - 16384))
+                lines = [l for l in fh.read().decode("utf-8", "replace").splitlines() if l.strip()]
+            if lines:
+                return str(json.loads(lines[-1]).get("h") or CHAIN_START)
+        except (OSError, ValueError, AttributeError):
+            continue
+    return CHAIN_START
+
+
+@contextlib.contextmanager
+def events_lock(timeout: float = 3.0) -> Iterator[bool]:
+    """A lock of its own for the run log: log_event runs inside commands that hold the memory lock.
+    Yields False when it cannot get the lock; the caller then writes the line without a hash."""
+    deadline, got = time.time() + timeout, False
+    while not got:
+        try:
+            os.close(os.open(str(EVENTS_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            got = True
+        except FileExistsError:
+            try:
+                if time.time() - EVENTS_LOCK.stat().st_mtime > 30:  # left by a process that crashed
+                    EVENTS_LOCK.unlink()
+                    continue
+            except OSError:
+                continue
+            if time.time() > deadline:
+                break
+            time.sleep(0.02)
+        except OSError:
+            break
+    try:
+        yield got
+    finally:
+        if got:
+            with contextlib.suppress(OSError):
+                EVENTS_LOCK.unlink()
 
 
 def log_event(ev: str, **fields) -> None:
     """Append one line to events.jsonl. It records ids, outcomes and durations, never prompt or code text.
+    Each line has who ran it (actor, model, pack version) and the hash of the line before it (`prev`, `h`):
+    `audit --verify` finds a line that was changed, removed or inserted.
     Set AGENT_MEMORY_EVENTS=0 to turn it off. It must never break the command that calls it."""
     if os.environ.get("AGENT_MEMORY_EVENTS", "1") == "0" or not ROOT.is_dir():
         return
     try:
-        if EVENTS.exists() and EVENTS.stat().st_size > EVENTS_MAX:
-            os.replace(EVENTS, EVENTS_OLD)
         rec = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "ev": ev, "session": session_id()}
+        rec.update({k: v for k, v in identity().items() if v})
+        if ev == "gate" and _POLICY:
+            rec["policy"] = _POLICY
         rec.update({k: v for k, v in fields.items() if v is not None and v != ""})
-        append_line(EVENTS, rec)
+        with events_lock() as chained:
+            if EVENTS.exists() and EVENTS.stat().st_size > EVENTS_MAX:
+                os.replace(EVENTS, EVENTS_OLD)
+            if chained:  # two writers at the same time would give two lines with the same `prev`
+                rec["prev"] = last_event_hash()
+                rec["h"] = event_hash(rec)
+            append_line(EVENTS, rec)
     except Exception:
         pass
+
+
+def verify_events() -> tuple:
+    """(lines in the chain, lines from before the chain, head hash, problems) for the run log on this machine."""
+    chained, legacy, head, problems = 0, 0, "", []
+    for path in (EVENTS_OLD, EVENTS):
+        if not path.exists():
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            where = f"{path.name}:{n}"
+            try:
+                rec = json.loads(line)
+                if not isinstance(rec, dict):
+                    raise ValueError
+            except ValueError:
+                problems.append(f"{where} is not a JSON object")
+                continue
+            if "h" not in rec:
+                if head:
+                    problems.append(f"{where} has no hash: it was written outside the chain, or inserted")
+                else:
+                    legacy += 1  # written by a version before the chain
+                continue
+            if event_hash(rec) != rec["h"]:
+                problems.append(f"{where} was changed after it was written")
+            elif head and rec.get("prev") != head:
+                problems.append(f"{where} does not follow the line before it: a line was removed or inserted")
+            head = str(rec["h"])
+            chained += 1
+    return chained, legacy, head, problems
 
 
 def stdin_ready(fd: int, timeout: float) -> bool:
@@ -462,7 +576,7 @@ def cmd_init(a: argparse.Namespace) -> None:
     if not gi.exists():
         gi.write_text(".lock\n.*.tmp\n.gate-pass\n.repro\nevals/results/\n", encoding="utf-8")
     text = gi.read_text(encoding="utf-8")
-    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session", ".repro") if x not in text.splitlines()]
+    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro") if x not in text.splitlines()]
     if missing:  # the run log is local telemetry: it is not committed
         lead = "" if not text or text.endswith("\n") else "\n"  # a last line without a newline stays its own line
         with gi.open("a", encoding="utf-8", newline="\n") as fh:
@@ -478,7 +592,10 @@ def cmd_start(a: argparse.Namespace) -> None:
     sid = CTRL_RE.sub("", str(hook.get("session_id") or ""))[:80]
     if sid:  # later commands of this session (gate, feature, lesson) carry the same id in the run log
         with contextlib.suppress(OSError):
-            SESSION.write_text(sid + "\n", encoding="utf-8")
+            model = hook.get("model")
+            model = model.get("id") or model.get("display_name") if isinstance(model, dict) else model
+            SESSION.write_text(sid + "\n" + CTRL_RE.sub("", str(model or ""))[:80] + "\n", encoding="utf-8")
+            _IDENTITY.clear()
     log_event("session_start", source=clean(hook.get("source") or ("hook" if sid else "manual"), 40))
     out: List[str] = ["# Session start digest", ""] + ([plugin_note(), ""] if plugin_note() else [])
     tasks = load_tasks()
@@ -847,6 +964,9 @@ def cmd_gate(a: argparse.Namespace) -> None:
         return
     ref = a.ref or os.environ.get("AGENT_GATE_REF") or "HEAD"
     cfg, note = gate_config(ref)
+    import hashlib
+    global _POLICY  # in each gate line of the run log: which version of the rules gave this result
+    _POLICY = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     cmds = cfg.get("commands", [])
     limit = int(cfg.get("max_output", 3000))
     timeout = int(cfg.get("timeout", 900))
@@ -1620,9 +1740,19 @@ AUDIT_EVENTS = ("session_start", "gate", "gated-run", "stop", "feature", "repro"
 
 
 def cmd_audit(a: argparse.Namespace) -> None:
-    """The run log as an audit record: who ran what, with which result. `--out` writes it for an archive (CI artifact)."""
+    """The run log as an audit record: who ran what, with which result. `--out` writes it for an archive (CI artifact).
+    `--verify` checks the hash chain of the local run log; `--head` is the head that an earlier run printed."""
     ensure()
     import hashlib
+    chained, legacy, head, problems = verify_events()
+    if a.head and a.head != head:
+        problems.append(f"the head is {head or 'empty'}, not {a.head}: lines were removed at the end, or the log was written again")
+    if a.verify:
+        for pr in problems[:20]:
+            print(f"audit PROBLEM: {pr}")
+        print(f"audit chain: {'BROKEN' if problems else 'ok'} · {chained} lines in the chain"
+              + (f" · {legacy} older lines without a hash" if legacy else "") + (f" · head {head}" if head else ""))
+        sys.exit(1 if problems else 0)
     cut = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
     evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= cut and e.get("ev") in AUDIT_EVENTS]
     body = "".join(json.dumps(e, ensure_ascii=False, sort_keys=True) + "\n" for e in evs)
@@ -1635,6 +1765,7 @@ def cmd_audit(a: argparse.Namespace) -> None:
     for k, n in sorted(kinds.items()):
         print(f"  {n:>4}  {k}")
     print(f"audit: sha256 {digest}" + (f" · written to {a.out}" if a.out else ""))
+    print(f"audit chain: {'BROKEN (run audit --verify)' if problems else 'ok'}" + (f" · head {head}" if head else ""))
 
 
 # ---------------------------------------------------------------- doctor
@@ -1896,6 +2027,8 @@ def main() -> None:
     s = sub.add_parser("audit", help="the run log as an audit record, with a checksum; --out writes it for an archive")
     s.add_argument("--days", type=int, default=90)
     s.add_argument("--out", help="file to write (JSON lines)")
+    s.add_argument("--verify", action="store_true", help="check the hash chain of the run log; exit 1 if a line was changed, removed or inserted")
+    s.add_argument("--head", help="with --verify: the head hash that an earlier `audit` printed (finds a cut at the end)")
     s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("complexity", help="Python functions that the change made more complex than a limit")
     s.add_argument("--base", default="HEAD")

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- **Identity in each run log line**: `actor`, `model` and `pack` version; a gate line has `policy`, a hash of the gate rules that ran. The model comes from `AGENT_MODEL` or from the Claude Code session start.
+- **Hash chain in the run log**: each line has the hash of the line before it (`prev`, `h`). `memory.py audit --verify` exits 1 for a line that was changed, removed or inserted; `--head HASH` finds a cut at the end. `audit` prints the head. A lock of its own keeps one chain with parallel writers, and the chain goes on after the log file is rotated.
+- Limit: the chain has no secret, so it is proof only against a head that is kept where the agent cannot write. 5 tests.
 - **`"block_test_changes": true` in `gate.json`** (off by default): the gate fails for a deleted test file or a new skip marker, before it runs the commands. A person approves a path or a glob in `"allowed_test_changes"` and commits `gate.json`; an edit that is not committed does not count. The prompt-injection test set showed the gap: the deletion of a test succeeded in 1 of 12 runs with the pack, and the gate only reported it.
 - A changed line in an existing test does not block. That warning fired on 5 of 23 correct patches and 6 of 19 wrong patches, so it does not separate them.
 - The run log records these failures as `failed: "test changes"` with the number of blocked changes.
