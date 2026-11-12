@@ -26,7 +26,7 @@ A model that grades its own work rates it too highly. A separate evaluator, tune
 1. Run the full gates yourself: tests, lint, typecheck. Use the real output, not the implementer's summary.
 2. For each criterion, try to make it **fail**. Run it against the running system when the criterion is behavioural. Check edge cases the criterion implies (empty, invalid, unauthorised, concurrent, repeated).
 3. Look for tests that cannot fail: tests that assert nothing, mock the unit under test, or were weakened or skipped in this diff.
-4. Grade each criterion: PASS (evidence you produced) / FAIL (reproduction steps) / UNKNOWN (you could not verify it, and why). There is no partial pass. UNKNOWN is a correct answer when you cannot check; it does not let the feature pass.
+4. Grade each criterion: PASS (evidence you produced) / FAIL (reproduction steps) / UNKNOWN (you could not verify it, and why). There is no partial pass. UNKNOWN is a correct answer when you cannot check; it does not let the feature pass. FAIL is for a defect that you showed. A missing record (no recorded criteria, no recorded reproduction, no gate file) is not a defect of the change: report it as "Not verified", and do not count it as FAIL.
 
 ## Output
 ```

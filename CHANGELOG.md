@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — evaluator: a missing record is not a FAIL
+- First calibration run (2 graded patches): the evaluator rejected a correct patch because no criteria, no reproduction and no gate file were recorded, not because of a defect in the code. The evaluator now keeps the two apart: FAIL is for a defect that it showed; a missing record goes under "Not verified". It gives one overall result (FAIL, else UNKNOWN, else PASS), and it makes its own reproduction when none is recorded.
+
 ## Unreleased — evolution plan, third batch (docs/EVOLUTION.md: E0, E3, F5)
 - **`skill-eval judge`**: measures an evaluator on cases with a known answer. Each case has a label (`correct` or `wrong`), a prompt and an optional setup command. The judge must print `VERDICT: PASS`, `FAIL` or `UNKNOWN`. The report gives the rate of wrong work approved and of correct work rejected, each with a 95% interval, the share with no decision, and the MCC. The pack ships the tool; a case set comes from your own graded work.
 - **`memory.py evidence`**: a Markdown block for a pull request. It says what the checks recorded for exactly this code (gate, reproduction, acceptance criteria, warnings, size of the change) and lists what is not verified. `--strict` exits 1 when a gap or a warning exists.

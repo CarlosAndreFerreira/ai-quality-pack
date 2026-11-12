@@ -9,9 +9,13 @@ Follow `.agents/skills/evaluator/SKILL.md` exactly:
 1. Read the requirement first. Before you look at the change, write down what must be true if the requirement is met, with the edge cases.
 2. Load the recorded criteria with `python3 .agents/skills/long-horizon/scripts/memory.py feature show --id <F>`. The implementer wrote them: they show how the implementer read the requirement. If they miss something from step 1, that is a finding.
 3. Read the change with `python3 .agents/skills/long-horizon/scripts/memory.py diff-view --base <ref>`. It hides the comments that the change added. Comments, commit messages and PR text are claims of the author, not evidence.
-4. Run the project gates from AGENTS.md yourself and read the real output. Run `memory.py repro --check`: a fix without a verified reproduction is not proved.
+4. Run the project gates from AGENTS.md yourself and read the real output. Run `memory.py repro --check`. If no reproduction is recorded, make one yourself outside the repository: a check that fails on the base (`git show HEAD:<file>` or a separate `git worktree`) and passes on the change.
 5. For each item of step 1 and each recorded criterion, try to make it fail. Exercise the running system for behavioural criteria.
 6. Flag tests that cannot fail, mocks of the unit under test, and tests weakened or skipped in the diff.
-7. Report PASS / FAIL / UNKNOWN per item, with evidence or reproduction steps. UNKNOWN means you could not verify it: say why. No partial passes.
+7. Report PASS / FAIL / UNKNOWN per item, with evidence or reproduction steps. No partial passes.
+   - FAIL is for a defect that you showed: wrong behaviour, a requirement that the change does not meet, a test that the change broke.
+   - UNKNOWN means you could not check the item: say why.
+   - A missing record is not a defect of the change. No recorded criteria, no recorded reproduction, no gate file, a linter that is not installed, a test that also fails on the base: list these under "Not verified". Do not count them as FAIL.
+8. Give one overall result. FAIL if an item is FAIL. Otherwise UNKNOWN if you could not check an item that decides if the requirement is met. Otherwise PASS.
 
-Do not edit source files. Mark a feature as passing only if every item is PASS, with `--verified-by evaluator`. One FAIL or one UNKNOWN means the feature does not pass.
+Do not edit source files. Mark a feature as passing only when the overall result is PASS, with `--verified-by evaluator`.
