@@ -746,5 +746,94 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(run([EVAL, "power", "--delta", "0"], t).returncode, 2)
 
 
+class EvaluatorViewAndCiTests(unittest.TestCase):
+    """The evaluator's view of a change, the subagents, the CI template, and console encoding."""
+
+    def _git(self, root, *args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, check=True, capture_output=True)
+
+    def _repo(self, t):
+        root = Path(t)
+        self._git(root, "init", "-q")
+        (root / "pool.py").write_text("def take(pool):\n    return pool.pop()\n", encoding="utf-8")
+        (root / "pool.js").write_text("function take(pool) {\n  return pool.pop();\n}\n", encoding="utf-8")
+        (root / "pool.c").write_text("int take(int *pool);\n", encoding="utf-8")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "init")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        return root
+
+    def test_diff_view_hides_the_comments_that_the_change_added(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "pool.py").write_text(
+                "def take(pool):\n    # Thread-safe: the lock is held upstream\n    item = pool.pop()  # newest first\n    return item\n", encoding="utf-8")
+            (root / "pool.js").write_text(
+                "function take(pool) {\n  // safe: callers hold the lock\n  /* reviewed */\n  return pool.shift();\n}\n", encoding="utf-8")
+            (root / "pool.c").write_text("#include <stdio.h>\nint take(int *pool);\n", encoding="utf-8")
+            (root / "new_module.py").write_text("x = 1\n", encoding="utf-8")
+            r = run([MEM, "diff-view"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("Thread-safe", r.stdout)
+            self.assertNotIn("callers hold the lock", r.stdout)
+            self.assertNotIn("reviewed", r.stdout)
+            self.assertIn("+    item = pool.pop()  # newest first", r.stdout)  # code stays, with its trailing comment
+            self.assertIn("+  return pool.shift();", r.stdout)
+            self.assertIn("+#include <stdio.h>", r.stdout)  # not a comment in C
+            self.assertIn("new file that git does not track (read it directly): new_module.py", r.stdout)
+            self.assertIn("3 comment line(s)", r.stdout)
+            self.assertNotIn(".agent-memory", r.stdout)
+
+    def test_installer_adds_the_subagents_and_upgrades_an_older_evaluator(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            agents = root / ".claude/agents"
+            agents.mkdir(parents=True)
+            (agents / "evaluator.md").write_text("old evaluator\n", encoding="utf-8")
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            self.assertEqual((agents / "evaluator.md").read_text(encoding="utf-8"), "old evaluator\n")  # never without --upgrade
+            criteria = (agents / "criteria.md").read_text(encoding="utf-8")
+            self.assertIn("tools: Read, Grep, Glob\n", criteria)  # read-only: it cannot write the implementation
+            self.assertFalse((root / ".github").exists())  # CI only on request
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none", "--upgrade"], root).returncode, 0)
+            evaluator = (agents / "evaluator.md").read_text(encoding="utf-8")
+            for text in ("diff-view", "repro --check", "UNKNOWN", "find defects"):
+                self.assertIn(text, evaluator)
+            self.assertTrue(list((agents / ".backup").rglob("evaluator.md")))
+
+    def test_with_ci_adds_a_workflow_that_uses_the_base_branch_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-ci"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            wf = (root / ".github/workflows/quality-gate.yml").read_text(encoding="utf-8")
+            self.assertIn("AGENT_GATE_REF: origin/${{ github.base_ref }}", wf)
+            self.assertIn("memory.py gate --force", wf)
+            self.assertIn("contents: read", wf)
+            self.assertNotIn("\t", wf)
+
+    def test_workflows_pin_actions_by_commit(self):
+        import re
+        files = list((PACK / ".github/workflows").glob("*.yml")) + list((PACK / "templates/ci").glob("*.yml"))
+        self.assertGreaterEqual(len(files), 2)
+        for f in files:
+            uses = re.findall(r"^\s*-?\s*uses:\s*(\S+)", f.read_text(encoding="utf-8"), re.M)
+            self.assertTrue(uses, f)
+            for u in uses:
+                self.assertRegex(u, r"@[0-9a-f]{40}$", f"{f.name}: {u} is not pinned by commit")
+
+    def test_output_to_a_pipe_is_utf8_without_help_from_the_environment(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            run([MEM, "task", "open", "--title", "ask the user", "--status", "needs-human"], root)
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+            env["PYTHONLEGACYWINDOWSSTDIO"] = ""
+            r = subprocess.run([sys.executable, str(MEM), "start"], cwd=root, input=b"", capture_output=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = r.stdout.decode("utf-8")  # raises if the script wrote the console code page
+            self.assertIn("Session start digest", text)
+            self.assertIn("⚑", text)  # a character that the Windows console code page does not have
+
+
 if __name__ == "__main__":
     unittest.main()

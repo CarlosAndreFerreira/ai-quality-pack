@@ -533,6 +533,11 @@ def cmd_power(a) -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):  # a pipe (hook, agent) gets UTF-8; a console never fails on a character
+        try:
+            stream.reconfigure(errors="replace") if stream.isatty() else stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     p = argparse.ArgumentParser(description="Measure skill changes on verifiable tasks (A/B, A/A calibration, ablation).")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create the task file").set_defaults(fn=cmd_init)

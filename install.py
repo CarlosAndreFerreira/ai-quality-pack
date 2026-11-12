@@ -7,10 +7,11 @@ Options:
   --no-upstream        skip mattpocock/skills (grill-me & co.)
   --update-upstream    re-fetch upstream skills (only folders marked .upstream are replaced)
   --upstream-ref REF   upstream revision (default: a pinned, reviewed SHA)
-  --upgrade            replace pack-owned skills and hook scripts with this version (old copies backed up)
+  --upgrade            replace pack-owned skills, hook scripts and subagents with this version (old copies backed up)
   --link DIR           also expose skills to another agent folder (repeatable, e.g. .codex/skills)
   --with-egm           install Google's Elephant-Goldfish Model plugin via the agents' own plugin CLIs
   --with-stop-gate     Claude Code Stop hook: the completion gate must pass before the agent finishes
+  --with-ci            GitHub Actions workflow: the gate runs on each pull request, with the base branch's gate.json
   --dry-run            print actions only
 Never overwrites your files: templates are added only if absent; settings.json is merged.
 """
@@ -304,7 +305,12 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     agents_md = (PACK / "templates" / "AGENTS.md").read_text(encoding="utf-8").replace("{{COMMANDS}}", cmds)
     add_if_absent(None, root / "AGENTS.md", agents_md)
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
-    add_if_absent(PACK / "templates" / ".claude" / "agents" / "evaluator.md", root / ".claude" / "agents" / "evaluator.md")
+    for agent in ("evaluator.md", "criteria.md"):
+        add_or_upgrade(PACK / "templates" / ".claude" / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
+    if a.with_ci:
+        add_if_absent(PACK / "templates" / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml")
+        log("NOTE: the CI gate needs `.agent-memory/gate.json` committed, and your dependencies installed in the workflow. "
+            "Protect it with CODEOWNERS: see the comments in .github/workflows/quality-gate.yml.")
     for hook in ("format_on_edit.py", "gate_on_stop.py"):
         add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / hook, root / ".claude" / "hooks" / hook, a.upgrade)
     merge_settings(root / ".claude" / "settings.json", a.with_stop_gate)
@@ -343,6 +349,7 @@ def main() -> None:
     ap.add_argument("--link", action="append", default=[], help="extra agent skills dir to link, relative to DIR")
     ap.add_argument("--with-egm", action="store_true", help="install Google's Elephant-Goldfish Model plugin")
     ap.add_argument("--with-stop-gate", action="store_true", help="Claude Code Stop hook enforcing the completion gate")
+    ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     DRY = a.dry_run
