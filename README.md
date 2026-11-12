@@ -45,7 +45,8 @@ claude plugin install ai-quality-pack@ai-quality-pack
 - `aqp-memory` is `memory.py`. Use it where the instructions name `python3 .agents/skills/long-horizon/scripts/memory.py`.
 - The plugin does not add `AGENTS.md`, `CLAUDE.md`, the CI workflow or the language profiles. Use `install.py` for these. In a project that has the `install.py` hooks, the plugin's hooks do nothing.
 - This repository is private: `git` must have a stored credential for it (`gh auth login`, then `gh auth setup-git`).
-- Limits: `claude plugin validate` passes, but no agent session has been run with the plugin yet. The hook launcher is a shell script, and it has not been run on Windows. Use `install.py` there.
+- Checked: `claude plugin validate --strict` passes. In two agent sessions on Linux, the three hooks ran, and the agent and the `evaluator` subagent used `aqp-memory`.
+- Limits: the hook launcher is a shell script, and it has not been run on Windows. Use `install.py` there.
 - `claude plugin uninstall ai-quality-pack` removes it.
 
 The installer never overwrites your files. It merges `.claude/settings.json` instead of replacing it. `--upgrade` replaces pack-owned skills and keeps a backup. Where symlinks are unavailable (Windows without developer mode), it copies.
