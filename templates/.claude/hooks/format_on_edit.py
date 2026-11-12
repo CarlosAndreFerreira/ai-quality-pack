@@ -3,6 +3,34 @@
 
 Never blocks the agent: always exits 0. Stdlib only, cross-platform.
 """
+import sys
+
+if sys.version_info < (3, 9):  # this block must parse and run on Python 3.6: rerun with a newer Python, or say why not
+    import os
+    import shutil
+    import subprocess
+
+    def _rerun_with_newer_python():
+        if os.environ.get("AGENT_PACK_RERUN"):
+            return
+        names = [os.environ.get("AGENT_PACK_PYTHON")] + ["python3.%d" % n for n in range(15, 8, -1)] + ["python3", "python"]
+        for name in names:
+            exe = shutil.which(name) if name else None
+            if not exe or os.path.realpath(exe) == os.path.realpath(sys.executable):
+                continue
+            try:
+                newer = subprocess.call([exe, "-c", "import sys; sys.exit(sys.version_info < (3, 9))"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30) == 0
+            except Exception:
+                newer = False
+            if newer:
+                sys.exit(subprocess.call([exe] + sys.argv, env=dict(os.environ, AGENT_PACK_RERUN="1")))
+
+    _rerun_with_newer_python()
+    sys.exit("%s needs Python 3.9 or newer. This is Python %d.%d, and no newer Python is on PATH. "
+             "Install one, or set AGENT_PACK_PYTHON to the path of one."
+             % (os.path.basename(sys.argv[0]), sys.version_info[0], sys.version_info[1]))
+
 import json
 import os
 import shutil

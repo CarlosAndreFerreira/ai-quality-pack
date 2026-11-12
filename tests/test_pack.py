@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -945,6 +946,206 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertIn("1 of 2 features graded as passing (F-1 by human)", out)
             self.assertIn("features not graded as passing: F-2", out)
             self.assertNotIn("without an independent verifier", out)
+
+
+AGENT = """
+import pathlib, sys
+task = sys.stdin.read()
+fixed = 'gate failed' in task and 'never' not in task
+pathlib.Path('calc.py').write_text('def add(a, b):\\n    return a %s b\\n' % ('+' if fixed else '-'), encoding='utf-8')
+pathlib.Path('rounds.txt').open('a', encoding='utf-8').write(task[:40].replace('\\n', ' ') + '\\n')
+"""
+
+
+class HeadlessTests(unittest.TestCase):
+    """The gate without hooks, and scripts that start on an old Python."""
+
+    def _repo(self, t):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+        (root / "agent.py").write_text(AGENT, encoding="utf-8")
+        (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+        self.py = sys.executable.replace("\\", "/")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        return root
+
+    def _gate(self, root):
+        (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{self.py}" test_calc.py']}), encoding="utf-8")
+
+    def test_gated_run_gives_a_red_gate_back_to_the_agent(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self._gate(root)
+            r = run([MEM, "gated-run", "--agent-cmd", f'"{self.py}" agent.py', "--prompt", "make add work"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("gate FAILED", r.stdout)
+            self.assertIn("the gate passed after 2 agent round(s)", r.stdout)
+            rounds = (root / "rounds.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(rounds), 2)
+            self.assertTrue(rounds[0].startswith("make add work"))
+            self.assertTrue(rounds[1].startswith("The completion gate failed"))
+            events = [json.loads(l) for l in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines()]
+            last = [e for e in events if e["ev"] == "gated-run"][-1]
+            self.assertEqual((last["result"], last["rounds"]), ("pass", 2))
+            self.assertEqual(run([MEM, "gate", "--check"], root).returncode, 0)
+
+    def test_gated_run_exits_1_when_the_gate_stays_red(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self._gate(root)
+            r = run([MEM, "gated-run", "--agent-cmd", f'"{self.py}" agent.py', "--prompt", "never fix it", "--retries", "1"], root)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("the gate still fails after 2 agent round(s)", r.stdout)
+            self.assertEqual(len((root / "rounds.txt").read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_gated_run_refuses_a_repository_without_a_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([MEM, "gated-run", "--agent-cmd", f'"{self.py}" agent.py', "--prompt", "x"], root)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("the run would have no check", r.stderr)
+            self.assertFalse((root / "rounds.txt").exists())
+
+    @unittest.skipIf(sys.version_info < (3, 8), "ast.parse has no feature_version")
+    def test_scripts_parse_on_python_3_6_so_that_the_version_message_can_run(self):
+        import ast
+        scripts = [INST, *sorted((PACK / "skills").glob("*/scripts/*.py")), *sorted((PACK / "templates/.claude/hooks").glob("*.py"))]
+        self.assertGreaterEqual(len(scripts), 7)
+        for path in scripts:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(script=path.name):
+                ast.parse(text, feature_version=(3, 6))
+                self.assertNotIn("from __future__ import annotations", text)  # a SyntaxError on 3.6, before any code runs
+                self.assertIn("sys.version_info < (3, 9)", text)
+                tree = ast.parse(text)  # with the guard gone, an annotation such as `dict | None` fails on Python 3.9
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        notes = [x.annotation for x in node.args.args + node.args.kwonlyargs if x.annotation] + ([node.returns] if node.returns else [])
+                        for note in notes:
+                            self.assertFalse(any(isinstance(n, ast.BinOp) for n in ast.walk(note)), f"{path.name}:{node.lineno}")
+
+
+class UninstallTests(unittest.TestCase):
+    def _installed(self, t):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+        (root / ".claude").mkdir()
+        (root / ".claude/settings.json").write_text(json.dumps({
+            "permissions": {"deny": ["Read(./.env)"]},
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}}), encoding="utf-8")
+        r = run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate", "--with-ci"], root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return root
+
+    def test_uninstall_removes_what_the_pack_installed_and_keeps_the_rest(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._installed(t)
+            self.assertTrue((root / ".agents/skills/long-horizon/SKILL.md").exists())
+            r = run([INST, "uninstall", root, "--dry-run"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("[dry-run] removed:", r.stdout)
+            self.assertTrue((root / ".agents/skills/long-horizon/SKILL.md").exists())  # a dry run changes nothing
+            r = run([INST, "uninstall", root], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            for gone in (".agents", ".claude/skills", ".claude/agents", ".claude/hooks", ".github", "CLAUDE.md"):
+                self.assertFalse((root / gone).exists() or (root / gone).is_symlink(), gone)
+            settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["permissions"], {"deny": ["Read(./.env)"]})
+            self.assertEqual(settings["hooks"], {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]})
+            self.assertTrue((root / "AGENTS.md").exists())
+            self.assertTrue((root / ".agent-memory").is_dir())
+            self.assertIn("--purge-memory removes it", r.stdout)
+            r = run([INST, "uninstall", root, "--purge-memory"], root)  # a second run finds nothing more of the pack
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse((root / ".agent-memory").exists())
+
+    def test_uninstall_keeps_a_pack_file_that_the_user_changed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._installed(t)
+            evaluator = root / ".claude/agents/evaluator.md"
+            evaluator.write_text(evaluator.read_text(encoding="utf-8") + "\nOur team rule.\n", encoding="utf-8")
+            (root / ".agents/skills/evaluator/notes.md").write_text("ours\n", encoding="utf-8")
+            r = run([INST, "uninstall", root], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue(evaluator.exists())
+            self.assertTrue((root / ".agents/skills/evaluator/notes.md").exists())
+            self.assertFalse((root / ".agents/skills/long-horizon").exists())
+            self.assertEqual(r.stdout.count("kept (differs from the pack's copy"), 2)
+            r = run([INST, "uninstall", root, "--force"], root)
+            self.assertFalse(evaluator.exists())
+            self.assertFalse((root / ".agents").exists())
+
+    def test_uninstall_removes_the_settings_file_that_only_the_pack_wrote(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            self.assertTrue((root / ".claude/settings.json").exists())
+            self.assertEqual(run([INST, "uninstall", root], root).returncode, 0)
+            self.assertFalse((root / ".claude").exists())
+
+
+class PluginTests(unittest.TestCase):
+    """The repository as a Claude Code plugin and marketplace."""
+
+    def test_manifests_name_files_that_exist(self):
+        plugin = json.loads((PACK / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertRegex(plugin["name"], r"^[a-z0-9]+(-[a-z0-9]+)*$")
+        self.assertFalse(plugin["name"].startswith(("claude-", "anthropic-")))
+        for rel in plugin["agents"]:
+            self.assertTrue(rel.startswith("./") and ".." not in rel and (PACK / rel).is_file(), rel)
+        market = json.loads((PACK / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+        self.assertEqual(market["owner"]["name"], plugin["author"]["name"])
+        self.assertEqual([(p["name"], p["source"]) for p in market["plugins"]], [(plugin["name"], "./")])
+        self.assertFalse((PACK / "CLAUDE.md").exists())  # a CLAUDE.md at a plugin root is not loaded
+        hooks = json.loads((PACK / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]
+        self.assertEqual(sorted(hooks), ["PostToolUse", "SessionStart", "Stop"])
+        launcher = (PACK / "bin/aqp-hook").read_text(encoding="utf-8")
+        for event, entries in hooks.items():
+            command = entries[0]["hooks"][0]["command"]
+            self.assertTrue(command.startswith('"${CLAUDE_PLUGIN_ROOT}"/bin/aqp-hook '), command)
+            self.assertIn(f"\n  {command.split()[-1]}) ", launcher)
+        for script in re.findall(r'script="([^"]+)"', launcher):
+            self.assertTrue((PACK / script).is_file(), script)
+        for name in ("aqp-hook", "aqp-memory"):
+            raw = (PACK / "bin" / name).read_bytes()
+            self.assertTrue(raw.startswith(b"#!/bin/sh\n"), name)
+
+    @unittest.skipIf(os.name == "nt", "the launchers are POSIX shell scripts")
+    def test_plugin_hooks_run_from_the_plugin_and_yield_to_a_project_install(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), CLAUDE_PLUGIN_ROOT=str(PACK))
+            sh = lambda *args, stdin="{}": subprocess.run(["sh", *map(str, args)], cwd=root, env=env, input=stdin,
+                                                          capture_output=True, text=True)
+            r = sh(PACK / "bin/aqp-memory", "init")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = sh(PACK / "bin/aqp-hook", "start")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("# Session start digest", r.stdout)
+            self.assertIn("run `aqp-memory` in its place", r.stdout)
+            self.assertEqual(sh(PACK / "bin/aqp-hook", "stop").returncode, 0)  # no gate file: nothing to enforce
+            py = sys.executable
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            r = sh(PACK / "bin/aqp-hook", "stop")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # the gate is red: the agent may not stop
+            self.assertIn("Completion gate failed", r.stderr)
+            self.assertEqual(sh(PACK / "bin/aqp-hook", "nonsense").returncode, 1)
+            # a project with the pack's own install keeps its hooks; the plugin's copies stay silent
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate"], root).returncode, 0)
+            r = sh(PACK / "bin/aqp-hook", "start")
+            self.assertEqual((r.returncode, r.stdout), (0, ""))
+            self.assertEqual(sh(PACK / "bin/aqp-hook", "stop").returncode, 0)
+
+    def test_doctor_names_the_plugin_install(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            run([MEM, "init"], root)
+            out = run([MEM, "doctor"], root).stdout
+            self.assertIn("the pack runs as a plugin", out)
+            self.assertNotIn("hooks are not installed", out)
 
 
 if __name__ == "__main__":

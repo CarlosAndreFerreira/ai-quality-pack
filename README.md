@@ -33,6 +33,21 @@ python3 ai-quality-pack/install.py project . --dry-run                  # show w
 python3 ai-quality-pack/install.py global                               # Antigravity plugin + Claude Code skills
 ```
 
+### Claude Code plugin
+
+```bash
+claude plugin marketplace add CarlosAndreFerreira/ai-quality-pack
+claude plugin install ai-quality-pack@ai-quality-pack
+```
+
+- The plugin gives Claude Code the skills, the `evaluator` and `criteria` subagents and the three hooks. It writes nothing in your repository.
+- Run `aqp-memory init` in a repository to start the memory. Add `.agent-memory/gate.json` with `{"commands": [...]}` to turn on the completion gate. Without this file, the Stop hook does nothing.
+- `aqp-memory` is `memory.py`. Use it where the instructions name `python3 .agents/skills/long-horizon/scripts/memory.py`.
+- The plugin does not add `AGENTS.md`, `CLAUDE.md`, the CI workflow or the language profiles. Use `install.py` for these. In a project that has the `install.py` hooks, the plugin's hooks do nothing.
+- This repository is private: `git` must have a stored credential for it (`gh auth login`, then `gh auth setup-git`).
+- Limits: `claude plugin validate` passes, but no agent session has been run with the plugin yet. The hook launcher is a shell script, and it has not been run on Windows. Use `install.py` there.
+- `claude plugin uninstall ai-quality-pack` removes it.
+
 The installer never overwrites your files. It merges `.claude/settings.json` instead of replacing it. `--upgrade` replaces pack-owned skills and keeps a backup. Where symlinks are unavailable (Windows without developer mode), it copies.
 
 ## What gets installed
@@ -137,13 +152,42 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - The gate uses the committed `gate.json`. It ignores an edit that is not committed, and it reports the edit.
 - The gate reports deleted test files and new skip markers. It does not block them. The next session digest shows them.
 - `doctor` finds hooks that will not run and gate commands that are not installed.
-- Hooks do not run in `claude -p --bare`. In unattended runs and in CI, run `memory.py gate` as a separate step.
+- Hooks do not run in `claude -p --bare`. In CI, run `memory.py gate` as a separate step. In unattended runs, use `gated-run` (see below).
 - `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.
 - `diff-view` shows the change without the comments that it added. The evaluator reads this view.
 - `install.py project . --with-ci` adds a GitHub Actions workflow. It runs the gate on each pull request with the `gate.json` of the base branch.
 - The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
 - `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
 - `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved.
+
+### Unattended runs: the gate without hooks
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py gated-run \
+  --agent-cmd "claude -p --bare --permission-mode acceptEdits" --prompt-file task.md --retries 2
+```
+
+- `gated-run` runs the agent command with the task on stdin. Then it runs the gate.
+- If the gate fails, it runs the agent again with the gate output and the task. `--retry-cmd` sets a different command for these rounds.
+- Exit code 0: the gate passed. Exit code 1: the gate still fails after the last round. The work is not done.
+- It needs `.agent-memory/gate.json`. Without a gate file it stops with exit code 2.
+
+### Uninstall
+
+```bash
+python3 ai-quality-pack/install.py uninstall /path/to/your/repo --dry-run   # shows the list; changes nothing
+python3 ai-quality-pack/install.py uninstall /path/to/your/repo
+python3 ai-quality-pack/install.py uninstall --global
+```
+
+- It removes the pack's skills, subagents, hook scripts, hook entries in `.claude/settings.json`, the CI workflow and `CLAUDE.md`.
+- It keeps a file that differs from the pack's copy, because the changes are yours. `--force` removes these files also.
+- It keeps `AGENTS.md` and `.agent-memory/`. `--purge-memory` removes `.agent-memory/`.
+- It keeps your other hooks and settings.
+
+### Python version
+
+The scripts need Python 3.9 or newer. If the project's `python` is older (3.6 to 3.8), each script starts again with a newer Python from `PATH` (`python3.9` to `python3.15`, `python3`, `python`). Set `AGENT_PACK_PYTHON` to select one. If none is found, the script prints the cause and exits with code 1.
 
 ### Checks before a push
 

@@ -1,0 +1,23 @@
+{
+  "name": "ai-quality-pack",
+  "version": "0.5.0",
+  "description": "Quality control for AI coding agents: a completion gate that runs the project's checks, a reproduction check, an independent evaluator, file memory for long work, and measured skill changes.",
+  "author": {
+    "name": "Carlos André Ferreira",
+    "url": "https://github.com/CarlosAndreFerreira"
+  },
+  "homepage": "https://github.com/CarlosAndreFerreira/ai-quality-pack",
+  "repository": "https://github.com/CarlosAndreFerreira/ai-quality-pack",
+  "license": "MIT",
+  "keywords": [
+    "quality",
+    "gate",
+    "evaluator",
+    "memory",
+    "review"
+  ],
+  "agents": [
+    "./templates/.claude/agents/evaluator.md",
+    "./templates/.claude/agents/criteria.md"
+  ]
+}

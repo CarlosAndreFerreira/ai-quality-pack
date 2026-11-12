@@ -1,0 +1,10 @@
+#!/bin/sh
+# memory.py of the AI Quality Pack, for a plugin install (the plugin's bin/ directory is on PATH).
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1; then
+    exec "$py" "$root/skills/long-horizon/scripts/memory.py" "$@"
+  fi
+done
+echo "aqp-memory: no python3 or python on PATH" >&2
+exit 1

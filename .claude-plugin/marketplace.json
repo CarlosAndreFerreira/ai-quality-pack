@@ -1,0 +1,14 @@
+{
+  "name": "ai-quality-pack",
+  "owner": {
+    "name": "Carlos André Ferreira",
+    "url": "https://github.com/CarlosAndreFerreira"
+  },
+  "plugins": [
+    {
+      "name": "ai-quality-pack",
+      "source": "./",
+      "description": "Quality control for AI coding agents: a completion gate that runs the project's checks, a reproduction check, an independent evaluator, file memory for long work, and measured skill changes."
+    }
+  ]
+}

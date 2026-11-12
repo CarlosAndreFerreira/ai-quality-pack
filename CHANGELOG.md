@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — old Python, and the gate without hooks (docs/EVOLUTION.md: F2)
+- **The scripts start on Python 3.6 to 3.8.** In two repositories with Python 3.6, `memory.py` stopped with a `SyntaxError`, so `repro` and the gate did not run. Each script and hook now starts again with a newer Python from `PATH` (or `AGENT_PACK_PYTHON`). If none is found, it prints the cause and exits with code 1.
+- **`memory.py gated-run`**: runs an agent command, then the gate. A red gate goes back to the agent with the gate output, for a set number of rounds. Exit code 1 means that the gate still fails. Use it in unattended runs: hooks do not run in `claude -p --bare`.
+- **`install.py uninstall`** (F1): removes what the pack installed in a project, or with `--global` in the home directory. It keeps files that you changed (`--force` removes them), `AGENTS.md`, your other hooks and `.agent-memory/` (`--purge-memory` removes it). `--dry-run` shows the list.
+- **Claude Code plugin** (F1): the repository is a plugin and its own marketplace (`claude plugin marketplace add`, `claude plugin install ai-quality-pack@ai-quality-pack`). The plugin has the skills, the two subagents and the three hooks. `aqp-memory` is on `PATH` and stands for `memory.py`. The Stop gate runs only where `.agent-memory/gate.json` exists. Not run in an agent session yet, and not on Windows.
+- 10 tests.
+
 ## Unreleased — evaluator: a missing record is not a FAIL
 - First calibration run (2 graded patches): the evaluator rejected a correct patch because no criteria, no reproduction and no gate file were recorded, not because of a defect in the code. The evaluator now keeps the two apart: FAIL is for a defect that it showed; a missing record goes under "Not verified". It gives one overall result (FAIL, else UNKNOWN, else PASS), and it makes its own reproduction when none is recorded.
 

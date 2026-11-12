@@ -23,7 +23,33 @@ Files (default dir .agent-memory/, override with AGENT_MEMORY_DIR):
 
 Run `memory.py <command> --help`. Never store secrets or personal data here.
 """
-from __future__ import annotations
+import sys
+
+if sys.version_info < (3, 9):  # this block must parse and run on Python 3.6: rerun with a newer Python, or say why not
+    import os
+    import shutil
+    import subprocess
+
+    def _rerun_with_newer_python():
+        if os.environ.get("AGENT_PACK_RERUN"):
+            return
+        names = [os.environ.get("AGENT_PACK_PYTHON")] + ["python3.%d" % n for n in range(15, 8, -1)] + ["python3", "python"]
+        for name in names:
+            exe = shutil.which(name) if name else None
+            if not exe or os.path.realpath(exe) == os.path.realpath(sys.executable):
+                continue
+            try:
+                newer = subprocess.call([exe, "-c", "import sys; sys.exit(sys.version_info < (3, 9))"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30) == 0
+            except Exception:
+                newer = False
+            if newer:
+                sys.exit(subprocess.call([exe] + sys.argv, env=dict(os.environ, AGENT_PACK_RERUN="1")))
+
+    _rerun_with_newer_python()
+    sys.exit("%s needs Python 3.9 or newer. This is Python %d.%d, and no newer Python is on PATH. "
+             "Install one, or set AGENT_PACK_PYTHON to the path of one."
+             % (os.path.basename(sys.argv[0]), sys.version_info[0], sys.version_info[1]))
 
 import argparse
 import contextlib
@@ -37,7 +63,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterator, List, Dict
+from typing import Dict, Iterator, List, Optional
 
 SCHEMA = 3
 ROOT = Path(os.environ.get("AGENT_MEMORY_DIR", ".agent-memory"))
@@ -85,6 +111,17 @@ def enter_project_root() -> None:
         return
     if (Path(project) / ROOT).is_dir():
         os.chdir(project)
+
+
+def plugin_note() -> str:
+    """One line for the agent when the pack runs as a plugin: the paths in the instructions are not in the project."""
+    here = Path(__file__).resolve()
+    root = here.parents[3]
+    if not (root / ".claude-plugin" / "plugin.json").is_file() or Path(".agents/skills/long-horizon/scripts/memory.py").exists():
+        return ""
+    return (f"The pack runs as a plugin from {root.as_posix()}. Where an instruction names "
+            "`python3 .agents/skills/long-horizon/scripts/memory.py`, run `aqp-memory` in its place. "
+            f"The other pack scripts are in {root.as_posix()}/skills/<skill>/scripts/.")
 
 
 def hook_problems() -> List[str]:
@@ -311,7 +348,7 @@ def load_features() -> List[dict]:
     return list(by_id.values())
 
 
-def save_features(fs: List[dict], event: dict | None = None) -> None:
+def save_features(fs: List[dict], event: Optional[dict] = None) -> None:
     if event:
         append_line(FEATURES_LOG, event)
     atomic_write(FEATURES, json.dumps(fs, indent=2, ensure_ascii=False) + "\n")
@@ -417,7 +454,7 @@ def cmd_init(a: argparse.Namespace) -> None:
 
 def cmd_start(a: argparse.Namespace) -> None:
     if not ROOT.exists():
-        print("[memory] no .agent-memory/ in this repo (run memory.py init to enable).")
+        print("[memory] no .agent-memory/ in this repo (run memory.py init to enable)." + (" " + plugin_note() if plugin_note() else ""))
         return
     hook = hook_input()
     sid = CTRL_RE.sub("", str(hook.get("session_id") or ""))[:80]
@@ -425,7 +462,7 @@ def cmd_start(a: argparse.Namespace) -> None:
         with contextlib.suppress(OSError):
             SESSION.write_text(sid + "\n", encoding="utf-8")
     log_event("session_start", source=clean(hook.get("source") or ("hook" if sid else "manual"), 40))
-    out: List[str] = ["# Session start digest", ""]
+    out: List[str] = ["# Session start digest", ""] + ([plugin_note(), ""] if plugin_note() else [])
     tasks = load_tasks()
     human = [t for t in tasks.values() if t["status"] == "needs-human"]
     stuck = [f for f in load_features() if f.get("fail_streak", 0) >= STUCK_AFTER and not f.get("passes")]
@@ -779,6 +816,45 @@ def cmd_gate(a: argparse.Namespace) -> None:
     print("gate PASSED")
 
 
+# ---------------------------------------------------------------- gated run (the gate without hooks)
+RETRY_PROMPT = ("The completion gate failed after your last change. Fix the code so that the gate passes. "
+                "Do not delete tests, do not skip tests and do not edit the gate file.\n\n"
+                "Gate output:\n{gate}\n\nThe task was:\n{task}\n")
+
+
+def cmd_gated_run(a: argparse.Namespace) -> None:
+    """Run an agent command, then the gate; on a red gate give the output back to the agent. No hook is needed."""
+    ensure()
+    if not GATE.exists():
+        die(f"no {GATE}: the run would have no check. Create it with {{\"commands\": [...]}}")
+    task = Path(a.prompt_file).read_text(encoding="utf-8") if a.prompt_file else (a.prompt or "")
+    if not task.strip():
+        die("give the task with --prompt or --prompt-file")
+    if a.retries < 0:
+        die("--retries must be 0 or more")
+    me = [sys.executable, str(Path(__file__).resolve())]
+    prompt, cmd, rounds = task, a.agent_cmd, a.retries + 1
+    for n in range(1, rounds + 1):
+        print(f"gated-run: agent round {n} of at most {rounds}", flush=True)
+        try:
+            rc = subprocess.run(cmd, shell=True, input=prompt.encode("utf-8"), timeout=a.timeout).returncode
+        except subprocess.TimeoutExpired:
+            rc = f"a timeout after {a.timeout}s"
+        if rc != 0:
+            print(f"gated-run: the agent command ended with {rc}", flush=True)
+        g = subprocess.run(me + ["gate"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        out = (g.stdout + g.stderr).strip()
+        print(out, flush=True)
+        if g.returncode == 0:
+            log_event("gated-run", result="pass", rounds=n)
+            print(f"gated-run: the gate passed after {n} agent round(s)")
+            return
+        prompt, cmd = RETRY_PROMPT.format(gate=out[-3000:], task=task), a.retry_cmd or a.agent_cmd
+    log_event("gated-run", result="fail", rounds=rounds)
+    print(f"gated-run: the gate still fails after {rounds} agent round(s). The work is not done.")
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------- reproduction check
 def repro_fresh() -> bool:
     """True when a reproduction was verified for exactly this workspace."""
@@ -983,7 +1059,10 @@ def cmd_doctor(a: argparse.Namespace) -> None:
         miss = [x for x in (".gate-pass", "events.jsonl", ".session", ".repro") if x not in have]
         if miss:
             problems.append(f"{gi.as_posix()} does not ignore {', '.join(miss)}: run `memory.py init`")
-    if not SETTINGS.exists():
+    if plugin_note() and not SETTINGS.exists():
+        notes.append("the pack runs as a plugin: its hooks come from the plugin. They do not run in `claude -p --bare`: "
+                     "in unattended runs use `aqp-memory gated-run`")
+    elif not SETTINGS.exists():
         notes.append("no .claude/settings.json: the Claude Code hooks are not installed")
     else:
         problems += hook_problems()
@@ -993,7 +1072,7 @@ def cmd_doctor(a: argparse.Namespace) -> None:
             hooks = {}
             problems.append(f"{SETTINGS.as_posix()} is not valid JSON")
         if "gate_on_stop.py" in json.dumps(hooks.get("Stop", [])):
-            notes.append("hooks do not run in `claude -p --bare`: in unattended runs and in CI, run `memory.py gate` as its own step")
+            notes.append("hooks do not run in `claude -p --bare`: in unattended runs use `memory.py gated-run`, and in CI run `memory.py gate` as its own step")
         else:
             notes.append("the Stop gate is not installed (`install.py project . --with-stop-gate`): the gate runs only when the agent runs it")
     if not GATE.exists():
@@ -1161,6 +1240,16 @@ def main() -> None:
     s.add_argument("--ref", help="git ref whose gate.json counts, and against which test changes are reported "
                                  "(default: AGENT_GATE_REF, else HEAD; in CI use the base branch)")
     s.set_defaults(fn=cmd_gate)
+    s = sub.add_parser("gated-run", help="run an agent command, then the gate; a red gate goes back to the agent "
+                                         "(for unattended runs, where hooks may not run)")
+    s.add_argument("--agent-cmd", required=True, help="shell command that runs the agent; the task comes on stdin")
+    s.add_argument("--retry-cmd", help="command for the rounds after a red gate (default: --agent-cmd), "
+                                       "for example one that continues the same session")
+    s.add_argument("--prompt", help="the task")
+    s.add_argument("--prompt-file", help="file with the task")
+    s.add_argument("--retries", type=int, default=2, help="agent rounds after a red gate (default 2)")
+    s.add_argument("--timeout", type=int, default=3600, help="seconds for each agent round")
+    s.set_defaults(fn=cmd_gated_run)
     s = sub.add_parser("repro", help="show a fix: a test that fails on the base commit and passes on the current code")
     s.add_argument("--test", help="shell command that runs the reproduction test")
     s.add_argument("--test-file", action="append", default=[], help="test file to copy onto the base (repeatable)")
