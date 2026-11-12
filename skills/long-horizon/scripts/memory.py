@@ -807,12 +807,18 @@ def test_changes(ref: str) -> List[str]:
         status, _, path = line.partition("\t")
         if status.startswith("D") and TEST_PATH_RE.search(path):
             out.append(f"test file deleted: {path}")
-    cur = ""
+    cur, rewritten = "", {}
     for line in git("diff", "-U0", "--no-renames", ref, "--").splitlines():
         if line.startswith("+++ "):
             cur = line[6:] if line.startswith("+++ b/") else ""
+        elif line.startswith("--- "):
+            continue
         elif line.startswith("+") and cur and TEST_PATH_RE.search(cur) and SKIP_RE.search(line):
             out.append(f"skip marker added in {cur}: {clean(line[1:].strip(), 80)}")
+        elif line.startswith("-") and cur and TEST_PATH_RE.search(cur) and line[1:].strip() and not line[1:].lstrip().startswith(("#", "//")):
+            rewritten[cur] = rewritten.get(cur, 0) + 1  # a line of an existing test was removed or replaced
+    # a new test is normal work. A changed expectation in an existing test is the usual way to make a red test green.
+    out += [f"existing test changed: {path} ({n} line(s) removed or replaced)" for path, n in sorted(rewritten.items())]
     return out[:20]
 
 

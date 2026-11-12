@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — evals in the repository, hardening (docs/EVOLUTION.md: E0, E5, E6)
+- **`evals/judge-cases/`**: 24 calibration cases for the evaluator (12 wrong, 12 correct patches from agent runs, labelled by hidden tests), with a label check that uses no agent. The installer does not copy `evals/`.
+- **`skill-eval judge` takes cases with their own code** (`"repo"`, `"patch"`): the judge works in a new repository, away from the labels.
+- **`docs/RESULTS.md`**: the measured numbers, with intervals, costs and limits.
+- **The gate warns when the change removes or replaces lines of an existing test.** New tests give no warning.
+- **CI template**: an `audit` job with `pip-audit` and `npm audit`.
+- **`install.py --codeowners OWNER`** and **`--with-sandbox`** (Claude Code sandbox with `failIfUnavailable`, and no read of `.env` and `secrets/` files).
+- 5 tests.
+
 ## Unreleased — smaller memory, complexity of the change (docs/EVOLUTION.md: E7, E8)
 - **The session digest has a size limit** (6000 characters, `--max-chars`).
 - **A lesson that an agent records waits for a person.** It enters the digest after `memory.py lesson confirm --key <key>` in a terminal. Each new lesson records its origin, the commit and the session. Older lessons stay visible.

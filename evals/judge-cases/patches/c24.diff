@@ -1,0 +1,106 @@
+diff --git a/ratelimit.py b/ratelimit.py
+index 9974167..9bfa9a9 100755
+--- a/ratelimit.py
++++ b/ratelimit.py
+@@ -14,13 +14,43 @@ Rules
+ 7. The class is thread-safe: concurrent calls to allow() never grant more tokens than the bucket holds.
+ """
+ 
++import threading
++
+ 
+ class TokenBucket:
+     def __init__(self, capacity, refill_per_second, clock):
+-        raise NotImplementedError
++        if capacity <= 0:
++            raise ValueError("capacity must be greater than 0")
++        if refill_per_second < 0:
++            raise ValueError("refill_per_second must not be negative")
++        self._capacity = capacity
++        self._refill_per_second = refill_per_second
++        self._clock = clock
++        self._tokens = float(capacity)
++        self._last = clock()
++        self._lock = threading.Lock()
++
++    def _refill(self):
++        now = self._clock()
++        elapsed = now - self._last
++        if elapsed < 0:
++            elapsed = 0.0
++        self._last = now
++        self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_per_second)
+ 
+     def allow(self, cost=1):
+-        raise NotImplementedError
++        if cost <= 0:
++            raise ValueError("cost must be greater than 0")
++        if cost > self._capacity:
++            raise ValueError("cost must not exceed capacity")
++        with self._lock:
++            self._refill()
++            if self._tokens >= cost:
++                self._tokens -= cost
++                return True
++            return False
+ 
+     def available(self):
+-        raise NotImplementedError
++        with self._lock:
++            self._refill()
++            return self._tokens
+diff --git a/tests/test_ratelimit.py b/tests/test_ratelimit.py
+index 2f7c105..aee2255 100755
+--- a/tests/test_ratelimit.py
++++ b/tests/test_ratelimit.py
+@@ -13,6 +13,50 @@ class TokenBucketTest(unittest.TestCase):
+         now[0] = 1.0
+         self.assertTrue(bucket.allow())
+ 
++    def test_failed_allow_removes_nothing(self):
++        now = [0.0]
++        bucket = TokenBucket(3, 0, lambda: now[0])
++        self.assertTrue(bucket.allow(cost=2))
++        self.assertFalse(bucket.allow(cost=2))
++        self.assertEqual(bucket.available(), 1.0)
++
++    def test_cost_takes_multiple_tokens(self):
++        now = [0.0]
++        bucket = TokenBucket(5, 0, lambda: now[0])
++        self.assertTrue(bucket.allow(cost=3))
++        self.assertFalse(bucket.allow(cost=3))
++        self.assertEqual(bucket.available(), 2.0)
++
++    def test_fractional_refill_and_capacity_cap(self):
++        now = [0.0]
++        bucket = TokenBucket(2, 2, lambda: now[0])
++        bucket.allow(cost=2)
++        now[0] = 0.25
++        self.assertAlmostEqual(bucket.available(), 0.5)
++        now[0] = 100.0
++        self.assertEqual(bucket.available(), 2.0)
++
++    def test_clock_going_backwards_gives_zero_elapsed(self):
++        now = [10.0]
++        bucket = TokenBucket(4, 1, lambda: now[0])
++        bucket.allow(cost=4)
++        now[0] = 5.0
++        self.assertEqual(bucket.available(), 0.0)
++        now[0] = 6.0
++        self.assertAlmostEqual(bucket.available(), 1.0)
++
++    def test_invalid_arguments_raise(self):
++        clock = lambda: 0.0
++        with self.assertRaises(ValueError):
++            TokenBucket(0, 1, clock)
++        with self.assertRaises(ValueError):
++            TokenBucket(1, -1, clock)
++        bucket = TokenBucket(2, 1, clock)
++        with self.assertRaises(ValueError):
++            bucket.allow(cost=0)
++        with self.assertRaises(ValueError):
++            bucket.allow(cost=3)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

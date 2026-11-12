@@ -1,0 +1,104 @@
+diff --git a/shop/invoice.py b/shop/invoice.py
+index 2f8a9f0..accc3e5 100755
+--- a/shop/invoice.py
++++ b/shop/invoice.py
+@@ -1,14 +1,15 @@
+ """Invoices."""
+-from shop.pricing import round_price
+-from shop.tax import tax_for
++from shop.pricing import quantize_cent, to_dec
+ 
+ 
+ def line_total(unit_price, qty):
+-    return round_price(unit_price * qty)
++    return float(quantize_cent(to_dec(unit_price) * to_dec(qty)))
+ 
+ 
+ def invoice(lines, rate):
+     """lines: list of (unit_price, qty)."""
+-    subtotal = round_price(sum(line_total(price, qty) for price, qty in lines))
+-    tax = tax_for(subtotal, rate)
+-    return {"subtotal": subtotal, "tax": tax, "total": round_price(subtotal + tax)}
++    subtotal = sum((to_dec(line_total(price, qty)) for price, qty in lines), to_dec(0))
++    subtotal = quantize_cent(subtotal)
++    tax = quantize_cent(subtotal * to_dec(rate))
++    total = quantize_cent(subtotal + tax)
++    return {"subtotal": float(subtotal), "tax": float(tax), "total": float(total)}
+diff --git a/shop/pricing.py b/shop/pricing.py
+index c14f223..d8c7e07 100755
+--- a/shop/pricing.py
++++ b/shop/pricing.py
+@@ -1,5 +1,25 @@
+-"""Price rounding."""
++"""Price rounding.
++
++Money follows docs/SPEC.md: a number means what it shows when printed, all
++arithmetic is exact decimal arithmetic, and rounding happens once, on the exact
++result, with half cents rounding away from zero.
++"""
++from decimal import ROUND_HALF_UP, Decimal
++
++CENT = Decimal("0.01")
++
++
++def to_dec(value):
++    """Exact decimal of a float/int as written (str gives the shortest printed form)."""
++    if isinstance(value, Decimal):
++        return value
++    return Decimal(str(value))
++
++
++def quantize_cent(value):
++    """Round an exact Decimal to two decimals, half away from zero."""
++    return to_dec(value).quantize(CENT, rounding=ROUND_HALF_UP)
+ 
+ 
+ def round_price(value):
+-    return round(value, 2)
++    return float(quantize_cent(value))
+diff --git a/shop/tax.py b/shop/tax.py
+index a8b7190..606201b 100755
+--- a/shop/tax.py
++++ b/shop/tax.py
+@@ -1,6 +1,6 @@
+ """Tax."""
+-from shop.pricing import round_price
++from shop.pricing import quantize_cent, round_price, to_dec
+ 
+ 
+ def tax_for(amount, rate):
+-    return round_price(amount * rate)
++    return float(quantize_cent(to_dec(amount) * to_dec(rate)))
+diff --git a/tests/test_pricing.py b/tests/test_pricing.py
+index e6fe489..6f5289c 100755
+--- a/tests/test_pricing.py
++++ b/tests/test_pricing.py
+@@ -1,6 +1,7 @@
+ import unittest
+ 
+-from shop.invoice import invoice
++from shop.invoice import invoice, line_total
++from shop.tax import tax_for
+ from shop.pricing import round_price
+ 
+ 
+@@ -12,6 +13,19 @@ class PricingTest(unittest.TestCase):
+         self.assertEqual(round_price(1.0), 1.0)
+         self.assertEqual(round_price(19.994), 19.99)
+ 
++    def test_negative_half_cent_rounds_away_from_zero(self):
++        self.assertEqual(round_price(-2.675), -2.68)
++
++    def test_printed_value_is_what_counts(self):
++        self.assertEqual(round_price(1.005), 1.01)
++
++    def test_line_total_is_exact_before_rounding(self):
++        self.assertEqual(line_total(1.005, 3), 3.02)
++
++    def test_tax_rate_is_exact(self):
++        self.assertEqual(tax_for(10.0, 0.175), 1.75)
++        self.assertEqual(tax_for(0.1, 0.175), 0.02)
++
+     def test_invoice(self):
+         self.assertEqual(invoice([(10.0, 2)], 0.1), {"subtotal": 20.0, "tax": 2.0, "total": 22.0})
+ 

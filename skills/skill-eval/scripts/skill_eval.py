@@ -561,11 +561,40 @@ def judge_summary(rows: List[dict]) -> dict:
     }
 
 
+def prepare_case_repo(base: Path, case: dict, skills_src: Path, agents_src: Optional[Path]) -> Path:
+    """A fresh repository for one judge case: the case's own code, committed, with its patch applied and not committed.
+
+    The judge works there, and nowhere near the case list: the labels and the other cases are not in its reach.
+    """
+    ws = Path(tempfile.mkdtemp(prefix="skill-eval-case-"))
+    try:
+        shutil.copytree(base / case["repo"], ws, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+        for args in (("init", "-q"), ("add", "-A"), ("-c", "user.email=case@localhost", "-c", "user.name=case", "commit", "-q", "-m", "base")):
+            r = git(*args, cwd=ws)
+            if r.returncode != 0:
+                die(f"case {case['id']}: git {args[0]} failed: {r.stderr.strip()[-200:]}")
+        if case.get("patch"):
+            r = git("apply", "--whitespace=nowarn", str((base / case["patch"]).resolve()), cwd=ws)
+            if r.returncode != 0:
+                die(f"case {case['id']}: the patch does not apply: {r.stderr.strip()[-200:]}")
+        shutil.copytree(skills_src, ws / ".agents" / "skills", ignore=shutil.ignore_patterns("__pycache__", ".backup"))
+        shutil.copytree(skills_src, ws / ".claude" / "skills", ignore=shutil.ignore_patterns("__pycache__", ".backup"))
+        if agents_src and agents_src.is_dir():
+            shutil.copytree(agents_src, ws / ".claude" / "agents", ignore=shutil.ignore_patterns(".backup"))
+        (ws / ".git" / "info" / "exclude").write_text(".agents/\n.claude/\n.skill-eval-prompt.txt\n", encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(ws, ignore_errors=True)
+        raise
+    return ws
+
+
 def cmd_judge(a) -> None:
     """Measure an evaluator (a judge) on cases with a known answer: how often does it approve wrong work?
 
     Each case is a line of JSON: {"id", "label": "correct" | "wrong", "prompt", "setup"?}. `setup` is a shell
     command that puts the work to judge into a fresh checkout (for example `git apply cases/x.diff`).
+    A case with "repo" (a folder, relative to the case file) and "patch" (a diff file) brings its own code:
+    the judge then works in a new repository with that code and the patch, away from this repository.
     The judge command gets the prompt and must print `VERDICT: PASS`, `VERDICT: FAIL` or `VERDICT: UNKNOWN`.
     Keep the labels out of the prompt and out of the repository that the judge can read.
     """
@@ -576,6 +605,8 @@ def cmd_judge(a) -> None:
     skills = (repo / a.skills).resolve()
     if not skills.is_dir():
         die(f"skills dir {skills} not found")
+    # subagents for a case with its own repository: this project's, else the pack's templates (a pack checkout)
+    agents = next((d for d in (repo / ".claude" / "agents", repo / "templates" / ".claude" / "agents") if d.is_dir()), None)
     cases = []
     for i, line in enumerate(Path(a.cases).read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
@@ -596,7 +627,8 @@ def cmd_judge(a) -> None:
     rows = []
     for c in cases:
         for rep in range(a.repeats):
-            wt = prepare_worktree(repo, skills, None)
+            own = bool(c.get("repo"))
+            wt = prepare_case_repo(Path(a.cases).resolve().parent, c, skills, agents) if own else prepare_worktree(repo, skills, None)
             t0 = time.time()
             try:
                 if c.get("setup"):
@@ -622,7 +654,10 @@ def cmd_judge(a) -> None:
                              "seconds": round(time.time() - t0, 1), **parse_usage(stdout)})
                 print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}" + ("" if found else " (no verdict line)"), flush=True)
             finally:
-                cleanup(repo, wt)
+                if own:
+                    shutil.rmtree(wt, ignore_errors=True)
+                else:
+                    cleanup(repo, wt)
     s = judge_summary(rows)
     RESULTS.mkdir(parents=True, exist_ok=True)
     out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-judge.json"

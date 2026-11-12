@@ -37,3 +37,27 @@ jobs:
           python3 .agents/skills/long-horizon/scripts/memory.py gate --force | tee "$RUNNER_TEMP/gate.log" || status=$?
           grep '^gate WARNING: ' "$RUNNER_TEMP/gate.log" | sed 's/^gate WARNING: /::warning title=Quality gate::/' || true
           exit $status
+  # Known vulnerabilities in the dependencies. The secret scan is part of the gate above (`memory.py secrets`).
+  # For a dedicated secret scanner, add a gitleaks step here, pinned to a version that you reviewed.
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Python dependencies (pip-audit)
+        if: hashFiles('requirements*.txt', 'pyproject.toml') != ''
+        run: |
+          python -m pip install --quiet pip-audit==2.10.1
+          if ls requirements*.txt >/dev/null 2>&1; then
+            for f in requirements*.txt; do pip-audit --requirement "$f"; done
+          else
+            python -m pip install --quiet . && pip-audit
+          fi
+      - name: JavaScript dependencies (npm audit)
+        if: hashFiles('package-lock.json') != ''
+        run: npm audit --audit-level=high

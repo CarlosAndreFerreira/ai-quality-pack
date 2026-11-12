@@ -1,0 +1,131 @@
+diff --git a/ratelimit.py b/ratelimit.py
+index 9974167..ae028aa 100755
+--- a/ratelimit.py
++++ b/ratelimit.py
+@@ -15,12 +15,46 @@ Rules
+ """
+ 
+ 
++import threading
++
++
+ class TokenBucket:
+     def __init__(self, capacity, refill_per_second, clock):
+-        raise NotImplementedError
++        if capacity <= 0:
++            raise ValueError("capacity must be greater than 0")
++        if refill_per_second < 0:
++            raise ValueError("refill_per_second must not be negative")
++        self._capacity = capacity
++        self._refill_per_second = refill_per_second
++        self._clock = clock
++        self._tokens = float(capacity)
++        self._last = clock()
++        self._lock = threading.Lock()
++
++    def _refill(self):
++        # Caller must hold self._lock.
++        now = self._clock()
++        # Rule 4: a clock that goes backwards yields zero elapsed time, and
++        # the next refill is measured from the lower value.
++        elapsed = max(0.0, now - self._last)
++        self._last = now
++        self._tokens = min(
++            self._capacity, self._tokens + elapsed * self._refill_per_second
++        )
+ 
+     def allow(self, cost=1):
+-        raise NotImplementedError
++        if cost <= 0:
++            raise ValueError("cost must be greater than 0")
++        if cost > self._capacity:
++            raise ValueError("cost must not exceed capacity")
++        with self._lock:
++            self._refill()
++            if self._tokens >= cost:
++                self._tokens -= cost
++                return True
++            return False
+ 
+     def available(self):
+-        raise NotImplementedError
++        with self._lock:
++            self._refill()
++            return self._tokens
+diff --git a/tests/test_ratelimit.py b/tests/test_ratelimit.py
+index 2f7c105..d1c7a64 100755
+--- a/tests/test_ratelimit.py
++++ b/tests/test_ratelimit.py
+@@ -13,6 +13,72 @@ class TokenBucketTest(unittest.TestCase):
+         now[0] = 1.0
+         self.assertTrue(bucket.allow())
+ 
++    def test_fractional_refill_and_cap(self):
++        now = [0.0]
++        bucket = TokenBucket(2, 1, lambda: now[0])
++        bucket.allow(2)
++        now[0] = 0.5
++        self.assertFalse(bucket.allow())
++        self.assertAlmostEqual(bucket.available(), 0.5)
++        now[0] = 100.0
++        self.assertAlmostEqual(bucket.available(), 2.0)
++
++    def test_failed_allow_removes_nothing(self):
++        now = [0.0]
++        bucket = TokenBucket(3, 0, lambda: now[0])
++        self.assertTrue(bucket.allow(2))
++        self.assertFalse(bucket.allow(2))
++        self.assertAlmostEqual(bucket.available(), 1.0)
++
++    def test_available_removes_nothing(self):
++        now = [0.0]
++        bucket = TokenBucket(5, 0, lambda: now[0])
++        self.assertAlmostEqual(bucket.available(), 5.0)
++        self.assertTrue(bucket.allow(5))
++        self.assertAlmostEqual(bucket.available(), 0.0)
++
++    def test_clock_going_backwards_gives_zero_elapsed(self):
++        now = [10.0]
++        bucket = TokenBucket(1, 1, lambda: now[0])
++        self.assertTrue(bucket.allow())
++        now[0] = 5.0
++        self.assertFalse(bucket.allow())
++        self.assertAlmostEqual(bucket.available(), 0.0)
++        now[0] = 5.5
++        self.assertAlmostEqual(bucket.available(), 0.5)
++
++    def test_invalid_arguments_raise(self):
++        clock = lambda: 0.0
++        with self.assertRaises(ValueError):
++            TokenBucket(0, 1, clock)
++        with self.assertRaises(ValueError):
++            TokenBucket(1, -1, clock)
++        bucket = TokenBucket(2, 1, clock)
++        with self.assertRaises(ValueError):
++            bucket.allow(0)
++        with self.assertRaises(ValueError):
++            bucket.allow(3)
++
++    def test_concurrent_allow_never_overgrants(self):
++        import threading
++
++        bucket = TokenBucket(100, 0, lambda: 0.0)
++        granted = []
++        lock = threading.Lock()
++
++        def worker():
++            for _ in range(50):
++                if bucket.allow():
++                    with lock:
++                        granted.append(1)
++
++        threads = [threading.Thread(target=worker) for _ in range(8)]
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join()
++        self.assertEqual(len(granted), 100)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

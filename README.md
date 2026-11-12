@@ -2,7 +2,7 @@
 
 A portable quality layer for AI coding agents (Claude Code, Google Antigravity, Codex, OpenCode, and any [Agent Skills](https://agentskills.io/specification) client). It covers deterministic gates, minimal rules, long-horizon memory, an independent evaluator, learning from mistakes, and **measured**, human-approved skill evolution.
 
-> Status: v0.4, experimental. The design follows published work (see [Design sources](#design-sources)), but the pack's own effect on outcomes has **not** been measured yet. Use `skill-eval` on your tasks to find out.
+> Status: v0.5, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
 
 ## Why
 
@@ -238,6 +238,24 @@ python3 .agents/skills/long-horizon/scripts/memory.py complexity --base origin/m
 - It reports the Python functions that the change made more complex than the limit. A function that was over the limit before, and did not grow, is not reported.
 - `"max_complexity": 10` in `gate.json` makes the gate show these functions as warnings. It does not block. The installer sets it for Python projects, with `"max_changed_lines": 400`.
 - The count is an approximation of cyclomatic complexity. Python only. For other languages, put the linter's rule in the gate commands.
+
+### Evals of the pack
+
+- `evals/judge-cases/` has 24 cases that measure the evaluator: 12 wrong patches and 12 correct patches from agent runs, labelled by hidden tests. `python evals/judge-cases/check_labels.py` checks the labels without an agent. See [evals/README.md](evals/README.md).
+- A judge case can bring its own code: `"repo"` and `"patch"` in the case line. The judge then works in a new repository, away from the labels.
+- [docs/RESULTS.md](docs/RESULTS.md) has the numbers that we measured, with intervals, costs and limits. It includes the results that are not good for the pack.
+
+### CI audit, CODEOWNERS and sandbox
+
+```bash
+python3 ai-quality-pack/install.py project . --with-ci --codeowners @your-org/your-team --with-sandbox
+```
+
+- The CI workflow has an `audit` job: `pip-audit` for Python dependencies and `npm audit` for JavaScript dependencies. The secret scan is part of the gate.
+- `--codeowners` adds CODEOWNERS lines for the gate file, the hooks, CI and the tests. It has an effect only with a branch protection rule that requires a review from code owners.
+- `--with-sandbox` writes Claude Code settings: no read of `.env` and `secrets/` files, and the sandbox for shell commands with `failIfUnavailable`. Claude Code then stops at startup where the sandbox cannot run. On native Windows the installer writes only the read rules.
+- The sandbox covers shell commands. File tools, MCP servers and hooks follow the permission rules.
+- The gate warns when the change removes or replaces lines of an existing test. New tests give no warning. In our runs the warning came for wrong patches (6 of 19) and for correct patches (5 of 23): it tells a person where to look, it does not show that the work is wrong.
 
 ### Unattended runs: the gate without hooks
 

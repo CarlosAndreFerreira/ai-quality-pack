@@ -344,6 +344,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     for hook in ("format_on_edit.py", "gate_on_stop.py"):
         add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / hook, root / ".claude" / "hooks" / hook, a.upgrade)
     merge_settings(root / ".claude" / "settings.json", a.with_stop_gate)
+    if a.with_sandbox:
+        add_sandbox(root / ".claude" / "settings.json", a.force)
+    if a.codeowners:
+        add_codeowners(root, a.codeowners)
     for p in profiles:
         pdir = PACK / "templates" / "profiles" / p
         for f in pdir.iterdir():
@@ -367,6 +371,73 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
             log(f"added: {gate} (edit to match this repo)")
     else:
         log("memory: init .agent-memory/ (+ gate.json from profile)")
+
+
+# ---------------------------------------------------------------- CODEOWNERS and sandbox (opt-in)
+OWNERS_BEGIN, OWNERS_END = "# >>> AI Quality Pack: review of the checks themselves", "# <<< AI Quality Pack"
+OWNED_PATHS = ("/.agent-memory/gate.json", "/.agents/", "/.claude/", "/.github/", "/tests/")
+SECRET_READ_DENY = ["Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"]
+
+
+def add_codeowners(root: Path, owner: str) -> None:
+    """A change of the gate, the hooks, CI or the tests then needs a review by `owner` (with branch protection)."""
+    if not re.fullmatch(r"@[\w.-]+(/[\w.-]+)?|[\w.+-]+@[\w.-]+", owner):
+        sys.exit(f"--codeowners needs a GitHub user or team (for example @your-org/your-team), not {owner!r}")
+    path = root / ".github" / "CODEOWNERS"
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    block = "\n".join([OWNERS_BEGIN] + [f"{p} {owner}" for p in OWNED_PATHS] + [OWNERS_END]) + "\n"
+    if OWNERS_BEGIN in old:
+        new = re.sub(re.escape(OWNERS_BEGIN) + r".*?" + re.escape(OWNERS_END) + r"\n?", block, old, flags=re.S)
+    else:
+        new = old + ("" if not old or old.endswith("\n") else "\n") + block
+    log(f"{'updated' if path.exists() else 'added'}: {path} ({owner} reviews the gate, the hooks, CI and the tests)")
+    log("NOTE: CODEOWNERS has an effect only with a branch protection rule that requires a review from code owners.")
+    if not DRY:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new, encoding="utf-8")
+
+
+def remove_codeowners(root: Path) -> None:
+    path = root / ".github" / "CODEOWNERS"
+    if not path.exists() or OWNERS_BEGIN not in path.read_text(encoding="utf-8"):
+        return
+    new = re.sub(re.escape(OWNERS_BEGIN) + r".*?" + re.escape(OWNERS_END) + r"\n?", "", path.read_text(encoding="utf-8"), flags=re.S)
+    if new.strip():
+        log(f"removed the pack's lines from: {path}")
+        if not DRY:
+            path.write_text(new, encoding="utf-8")
+    else:
+        remove(path)
+
+
+def add_sandbox(path: Path, force: bool) -> None:
+    """Claude Code settings: no read of secret files, and shell commands in the operating system sandbox."""
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log(f"WARN: {path} is not valid JSON; not modified")
+            return
+    if not isinstance(data, dict):
+        log(f"WARN: {path} has an unexpected shape; not modified")
+        return
+    deny = data.setdefault("permissions", {}).setdefault("deny", [])
+    deny += [r for r in SECRET_READ_DENY if r not in deny]
+    if os.name == "nt" and not force:
+        log("NOTE: the sandbox is not written on Windows: Claude Code has no sandbox on native Windows, and with "
+            "`failIfUnavailable` it does not start there. The read rules for secret files are written. Use WSL2, or --force.")
+    else:
+        sandbox = data.setdefault("sandbox", {})
+        sandbox.update(enabled=True, failIfUnavailable=True)
+        log("NOTE: sandbox on, and Claude Code stops at startup where the sandbox cannot run (native Windows; Linux and "
+            "WSL2 without `bubblewrap` and `socat`). The sandbox covers shell commands only: file tools, MCP servers and "
+            "hooks follow the permission rules.")
+    log(f"{'merged' if path.exists() else 'added'}: {path} (no read of .env and secrets/ files"
+        + ("" if os.name == "nt" and not force else "; sandbox for shell commands") + ")")
+    if not DRY:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------- uninstall
@@ -476,6 +547,7 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
     remove_pack_file(tpl / "CLAUDE.md", root / "CLAUDE.md", False)
     unmerge_settings(root / ".claude" / "settings.json")
+    remove_codeowners(root)
     for d in ("hooks", "agents"):
         pycache = root / ".claude" / d / "__pycache__"
         if pycache.is_dir() and not any(p for p in (root / ".claude" / d).iterdir() if p.name != "__pycache__"):
@@ -492,7 +564,8 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
         log(f"kept: {root / 'AGENTS.md'} (it has your project's commands; edit or delete it by hand)")
     for backup in sorted(root.glob(".claude/**/.backup")) + sorted(root.glob(".agents/**/.backup")):
         log(f"kept: {backup} (backups from --upgrade)")
-    log("NOTE: files from a language profile (for example .editorconfig) and the EGM plugin are not removed.")
+    log("NOTE: files from a language profile (for example .editorconfig) and the EGM plugin are not removed. "
+        "Sandbox and permission settings from --with-sandbox stay in .claude/settings.json: remove them by hand.")
 
 
 def uninstall_global(a: argparse.Namespace) -> None:
@@ -523,6 +596,10 @@ def main() -> None:
     ap.add_argument("--with-egm", action="store_true", help="install Google's Elephant-Goldfish Model plugin")
     ap.add_argument("--with-stop-gate", action="store_true", help="Claude Code Stop hook enforcing the completion gate")
     ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
+    ap.add_argument("--with-sandbox", action="store_true",
+                    help="Claude Code settings: sandbox for shell commands (it must be available) and no read of .env and secrets/ files")
+    ap.add_argument("--codeowners", metavar="OWNER",
+                    help="add CODEOWNERS lines: OWNER (for example @your-org/your-team) reviews the gate, the hooks, CI and the tests")
     ap.add_argument("--with-issue-workflow", action="store_true",
                     help="GitHub Actions workflow: the label `agent` on an issue starts an agent run that ends in a draft pull request")
     ap.add_argument("--dry-run", action="store_true")

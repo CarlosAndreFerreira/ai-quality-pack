@@ -1,0 +1,25 @@
+id	label	benchmark run
+c01	correct	results-h1-haiku/artifacts/s3-pricing-regress__A0__r2/diff.patch
+c02	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r2/diff.patch
+c03	wrong	results-calib-haiku/artifacts/s3-ratelimit__A0__r3/diff.patch
+c04	correct	results-h1-haiku/artifacts/s3-pricing-regress__A0__r3/diff.patch
+c05	correct	results-h1-haiku/artifacts/s3-pricing-regress__A0__r1/diff.patch
+c06	correct	results-calib/artifacts/s3-ratelimit__A0__r1/diff.patch
+c07	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r8/diff.patch
+c08	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r7/diff.patch
+c09	wrong	results-h1-haiku/artifacts/s3-ratelimit__A3__r9/diff.patch
+c10	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r5/diff.patch
+c11	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r3/diff.patch
+c12	correct	results-calib/artifacts/s3-ratelimit__A0__r3/diff.patch
+c13	wrong	results-calib-haiku/artifacts/s3-pricing-regress__A0__r1/diff.patch
+c14	correct	results-h1-haiku/artifacts/s3-ratelimit__A0__r6/diff.patch
+c15	wrong	results-calib-haiku/artifacts/s3-ratelimit__A0__r1/diff.patch
+c16	wrong	results-h1-haiku/artifacts/s3-ratelimit__A2__r4/diff.patch
+c17	wrong	results-h1-haiku/artifacts/s3-pricing-regress__A2__r4/diff.patch
+c18	wrong	results-calib-haiku/artifacts/s3-ratelimit__A0__r2/diff.patch
+c19	wrong	results-h1-haiku/artifacts/s3-ratelimit__A0__r10/diff.patch
+c20	correct	results-calib/artifacts/s3-ratelimit__A0__r2/diff.patch
+c21	wrong	results-h1-haiku/artifacts/s3-pricing-regress__A0__r7/diff.patch
+c22	wrong	results-h1-haiku/artifacts/s3-ratelimit__A0__r1/diff.patch
+c23	wrong	results-h1-haiku/artifacts/s3-ratelimit__A0__r4/diff.patch
+c24	wrong	results-h1-haiku/artifacts/s3-ratelimit__A3__r3/diff.patch

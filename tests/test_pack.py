@@ -1624,5 +1624,118 @@ class MemoryAndComplexityTests(unittest.TestCase):
             self.assertEqual((gate["max_complexity"], gate["max_changed_lines"]), (10, 400))
 
 
+CASE_JUDGE = """
+import os, subprocess, sys
+here = sorted(os.listdir('.'))
+assert 'cases.jsonl' not in here and 'hidden' not in here, here      # the labels are not in reach of the judge
+assert os.path.isfile('.claude/agents/evaluator.md') and os.path.isdir('.agents/skills/evaluator'), here
+diff = subprocess.run(['git', 'diff', 'HEAD'], capture_output=True, text=True).stdout
+assert 'calc.py' in diff and '.claude' not in diff, diff              # only the work under review is in the diff
+print('VERDICT: FAIL' if 'a - b' in open('calc.py').read() else 'VERDICT: PASS')
+"""
+
+
+class EvalsAndHardeningTests(unittest.TestCase):
+    """The shipped calibration set, cases with their own repository, changed tests, CODEOWNERS and sandbox."""
+
+    def _git(self, root, *args):
+        r = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_calibration_set_labels_match_the_hidden_tests(self):
+        r = run([PACK / "evals/judge-cases/check_labels.py"], PACK)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("24 cases (12 wrong, 12 correct): 0 label(s) do not match", r.stdout)
+        cases = [json.loads(l) for l in (PACK / "evals/judge-cases/cases.jsonl").read_text(encoding="utf-8").splitlines()]
+        for c in cases:
+            self.assertRegex(c["id"], r"^c\d\d$")                     # the id does not give the label away
+            self.assertNotIn("wrong", c["patch"])
+            self.assertNotIn("hidden", c["prompt"])
+        installed = [p.name for p in (PACK / "skills").iterdir()] + [p.name for p in (PACK / "templates").iterdir()]
+        self.assertNotIn("evals", installed)                          # the installer copies skills and templates only
+
+    def test_judge_runs_a_case_with_its_own_repository_away_from_the_labels(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, cases = Path(t) / "project", Path(t) / "caseset"
+            root.mkdir()
+            self._git(root, "init", "-q")
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "init")
+            (cases / "repos/calc").mkdir(parents=True)
+            (cases / "hidden").mkdir()
+            (cases / "repos/calc/calc.py").write_text("def add(a, b):\n    return 0\n", encoding="utf-8")
+            patch = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return 0\n+    return a %s b\n"
+            (cases / "good.diff").write_text(patch % "+", encoding="utf-8")
+            (cases / "bad.diff").write_text(patch % "-", encoding="utf-8")
+            (cases / "judge.py").write_text(CASE_JUDGE, encoding="utf-8")
+            (cases / "cases.jsonl").write_text("\n".join(json.dumps(
+                {"id": i, "label": label, "repo": "repos/calc", "patch": f"{name}.diff", "prompt": "Judge the change."})
+                for i, label, name in (("c01", "correct", "good"), ("c02", "wrong", "bad"))) + "\n", encoding="utf-8")
+            py = sys.executable.replace("\\", "/")
+            r = run([EVAL, "judge", "--cases", cases / "cases.jsonl", "--judge-cmd", f'"{py}" "{(cases / "judge.py").as_posix()}"'], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("wrong work approved:    0/1", r.stdout)
+            self.assertIn("correct work rejected:  0/1", r.stdout)
+            leftovers = [p for p in Path(tempfile.gettempdir()).glob("skill-eval-case-*") if (p / "calc.py").exists()]
+            self.assertEqual(leftovers, [])                           # each case repository is removed
+
+    def test_gate_warns_when_the_change_rewrites_an_existing_test(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            self._git(root, "init", "-q")
+            (root / "tests").mkdir()
+            (root / "tests/test_calc.py").write_text("def test_add():\n    assert 2 + 2 == 4\n", encoding="utf-8")
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            py = sys.executable.replace("\\", "/")
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "print(1)"']}), encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            (root / "tests/test_calc.py").write_text("def test_add():\n    assert 2 + 2 == 4\n\n\ndef test_more():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+            (root / "tests/test_new.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+            self.assertNotIn("existing test changed", run([MEM, "gate"], root, stdin="").stdout)   # new tests are normal work
+            (root / "tests/test_calc.py").write_text("def test_add():\n    assert 2 + 2 == 5\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate WARNING: existing test changed: tests/test_calc.py (1 line(s) removed or replaced)", r.stdout)
+            self.assertIn("Review risk: HIGH", run([MEM, "evidence"], root).stdout)
+
+    def test_installer_adds_codeowners_and_sandbox_settings_on_request(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            self._git(root, "init", "-q")
+            (root / ".github").mkdir()
+            (root / ".github/CODEOWNERS").write_text("*.md @docs-team\n", encoding="utf-8")
+            base = [INST, "project", root, "--no-upstream", "--profile", "none"]
+            self.assertNotEqual(run(base + ["--codeowners", "not an owner"], root).returncode, 0)
+            r = run(base + ["--codeowners", "@acme/quality", "--with-sandbox"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            owners = (root / ".github/CODEOWNERS").read_text(encoding="utf-8")
+            self.assertIn("*.md @docs-team", owners)
+            for path in ("/.agent-memory/gate.json", "/.claude/", "/.github/", "/tests/"):
+                self.assertIn(f"{path} @acme/quality", owners)
+            self.assertIn("branch protection", r.stdout)
+            self.assertEqual(run(base + ["--codeowners", "@acme/quality"], root).returncode, 0)   # a second run adds no second block
+            self.assertEqual((root / ".github/CODEOWNERS").read_text(encoding="utf-8").count("/tests/ @acme/quality"), 1)
+            settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings["permissions"]["deny"], ["Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"])
+            self.assertIn("SessionStart", settings["hooks"])
+            if os.name == "nt":
+                self.assertNotIn("sandbox", settings)                 # no sandbox on native Windows
+                self.assertIn("not written on Windows", r.stdout)
+            else:
+                self.assertEqual(settings["sandbox"], {"enabled": True, "failIfUnavailable": True})
+            self.assertEqual(run([INST, "uninstall", root], root).returncode, 0)
+            self.assertEqual((root / ".github/CODEOWNERS").read_text(encoding="utf-8"), "*.md @docs-team\n")
+
+    def test_ci_template_audits_dependencies_with_a_pinned_tool(self):
+        wf = (PACK / "templates/ci/quality-gate.yml").read_text(encoding="utf-8")
+        self.assertIn("\n  audit:\n", wf)
+        self.assertRegex(wf, r"pip-audit==\d+\.\d+\.\d+")
+        self.assertIn("npm audit --audit-level=high", wf)
+        self.assertNotIn("\t", wf)
+
+
 if __name__ == "__main__":
     unittest.main()

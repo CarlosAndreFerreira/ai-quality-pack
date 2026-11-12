@@ -1,0 +1,52 @@
+diff --git a/ratelimit.py b/ratelimit.py
+index 9974167..b349d31 100755
+--- a/ratelimit.py
++++ b/ratelimit.py
+@@ -14,13 +14,44 @@ Rules
+ 7. The class is thread-safe: concurrent calls to allow() never grant more tokens than the bucket holds.
+ """
+ 
++import threading
++
+ 
+ class TokenBucket:
+     def __init__(self, capacity, refill_per_second, clock):
+-        raise NotImplementedError
++        if capacity <= 0:
++            raise ValueError("capacity must be > 0")
++        if refill_per_second < 0:
++            raise ValueError("refill_per_second must be >= 0")
++        self._capacity = float(capacity)
++        self._rate = float(refill_per_second)
++        self._clock = clock
++        self._lock = threading.Lock()
++        self._tokens = float(capacity)
++        self._last = clock()
++
++    def _refill(self):
++        # Caller must hold self._lock.
++        now = self._clock()
++        elapsed = now - self._last
++        if elapsed > 0:
++            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
++        # On a backwards clock, elapsed counts as zero and we re-anchor to the lower value.
++        self._last = now
+ 
+     def allow(self, cost=1):
+-        raise NotImplementedError
++        if cost <= 0:
++            raise ValueError("cost must be > 0")
++        if cost > self._capacity:
++            raise ValueError("cost must not exceed capacity")
++        with self._lock:
++            self._refill()
++            if self._tokens >= cost:
++                self._tokens -= cost
++                return True
++            return False
+ 
+     def available(self):
+-        raise NotImplementedError
++        with self._lock:
++            self._refill()
++            return self._tokens
