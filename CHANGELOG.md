@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — observability follow-ups
+- **A Stop-hook release is `released-green` only when the gate passed for exactly the final code.** The hook looked only for the `.gate-pass` file, so a pass from before the last edit was logged as green. New `memory.py gate --check` runs nothing and exits 0 only for a pass on the current workspace.
+- **`memory.py init` no longer joins its new `.gitignore` lines to a last line that has no newline.** `evals/results/` became `evals/results/events.jsonl`, and the results and the run log were no longer ignored.
+- 2 tests.
+
 ## Unreleased — observability
 - **Run log.** `memory.py` and the hooks append to `.agent-memory/events.jsonl` (local, git-ignored): session start, gate pass/fail/skip with duration and the failing command, feature gradings, lesson adds and votes, Stop-hook blocks and releases. Each line has the agent session id (from the SessionStart hook input, or `AGENT_SESSION_ID`). No prompt or code text. `AGENT_MEMORY_EVENTS=0` turns it off; a log that cannot be written never fails a command.
 - **`memory.py stats`** (`--days`, `--json`): gate failure rate and top failing commands, evaluator rounds per pass, who verified, features marked as passing while the gate was not green, stops released on a red gate.

@@ -5,7 +5,8 @@
 - Skipped when the workspace is unchanged since the last pass (cheap for Q&A turns).
 - On failure: exit 2 with bounded output on stderr, so the agent keeps working on it.
 - Never loops: if this stop was already triggered by the hook (stop_hook_active), it lets the agent stop.
-  That release is written to the run log (`released-red` when the gate still fails), and the next
+  That release is written to the run log (`released-red` unless the gate passed for exactly the code
+  that the agent leaves), and the next
   session-start digest reports it.
 - A gate that times out counts as failed (fail closed); the hook's own timeout is sized from gate.json.
 Stdlib only; never blocks on its own errors.
@@ -43,7 +44,12 @@ def main() -> int:
     if data.get("session_id"):
         env["AGENT_SESSION_ID"] = str(data["session_id"])  # the gate and stop events carry the session id
     if data.get("stop_hook_active"):
-        record("released-green" if Path(".agent-memory/.gate-pass").exists() else "released-red", env)
+        try:  # green only for a pass on exactly this code: a pass from before the last edit does not count
+            green = subprocess.run([sys.executable, str(MEM), "gate", "--check"], capture_output=True,
+                                   timeout=120, env=env).returncode == 0
+        except Exception:
+            green = False
+        record("released-green" if green else "released-red", env)
         return 0
     try:
         cfg = json.loads(gate_file.read_text(encoding="utf-8"))
