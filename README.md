@@ -124,6 +124,22 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317    # your collector
 ```
 See [Claude Code: monitoring usage](https://code.claude.com/docs/en/monitoring-usage). Other agents (Antigravity, Codex) get the run log but no session id, unless you set `AGENT_SESSION_ID`.
 
+## Reproduction check, gate guards and doctor
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py repro --test "pytest tests/test_bug.py" --test-file tests/test_bug.py
+python3 .agents/skills/long-horizon/scripts/memory.py doctor
+python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho 0.6 --tasks 20
+```
+
+- `repro` runs the test on the base commit and on the current code. The result is `verified` only if the test fails on the base and passes now. A fix without a verified reproduction is not proved: say so in the report.
+- The base runs in a temporary git worktree. Files that git does not track are not there. Use `--expect` to name text that the failure must print.
+- The gate uses the committed `gate.json`. It ignores an edit that is not committed, and it reports the edit.
+- The gate reports deleted test files and new skip markers. It does not block them. The next session digest shows them.
+- `doctor` finds hooks that will not run and gate commands that are not installed.
+- Hooks do not run in `claude -p --bare`. In unattended runs and in CI, run `memory.py gate` as a separate step.
+- `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.
+
 ## Robustness
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).
 - Append-only logs with `merge=union`. Duplicates and conflict markers are folded on read, and task-id collisions after a merge are flagged.
