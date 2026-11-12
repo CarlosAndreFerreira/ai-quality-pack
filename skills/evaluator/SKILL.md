@@ -3,7 +3,7 @@ name: evaluator
 description: Use before declaring any feature, task or PR done, and whenever a feature is about to be marked as passing. Acts as a separate, skeptical evaluator that checks the agreed acceptance criteria against running code and real test output. The implementer must not grade its own work.
 license: MIT
 metadata:
-  version: "1.1"
+  version: "1.2"
   sources: "Anthropic, Harness design for long-running application development (2026)"
 ---
 # Evaluator (separate from the implementer)
@@ -26,7 +26,8 @@ A model that grades its own work rates it too highly. A separate evaluator, tune
 1. Run the full gates yourself: tests, lint, typecheck. Use the real output, not the implementer's summary.
 2. For each criterion, try to make it **fail**. Run it against the running system when the criterion is behavioural. Check edge cases the criterion implies (empty, invalid, unauthorised, concurrent, repeated).
 3. Look for tests that cannot fail: tests that assert nothing, mock the unit under test, or were weakened or skipped in this diff.
-4. Grade each criterion: PASS (evidence you produced) / FAIL (reproduction steps) / UNKNOWN (you could not verify it, and why). There is no partial pass. UNKNOWN is a correct answer when you cannot check; it does not let the feature pass. FAIL is for a defect that you showed. A missing record (no recorded criteria, no recorded reproduction, no gate file) is not a defect of the change: report it as "Not verified", and do not count it as FAIL.
+4. Merge readiness: check what a maintainer checks. The written rules of the project (AGENTS.md, CONTRIBUTING.md), the style of the code next to the change, one purpose (no unrelated edit, no debug output), size (more than about 400 changed lines: say how to split), documentation and changelog. A broken written rule is a FAIL. The other points go in a line `MERGE-READY: NO` with the open points; they do not change the grade.
+5. Grade each criterion: PASS (evidence you produced) / FAIL (reproduction steps) / UNKNOWN (you could not verify it, and why). There is no partial pass. UNKNOWN is a correct answer when you cannot check; it does not let the feature pass. FAIL is for a defect that you showed. A missing record (no recorded criteria, no recorded reproduction, no gate file) is not a defect of the change: report it as "Not verified", and do not count it as FAIL.
 
 ## Output
 ```

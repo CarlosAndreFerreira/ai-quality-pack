@@ -1394,5 +1394,121 @@ class TriageAndFactoryTests(unittest.TestCase):
             self.assertIn("GitHub: not available", r.stdout)
 
 
+class GovernanceTests(unittest.TestCase):
+    """Secret scan in the gate, provenance trailer, audit record, and what a maintainer checks."""
+
+    def _git(self, root, *args):
+        r = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def _repo(self, t, gate=None):
+        root = Path(t)
+        self._git(root, "init", "-q", "-b", "main")
+        (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        py = sys.executable.replace("\\", "/")
+        (root / ".agent-memory/gate.json").write_text(json.dumps(gate or {"commands": [f'"{py}" -c "print(1)"']}), encoding="utf-8")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "base")
+        return root
+
+    def test_gate_stops_on_a_secret_in_the_change_and_hides_its_value(self):
+        key = "AKIA" + "ABCDEFGHIJKLMNOP"  # built here, so that this file holds no key-shaped text
+        token = "ghp_" + "a1B2" * 9
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "app.py").write_text(f'x = 1\nAWS_ID = "{key}"\n', encoding="utf-8")
+            (root / "new.py").write_text(f'TOKEN = "{token}"\npassword = "Hunter2-real-value"\n', encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("gate FAILED: secret scan", r.stdout)
+            self.assertIn("app.py:2: AWS access key id", r.stdout)
+            self.assertIn("new.py:1: GitHub token", r.stdout)
+            self.assertIn("new.py:2: password, token or key in an assignment", r.stdout)
+            for value in (key, token, "Hunter2-real-value"):
+                self.assertNotIn(value, r.stdout)
+            self.assertEqual(run([MEM, "gate", "--check"], root).returncode, 1)
+            self.assertEqual(run([MEM, "secrets"], root).returncode, 1)
+            # placeholders and marked lines are not secrets
+            (root / "app.py").write_text(f'x = 1\nAWS_ID = "{key}"  # pack:allow-secret (public example id)\n', encoding="utf-8")
+            (root / "new.py").write_text('password = "changeme-1234"\napi_key = "${API_KEY}"\ntoken = os.environ["TOKEN"]\n', encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertEqual(run([MEM, "secrets"], root).returncode, 0)
+
+    def test_secret_scan_can_be_turned_off_and_reads_committed_work_against_a_base(self):
+        key = "AKIA" + "ABCDEFGHIJKLMNOP"
+        with tempfile.TemporaryDirectory() as t:
+            py = sys.executable.replace("\\", "/")
+            root = self._repo(t, {"commands": [f'"{py}" -c "print(1)"'], "secret_scan": False})
+            (root / "app.py").write_text(f'AWS_ID = "{key}"\n', encoding="utf-8")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            self._git(root, "checkout", "-q", "-b", "work")
+            self._git(root, "commit", "-q", "-am", "work")
+            self.assertEqual(run([MEM, "secrets"], root).returncode, 0)                    # nothing since HEAD
+            r = run([MEM, "secrets", "--base", "main"], root)                               # the branch against its base
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("app.py:1: AWS access key id", r.stdout)
+
+    def test_gate_warns_about_a_change_that_is_too_large(self):
+        with tempfile.TemporaryDirectory() as t:
+            py = sys.executable.replace("\\", "/")
+            root = self._repo(t, {"commands": [f'"{py}" -c "print(1)"'], "max_changed_lines": 5})
+            (root / "app.py").write_text("".join(f"x{i} = {i}\n" for i in range(12)), encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)  # a warning: a person decides
+            self.assertIn("gate WARNING: the change has 13 lines in 1 files (limit 5): split it", r.stdout)
+
+    def test_provenance_trailer_is_off_until_set_and_then_checked(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertIn("provenance: off", run([MEM, "provenance"], root).stdout)
+            self.assertEqual(run([MEM, "provenance", "--check", "main"], root).returncode, 0)
+            self.assertEqual(run([MEM, "provenance", "--set", "no colon here"], root).returncode, 2)
+            self.assertEqual(run([MEM, "provenance", "--set", "Assisted-by: AI coding agent"], root).returncode, 0)
+            self.assertEqual(run([MEM, "provenance"], root).stdout.strip(), "Assisted-by: AI coding agent")
+            self._git(root, "checkout", "-q", "-b", "work")
+            (root / "app.py").write_text("x = 2\n", encoding="utf-8")
+            self._git(root, "commit", "-q", "-am", "change without the trailer")
+            (root / "app.py").write_text("x = 3\n", encoding="utf-8")
+            self._git(root, "commit", "-q", "-am", "change with it", "-m", "Assisted-by: AI coding agent")
+            r = run([MEM, "provenance", "--check", "main"], root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("change without the trailer", r.stdout)
+            self.assertNotIn("change with it", r.stdout)
+            self.assertIn("1 commit(s) since main without", r.stdout)
+            self.assertEqual(run([MEM, "provenance", "--off"], root).returncode, 0)
+            self.assertEqual(run([MEM, "provenance", "--check", "main"], root).returncode, 0)
+
+    def test_audit_writes_the_run_log_with_a_checksum(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            run([MEM, "triage"], root, stdin="Login is broken")
+            r = run([MEM, "audit", "--out", "audit.jsonl"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            body = (root / "audit.jsonl").read_bytes()
+            events = [json.loads(l) for l in body.decode("utf-8").splitlines()]
+            self.assertEqual(sorted({e["ev"] for e in events}), ["gate", "triage"])
+            self.assertIn("sha256 " + hashlib.sha256(body.replace(b"\r\n", b"\n")).hexdigest(), r.stdout)
+            self.assertIn("gate:pass", r.stdout)
+
+    def test_doctor_and_evaluator_cover_what_a_maintainer_checks(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertIn("the gate has no lint or type check command", run([MEM, "doctor"], root).stdout)
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": ["git --version", "ruff check ."]}), encoding="utf-8")
+            self.assertNotIn("no lint or type check", run([MEM, "doctor"], root).stdout)
+        evaluator = (PACK / "templates/.claude/agents/evaluator.md").read_text(encoding="utf-8")
+        for text in ("Merge readiness", "MERGE-READY: YES", "a rule that the change breaks is a FAIL", "400 changed lines"):
+            self.assertIn(text, evaluator)
+        self.assertEqual(re.findall(r"^(\d+)\. ", evaluator, re.M), [str(i) for i in range(11)])  # steps 0 to 10, in order
+        wf = (PACK / "templates/ci/agent-issue.yml").read_text(encoding="utf-8")
+        self.assertIn("$MEMORY audit --out", wf)
+        self.assertIn("actions/upload-artifact@", wf)
+
+
 if __name__ == "__main__":
     unittest.main()

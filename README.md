@@ -199,6 +199,28 @@ python3 .agents/skills/long-horizon/scripts/memory.py factory --days 30
 - The cost for each merged pull request shows only when each pull request has a cost in its text.
 - Limit: the local run log is on one machine. A CI runner does not keep it.
 
+### Merge readiness
+
+- The evaluator checks what a maintainer checks: the written rules of the project, the style of the code next to the change, one purpose, size, documentation. It writes `MERGE-READY: YES` or `MERGE-READY: NO` after the overall result. Only a broken written rule changes the overall result.
+- `"max_changed_lines": 400` in `gate.json` makes the gate warn about a larger change. It does not block.
+- `doctor` says when the gate has no lint or type check command.
+- Not measured: the effect of these checks on the share of pull requests that maintainers merge.
+
+### Secrets, provenance and audit
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py secrets --base origin/main
+python3 .agents/skills/long-horizon/scripts/memory.py provenance --set "Assisted-by: AI coding agent"
+python3 .agents/skills/long-horizon/scripts/memory.py provenance --check origin/main
+python3 .agents/skills/long-horizon/scripts/memory.py audit --out audit.jsonl
+```
+
+- The gate scans the lines that the change added, before it runs the project's commands. A line that looks like a secret stops the gate. The output names the file, the line and the rule, never the value.
+- Rules: private keys, AWS, GitHub, Slack, Google and `sk-` keys, JSON web tokens, and a password, token or key in an assignment. Placeholders do not count. For a false alarm, put `pack:allow-secret` on the line. `"secret_scan": false` in `gate.json` turns the scan off.
+- The scan is a set of patterns. It does not replace a dedicated scanner such as gitleaks: add one to the gate commands if you have it.
+- `provenance` is off until a person sets a trailer. Then the agent adds the trailer to its commits, `--check` finds commits without it, and `memory.py pr` puts it in the pull request text.
+- `audit` writes the run log (sessions, gate runs, gradings, pull requests, triage) with a checksum. The issue workflow keeps it as an artifact for 90 days.
+
 ### Unattended runs: the gate without hooks
 
 ```bash

@@ -13,10 +13,17 @@ Do these steps in this order. They are the `evaluator` skill of the pack.
 4. Run the project gates yourself and read the real output: the commands in AGENTS.md, and `MEMORY gate`. Run `MEMORY repro --check`. If no reproduction is recorded, make one yourself outside the repository: a check that fails on the base (`git show HEAD:<file>` or a separate `git worktree`) and passes on the change.
 5. For each item of step 1 and each recorded criterion, try to make it fail. Exercise the running system for behavioural criteria.
 6. Flag tests that cannot fail, mocks of the unit under test, and tests weakened or skipped in the diff.
-7. Report PASS / FAIL / UNKNOWN per item, with evidence or reproduction steps. No partial passes.
+7. Merge readiness. Tests that pass are not enough for a maintainer. Check these points and report each problem with file and line:
+   - the written rules of the project (AGENTS.md, CONTRIBUTING.md): a rule that the change breaks is a FAIL;
+   - the change follows the code next to it: names, error handling, layout of the tests;
+   - one purpose: no edit that the requirement does not need, no debug output, no code in comments;
+   - size: more than about 400 changed lines is hard to review. Say how to split it;
+   - documentation and changelog, where the project keeps them.
+8. Report PASS / FAIL / UNKNOWN per item, with evidence or reproduction steps. No partial passes.
    - FAIL is for a defect that you showed: wrong behaviour, a requirement that the change does not meet, a test that the change broke.
    - UNKNOWN means you could not check the item: say why.
    - A missing record is not a defect of the change. No recorded criteria, no recorded reproduction, no gate file, a linter that is not installed, a test that also fails on the base: list these under "Not verified". Do not count them as FAIL.
-8. Give one overall result. FAIL if an item is FAIL. Otherwise UNKNOWN if you could not check an item that decides if the requirement is met. Otherwise PASS.
+9. Give one overall result. FAIL if an item is FAIL. Otherwise UNKNOWN if you could not check an item that decides if the requirement is met. Otherwise PASS.
+10. After the overall result, write one line: `MERGE-READY: YES`, or `MERGE-READY: NO` with the points of step 7 that are open. Only a broken written rule changes the overall result. The other points are for the author to fix before review.
 
 Do not edit source files. Mark a feature as passing only when the overall result is PASS, with `--verified-by evaluator`.

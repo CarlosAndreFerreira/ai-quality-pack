@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — merge readiness and governance (docs/EVOLUTION.md: F6, F10)
+- **The gate scans the change for secrets** before it runs the project's commands. It stops on a line that looks like a secret and never prints the value. `pack:allow-secret` on a line marks a false alarm; `"secret_scan": false` turns the scan off. `memory.py secrets --base <ref>` runs the scan alone.
+- **`memory.py provenance`**: a commit trailer for agent work, off until a person sets it. `--check <base>` finds commits without it. `memory.py pr` puts it in the pull request text.
+- **`memory.py audit`**: the run log as an audit record with a checksum. The issue workflow keeps it as an artifact.
+- **The evaluator checks merge readiness**: written project rules, style of the nearby code, one purpose, size, documentation. It writes `MERGE-READY: YES` or `NO`. Not measured.
+- `"max_changed_lines"` in `gate.json` makes the gate warn about a large change. `doctor` says when the gate has no lint or type check command.
+- 6 tests.
+
 ## Unreleased — triage and factory report (docs/EVOLUTION.md: F4, F8)
 - **`memory.py triage`**: a text check of an issue before work. Exit code 4 gives the questions for the issue. The issue workflow runs it first: a thin issue gets a comment, and no agent run starts.
 - **New `triage` subagent** (read-only tools) and **`triage` skill**: decide `TRIAGE: READY` or `TRIAGE: ASK` from the requirement and the repository. Not measured.

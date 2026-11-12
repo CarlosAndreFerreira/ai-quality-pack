@@ -788,6 +788,10 @@ def cmd_gate(a: argparse.Namespace) -> None:
         print("gate: passed for this workspace" if fresh else "gate: no pass for this workspace")
         sys.exit(0 if fresh else 1)
     warnings = ([note] if note else []) + test_changes(ref)
+    if cfg.get("max_changed_lines"):  # a change that is too large to review well: reported, a person decides
+        files, changed, _ = change_size(ref)
+        if changed > int(cfg["max_changed_lines"]):
+            warnings.append(f"the change has {changed} lines in {files} files (limit {int(cfg['max_changed_lines'])}): split it")
     for w in warnings:
         print(f"gate WARNING: {w}")
     wh = workspace_hash()
@@ -796,6 +800,15 @@ def cmd_gate(a: argparse.Namespace) -> None:
         log_event("gate", result="skipped", warnings=warnings or None)
         return
     t0 = time.time()
+    if cfg.get("secret_scan", True):  # before the project's commands: a secret in the change stops the gate
+        found = scan_secrets(ref)
+        if found:
+            print("gate FAILED: secret scan\n" + "\n".join(found[:20])
+                  + f"\nRemove the value and rotate it. A false alarm: put `{SECRET_ALLOW}` on the line.")
+            with contextlib.suppress(FileNotFoundError):
+                GATE_PASS.unlink()
+            log_event("gate", result="fail", failed="secret scan", seconds=round(time.time() - t0, 1), warnings=warnings or None)
+            sys.exit(1)
     for c in cmds:
         timed_out = None
         try:
@@ -1147,7 +1160,8 @@ def cmd_pr(a: argparse.Namespace) -> None:
             print("pr: no pull request was opened. Add your commits to the open one, or close it first.")
             sys.exit(3)
     body = text + "\n\n" + (f"Closes #{issue}\n\n" if issue else "") + \
-        "Opened as a draft by an agent run. A person reviews it and merges it; the agent does not merge.\n"
+        "Opened as a draft by an agent run. A person reviews it and merges it; the agent does not merge.\n" + \
+        (f"Provenance: {load_config()['provenance_trailer']}\n" if load_config().get("provenance_trailer") else "")
     if a.dry_run:
         print(f"pr (dry run): would push `{branch}` and open a draft pull request into `{base_name}` with this text:\n\n{body}")
         return
@@ -1333,6 +1347,136 @@ def cmd_factory(a: argparse.Namespace) -> None:
               f"triage: {loc['triage_ready']} ready · {loc['triage_needs_info']} sent back with questions")
 
 
+# ---------------------------------------------------------------- governance: secrets, provenance, audit
+SECRET_RULES = (
+    ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("AWS access key id", re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("GitHub token", re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b")),
+    ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("API key (sk-...)", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("JSON web token", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+)
+SECRET_ASSIGN = re.compile(r"(?i)\b(pass(?:word|wd)?|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)\b[\"']?\s*[:=]\s*[\"']([^\"'\s]{8,})[\"']")
+SECRET_PLACEHOLDER = re.compile(r"(?i)example|sample|dummy|placeholder|change[_-]?me|your[_-]|xxxx|\*{4}|<[^>]+>|\$\{|\{\{|test|fake|redacted|0000|1234")
+SECRET_ALLOW = "pack:allow-secret"
+CONFIG = ROOT / "config.json"
+LINT_RE = re.compile(r"\b(ruff|flake8|pylint|pyright|mypy|eslint|tsc|biome|prettier|black|clippy|vet|golangci-lint|staticcheck|"
+                     r"rubocop|checkstyle|ktlint|shellcheck|fmt)\b", re.I)
+
+
+def secret_in(line: str) -> str:
+    """Name of the rule that the line matches, or ''. The value is never returned."""
+    if SECRET_ALLOW in line:
+        return ""
+    for name, rx in SECRET_RULES:
+        if rx.search(line):
+            return name
+    m = SECRET_ASSIGN.search(line)
+    if m:
+        value = m.group(2)
+        mixed = sum(bool(re.search(c, value)) for c in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]")) >= 2
+        if mixed and not SECRET_PLACEHOLDER.search(value):
+            return "password, token or key in an assignment"
+    return ""
+
+
+def scan_secrets(ref: str) -> List[str]:
+    """Lines that the change added and that look like a secret: `path:line: rule`. Tracked changes since ref, and new files."""
+    out: List[str] = []
+    cur, n = "", 0
+    for line in git("diff", "-U0", "--no-renames", ref, "--", ".", f":(exclude){ROOT.as_posix()}").splitlines():
+        if line.startswith("+++ "):
+            cur = line[6:] if line.startswith("+++ b/") else ""
+        elif line.startswith("@@"):
+            m = re.search(r"\+(\d+)", line)
+            n = int(m.group(1)) if m else 0
+        elif line.startswith("+") and cur:
+            rule = secret_in(line[1:])
+            if rule:
+                out.append(f"{cur}:{n}: {rule}")
+            n += 1
+    for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
+        p = Path(f)
+        if f.startswith(ROOT.as_posix() + "/") or not p.is_file() or p.stat().st_size > 1_000_000:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            rule = secret_in(line)
+            if rule:
+                out.append(f"{f}:{i}: {rule}")
+    return out
+
+
+def cmd_secrets(a: argparse.Namespace) -> None:
+    found = scan_secrets(a.base)
+    for f in found[:50]:
+        print(f"secret scan: {f}")
+    print(f"secret scan: {len(found)} line(s) that look like a secret in the change against {a.base}"
+          + (f". Remove the value and rotate it. A false alarm: put `{SECRET_ALLOW}` on the line." if found else ""))
+    sys.exit(1 if found else 0)
+
+
+def load_config() -> dict:
+    try:
+        d = json.loads(CONFIG.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_provenance(a: argparse.Namespace) -> None:
+    """A commit trailer that marks work of an agent. Off until a person sets it; the text is the project's choice."""
+    ensure()
+    cfg = load_config()
+    if a.set is not None or a.off:
+        if a.set is not None and not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*: \S.*", a.set):
+            die("the trailer has the form `Key: value`, for example `Assisted-by: AI coding agent`")
+        cfg["provenance_trailer"] = "" if a.off else a.set
+        atomic_write(CONFIG, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+        print("provenance: off" if a.off else f"provenance: each agent commit carries the trailer `{a.set}`")
+        return
+    trailer = str(cfg.get("provenance_trailer") or "")
+    if a.check:
+        if not trailer:
+            print("provenance: off (nothing to check)")
+            return
+        missing = []
+        for rec in git("log", "--format=%h%x00%s%x00%B%x01", f"{a.check}..HEAD").split("\x01"):
+            parts = rec.strip("\n").split("\x00")
+            if len(parts) == 3 and trailer.lower() not in parts[2].lower():
+                missing.append(f"{parts[0]} {clean(parts[1], 70)}")
+        for m in missing:
+            print(f"provenance: commit without the trailer: {m}")
+        print(f"provenance: {len(missing)} commit(s) since {a.check} without `{trailer}`")
+        sys.exit(1 if missing else 0)
+    print(trailer if trailer else "provenance: off (set it with `memory.py provenance --set \"Assisted-by: AI coding agent\"`)")
+
+
+AUDIT_EVENTS = ("session_start", "gate", "gated-run", "stop", "feature", "repro", "pr", "triage")
+
+
+def cmd_audit(a: argparse.Namespace) -> None:
+    """The run log as an audit record: who ran what, with which result. `--out` writes it for an archive (CI artifact)."""
+    ensure()
+    import hashlib
+    cut = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
+    evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= cut and e.get("ev") in AUDIT_EVENTS]
+    body = "".join(json.dumps(e, ensure_ascii=False, sort_keys=True) + "\n" for e in evs)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    if a.out:
+        Path(a.out).write_bytes(body.encode("utf-8"))  # bytes: the checksum below is the checksum of the file
+    from collections import Counter
+    kinds = Counter(f"{e.get('ev')}:{e.get('result') or e.get('outcome') or '-'}" for e in evs)
+    print(f"audit: {len(evs)} events in the last {a.days} days, {len({e.get('session') for e in evs if e.get('session')})} sessions")
+    for k, n in sorted(kinds.items()):
+        print(f"  {n:>4}  {k}")
+    print(f"audit: sha256 {digest}" + (f" · written to {a.out}" if a.out else ""))
+
+
 # ---------------------------------------------------------------- doctor
 def cmd_doctor(a: argparse.Namespace) -> None:
     """Check that the pack can do its work in this repository. Exit 1 when something will not work."""
@@ -1378,6 +1522,9 @@ def cmd_doctor(a: argparse.Namespace) -> None:
             problems.append(f"{GATE.as_posix()} is not valid JSON")
         if cmds == []:
             problems.append(f"{GATE.as_posix()} has no commands")
+        elif cmds and not any(LINT_RE.search(c) for c in cmds):
+            notes.append("the gate has no lint or type check command: maintainers reject a change for style and conventions "
+                         "also, not only for a failed test")
         for c in cmds or []:
             try:
                 exe = shlex.split(c, posix=os.name != "nt")[0].strip('"')
@@ -1574,6 +1721,18 @@ def main() -> None:
     s.add_argument("--no-github", action="store_true", help="only the local run log")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_factory)
+    s = sub.add_parser("secrets", help="lines of the change that look like a secret (the gate runs this check)")
+    s.add_argument("--base", default="HEAD", help="ref to compare with (in a pull request: the base branch)")
+    s.set_defaults(fn=cmd_secrets)
+    s = sub.add_parser("provenance", help="commit trailer that marks agent work: print it, set it, or check the commits")
+    s.add_argument("--set", help="trailer text, for example \"Assisted-by: AI coding agent\"")
+    s.add_argument("--off", action="store_true")
+    s.add_argument("--check", metavar="BASE", help="exit 1 if a commit since BASE has no trailer")
+    s.set_defaults(fn=cmd_provenance)
+    s = sub.add_parser("audit", help="the run log as an audit record, with a checksum; --out writes it for an archive")
+    s.add_argument("--days", type=int, default=90)
+    s.add_argument("--out", help="file to write (JSON lines)")
+    s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("diff-view", help="the change since a base, without the comments it added (for the evaluator)")
     s.add_argument("--base", default="HEAD")
     s.set_defaults(fn=cmd_diff_view)
