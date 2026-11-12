@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- **Codex: `install.py --with-codex`** writes `.codex/hooks.json` (session digest, formatter; the Stop gate with `--with-stop-gate`, the guard with `--with-guard`). The commands find the project with `git rev-parse --show-toplevel`. Not run with Codex: built from its hook documentation.
+- **OpenCode 2: `install.py --with-opencode`** writes a server plugin, the `evaluator`, `criteria` and `triage` subagents, and `.opencode/ai-quality-pack.json`. On a red gate the plugin sends the gate output to the session one time (OpenCode cannot stop the agent from finishing). Checked on OpenCode 2.2.7 with local models: plugin load, digest, guard, gate prompt and release.
+- **The hook scripts do not need Claude Code variables.** The project is `CLAUDE_PROJECT_DIR`, else `AGENT_PROJECT_DIR`, else the folder of the session or the git top level above it. `memory.py` finds the project from a subfolder in the same way.
+- **The guard reads the arguments of the tool call**, not the tool name: a file path (`file_path`, `filePath`, `path`), a shell command, or the files of a patch (Codex `apply_patch`). It protects `.codex/` and `.opencode/` also.
+- The formatter finds the files of a Codex patch and of an OpenCode edit.
+- `uninstall` removes the Codex hooks and the OpenCode files of the pack. 6 tests.
 - **Identity in each run log line**: `actor`, `model` and `pack` version; a gate line has `policy`, a hash of the gate rules that ran. The model comes from `AGENT_MODEL` or from the Claude Code session start.
 - **Hash chain in the run log**: each line has the hash of the line before it (`prev`, `h`). `memory.py audit --verify` exits 1 for a line that was changed, removed or inserted; `--head HASH` finds a cut at the end. `audit` prints the head. A lock of its own keeps one chain with parallel writers, and the chain goes on after the log file is rotated.
 - Limit: the chain has no secret, so it is proof only against a head that is kept where the agent cannot write. 5 tests.

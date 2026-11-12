@@ -109,10 +109,11 @@ def enter_project_root() -> None:
     All paths here are relative to the project root. Without this, a call from a subfolder finds no
     .agent-memory/ and reports an empty state.
     """
-    project = os.environ.get("CLAUDE_PROJECT_DIR")
-    if "AGENT_MEMORY_DIR" in os.environ or ROOT.exists() or not project:
+    if "AGENT_MEMORY_DIR" in os.environ or ROOT.exists():
         return
-    if (Path(project) / ROOT).is_dir():
+    # Claude Code sets CLAUDE_PROJECT_DIR; the adapters for other agents set AGENT_PROJECT_DIR; else the git top level
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or os.environ.get("AGENT_PROJECT_DIR") or git("rev-parse", "--show-toplevel")
+    if project and (Path(project) / ROOT).is_dir():
         os.chdir(project)
 
 

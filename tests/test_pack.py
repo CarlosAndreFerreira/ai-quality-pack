@@ -2124,5 +2124,148 @@ class AuditChainTests(unittest.TestCase):
         self.assertIn(f'PACK_VERSION = "{version}"', MEM.read_text(encoding="utf-8"))
 
 
+NO_CLAUDE = {"CLAUDE_PROJECT_DIR": "", "AGENT_PROJECT_DIR": ""}  # another agent: no variable names the project
+
+
+class OtherAgentsTests(unittest.TestCase):
+    """Codex (`.codex/hooks.json`) and OpenCode (`.opencode/`): the same scripts, without the Claude Code variables."""
+
+    def _repo(self, t, *flags):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
+        r = run([INST, "project", root, "--no-upstream", "--profile", "none", *flags], root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        py = sys.executable.replace("\\", "/")
+        gate = {"commands": [f'"{py}" -c "import os,sys; sys.exit(0 if os.path.exists(\'ok.flag\') else 1)"']}
+        (root / ".agent-memory/gate.json").write_text(json.dumps(gate), encoding="utf-8")
+        return root, r.stdout
+
+    def _guard(self, root, tool, args, cwd=None):
+        data = {"tool_name": tool, "tool_input": args, "cwd": str(cwd or root)}
+        return run([root / ".claude/hooks/guard_pack_files.py"], cwd or root, stdin=json.dumps(data), env=NO_CLAUDE)
+
+    def test_codex_hooks_file_is_merged_and_removed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / ".codex").mkdir()
+            mine = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}, "other": 1}
+            (root / ".codex/hooks.json").write_text(json.dumps(mine), encoding="utf-8")
+            root, out = self._repo(t, "--with-codex")
+            hooks = json.loads((root / ".codex/hooks.json").read_text(encoding="utf-8"))["hooks"]
+            self.assertEqual(sorted(hooks), ["PostToolUse", "SessionStart", "Stop"])
+            self.assertEqual(len(hooks["Stop"]), 1)  # no Stop gate without --with-stop-gate: only the user's hook
+            self.assertNotIn("PreToolUse", hooks)
+            start = hooks["SessionStart"][0]["hooks"][0]["command"]
+            self.assertIn('"$(git rev-parse --show-toplevel)"/.agents/skills/long-horizon/scripts/memory.py start', start)
+            self.assertEqual(hooks["PostToolUse"][0]["matcher"], "apply_patch|Edit|Write")
+            self.assertIn("/hooks", out)  # Codex asks the user to trust project hooks
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-codex", "--with-stop-gate", "--with-guard"], root)
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-codex", "--with-stop-gate", "--with-guard"], root)
+            hooks = json.loads((root / ".codex/hooks.json").read_text(encoding="utf-8"))["hooks"]
+            self.assertEqual([len(hooks[e]) for e in ("SessionStart", "PostToolUse", "Stop", "PreToolUse")], [1, 1, 2, 1])
+            self.assertIn("gate_on_stop.py", hooks["Stop"][1]["hooks"][0]["command"])
+            self.assertEqual(hooks["PreToolUse"][0]["matcher"], "Bash|apply_patch|Edit|Write")
+            run([INST, "uninstall", root], root)
+            self.assertEqual(json.loads((root / ".codex/hooks.json").read_text(encoding="utf-8")), mine)
+
+    @unittest.skipIf(os.name == "nt", "the Codex hook commands need a POSIX shell")
+    def test_codex_stop_command_blocks_from_a_subfolder_without_claude_variables(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, _ = self._repo(t, "--with-codex", "--with-stop-gate")
+            sub = root / "src" / "deep"
+            sub.mkdir(parents=True)
+            hooks = json.loads((root / ".codex/hooks.json").read_text(encoding="utf-8"))["hooks"]
+            command = hooks["Stop"][0]["hooks"][0]["command"].replace("python3", f'"{sys.executable}"', 1)
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", **NO_CLAUDE)
+            payload = json.dumps({"session_id": "cx-1", "cwd": str(sub), "stop_hook_active": False, "model": "gpt-x"})
+            r = subprocess.run(command, shell=True, cwd=sub, input=payload, capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # Codex continues the agent with this text
+            self.assertIn("Completion gate failed", r.stderr)
+            events = [json.loads(l) for l in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([(e["ev"], e["session"]) for e in events], [("gate", "cx-1"), ("stop", "cx-1")])
+            (root / "ok.flag").write_text("1", encoding="utf-8")
+            r = subprocess.run(command, shell=True, cwd=sub, input=payload, capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            # memory.py finds the project from a subfolder also, as the SessionStart command starts it
+            self.assertIn("<project-memory", run([MEM, "start"], sub, stdin="{}", env=NO_CLAUDE).stdout)
+
+    def test_guard_reads_the_arguments_of_codex_and_opencode_tools(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, _ = self._repo(t, "--with-guard")
+            patch = "*** Begin Patch\n*** Update File: {}\n@@\n-a\n+b\n*** End Patch\n"
+            blocked = [
+                ("apply_patch", {"command": patch.format(".agent-memory/gate.json")}),          # Codex
+                ("apply_patch", {"command": "*** Begin Patch\n*** Delete File: .codex/hooks.json\n*** End Patch\n"}),
+                ("apply_patch", {"command": "*** Begin Patch\n*** Update File: a.py\n*** Move to: .agents/skills/x.py\n*** End Patch\n"}),
+                ("Bash", {"command": "rm .codex/hooks.json"}),
+                ("write", {"path": ".opencode/plugins/x.js", "content": "1"}),                   # OpenCode
+                ("edit", {"filePath": str(root / ".opencode/ai-quality-pack.json")}),
+                ("shell", {"command": "echo '{}' > .agent-memory/gate.json"}),
+                ("patch", {"patchText": patch.format(".claude/hooks/gate_on_stop.py")}),
+            ]
+            for tool, args in blocked:
+                r = self._guard(root, tool, args)
+                self.assertEqual(r.returncode, 2, f"{tool} {args} -> {r.stdout}{r.stderr}")
+                self.assertIn("Blocked", r.stderr)
+            allowed = [
+                ("apply_patch", {"command": patch.format("src/app.py")}),
+                ("write", {"path": "notes.py", "content": "x"}),
+                ("shell", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate 2>&1"}),
+                ("read", {"path": ".agent-memory/gate.json"}),  # a tool that changes nothing
+                ("grep", {"path": ".opencode", "pattern": "x"}),
+            ]
+            for tool, args in allowed:
+                self.assertEqual(self._guard(root, tool, args).returncode, 0, f"{tool} {args}")
+            sub = root / "pkg"
+            sub.mkdir()  # the session is in a subfolder: a relative path is still found under the project
+            self.assertEqual(self._guard(root, "shell", {"command": "rm ../.agent-memory/gate.json"}, cwd=sub).returncode, 2)
+
+    def test_formatter_finds_the_files_of_each_agent(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("format_on_edit", PACK / "templates/.claude/hooks/format_on_edit.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as t:
+            for name in ("a.py", "b.py", "c.py"):
+                Path(t, name).write_text("x=1\n", encoding="utf-8")
+            patch = "*** Begin Patch\n*** Update File: a.py\n@@\n*** Add File: b.py\n+x\n*** Delete File: gone.py\n*** End Patch\n"
+            names = lambda args: [os.path.basename(p) for p in mod.edited_files(args, t)]
+            self.assertEqual(names({"command": patch}), ["a.py", "b.py"])           # Codex
+            self.assertEqual(names({"file_path": str(Path(t, "c.py"))}), ["c.py"])  # Claude Code
+            self.assertEqual(names({"path": "c.py", "content": "x"}), ["c.py"])     # OpenCode
+            self.assertEqual(names({"command": "ls -la"}), [])
+
+    def test_opencode_files_are_installed_and_removed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, out = self._repo(t, "--with-opencode")
+            oc = root / ".opencode"
+            self.assertEqual((oc / "plugins/ai-quality-pack.js").read_bytes(), (PACK / "templates/opencode/ai-quality-pack.js").read_bytes())
+            self.assertEqual(json.loads((oc / "ai-quality-pack.json").read_text(encoding="utf-8")), {"stop_gate": False, "guard": False})
+            agent = (oc / "agents/evaluator.md").read_text(encoding="utf-8")
+            self.assertTrue(agent.startswith("---\ndescription: Skeptical, independent evaluator."), agent[:80])
+            self.assertIn("\nmode: subagent\n---\n", agent)
+            self.assertNotIn("\ntools:", agent.split("\n---\n")[0])  # OpenCode 2 has no `tools` field
+            self.assertIn("gated-run", out)
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-opencode", "--with-stop-gate", "--with-guard"], root)
+            self.assertEqual(json.loads((oc / "ai-quality-pack.json").read_text(encoding="utf-8")), {"stop_gate": True, "guard": True})
+            run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-opencode"], root)  # options stay on
+            self.assertEqual(json.loads((oc / "ai-quality-pack.json").read_text(encoding="utf-8")), {"stop_gate": True, "guard": True})
+            (oc / "agents/triage.md").write_text("mine\n", encoding="utf-8")
+            run([INST, "uninstall", root], root)
+            self.assertEqual(sorted(p.name for p in oc.rglob("*") if p.is_file()), ["triage.md"])  # a changed file stays
+
+    def test_opencode_plugin_is_valid_javascript_and_names_the_scripts_that_exist(self):
+        import shutil
+        text = (PACK / "templates/opencode/ai-quality-pack.js").read_text(encoding="utf-8")
+        for script in ("format_on_edit.py", "guard_pack_files.py", "gate_on_stop.py"):
+            self.assertIn(script, text)
+            self.assertTrue((PACK / "templates/.claude/hooks" / script).is_file())
+        self.assertIn('".agents/skills/long-horizon/scripts/memory.py"', text)
+        if shutil.which("node"):
+            r = subprocess.run(["node", "--check", str(PACK / "templates/opencode/ai-quality-pack.js")], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

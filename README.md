@@ -29,6 +29,7 @@ python3 ai-quality-pack/install.py project /path/to/your/repo          # auto-de
 python3 ai-quality-pack/install.py project . --with-stop-gate           # enforce the gate before Claude Code finishes
 python3 ai-quality-pack/install.py project . --with-egm                 # + Google Elephant-Goldfish design review
 python3 ai-quality-pack/install.py project . --link .codex/skills       # expose skills to another agent folder
+python3 ai-quality-pack/install.py project . --with-codex --with-opencode   # hooks for Codex, plugin for OpenCode 2
 python3 ai-quality-pack/install.py project . --dry-run                  # show what would change
 python3 ai-quality-pack/install.py global                               # Antigravity plugin + Claude Code skills
 ```
@@ -294,6 +295,32 @@ python3 ai-quality-pack/install.py project . --with-guard --with-sandbox --sandb
 - **`--sandbox-allow-domain HOST`** (with `--with-sandbox`) limits the hosts that shell commands can reach.
 - `memory.py pr --evidence-file FILE` opens the pull request with the evidence of another job. It runs no gate: use it only in a pipeline where a job without write access ran the gate.
 - Tested with a small set of attack cases (`evals/injection/`): 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack. [docs/RESULTS.md](docs/RESULTS.md) has the details and the limits.
+
+### Other agents: Codex and OpenCode
+
+```bash
+python3 ai-quality-pack/install.py project . --with-codex --with-stop-gate --with-guard
+python3 ai-quality-pack/install.py project . --with-opencode --with-stop-gate --with-guard
+```
+
+The hook scripts are the same for each agent. An adapter connects the agent's events to them.
+
+| Part of the pack | Claude Code | Codex | OpenCode 2 |
+|---|---|---|---|
+| Skills and `AGENTS.md` | yes | `AGENTS.md`: yes. Skills in `.agents/skills`: not checked | yes (`.agents/skills`, `.claude/skills`) |
+| Session digest, with the session id in the run log | hook | hook | plugin |
+| Formatter after an edit | hook | hook | plugin |
+| Guard (`--with-guard`) | hook | hook | plugin |
+| Completion gate (`--with-stop-gate`) | the agent cannot stop | the agent cannot stop | one prompt with the gate output |
+| Evaluator, criteria and triage subagents | yes | no | `.opencode/agents/` |
+| Any agent with a headless command | `gated-run` | `gated-run` | `gated-run` |
+
+- **Codex**: `--with-codex` writes `.codex/hooks.json`. Codex has the hook events and the hook input of Claude Code. Start Codex in the repository and use `/hooks` to trust the hooks: Codex does not run project hooks before that. The commands need a POSIX shell.
+- **OpenCode**: `--with-opencode` writes a plugin (`.opencode/plugins/ai-quality-pack.js`), the three subagents and `.opencode/ai-quality-pack.json` (which options are on). The plugin is for OpenCode 2; OpenCode 1 has a different plugin interface.
+- OpenCode has no hook that stops the agent from finishing. When the gate fails, the plugin sends the gate output to the session as a new prompt, one time. If the gate still fails, the run log records `released-red` and the next session digest shows it. `opencode run` ends before that prompt: for unattended work use `gated-run --agent-cmd "opencode run --auto"`.
+- The guard protects `.codex/` and `.opencode/` also. It reads the arguments of the tool call (a file path, a shell command, or the files of a patch), so it does not depend on the tool names of one agent.
+- Checked on OpenCode 2.2.7 with local models: the plugin loads; the digest runs and the run log has the session id and the model; the guard blocks a shell command and a file tool on a protected path; with an OpenCode server, a red gate gives one new prompt and then `released-red`.
+- Not checked: Codex. No Codex was installed where this was built: the adapter follows the Codex hook documentation, and the tests run its commands with the documented input. Also not checked: the formatter and the subagents in OpenCode, the OpenCode terminal interface, and Windows for both agents.
 
 ### Unattended runs: the gate without hooks
 

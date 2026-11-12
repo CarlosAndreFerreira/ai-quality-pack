@@ -33,6 +33,7 @@ if sys.version_info < (3, 9):  # this block must parse and run on Python 3.6: re
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,42 @@ def run(cmd) -> bool:
         return False
 
 
+def project_root(data: dict) -> str:
+    """The project folder. Claude Code gives CLAUDE_PROJECT_DIR. Other agents (Codex, OpenCode) give the session
+    folder in `cwd`: the project is that folder, or the git top level above it, where the pack's files are."""
+    for name in ("CLAUDE_PROJECT_DIR", "AGENT_PROJECT_DIR"):
+        if os.environ.get(name) and Path(os.environ[name]).is_dir():
+            return os.environ[name]
+    cwd = str(data.get("cwd") or "") or os.getcwd()
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+    except Exception:
+        top = ""
+    for folder in (cwd, top):
+        if folder and (Path(folder, ".agent-memory").is_dir() or Path(folder, ".agents").is_dir()):
+            return folder
+    return top or cwd
+
+
+# Codex sends one patch for an edit. The files are in its header lines.
+PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update) File: (.+?)\s*$|^\*\*\* Move to: (.+?)\s*$", re.M)
+
+
+def edited_files(args: dict, base: str) -> list:
+    """The files that an edit tool changed: `file_path` (Claude Code), `filePath` (OpenCode), or a patch (Codex)."""
+    paths = [args[k] for k in ("file_path", "filePath", "path") if isinstance(args.get(k), str)]
+    for k in ("command", "patchText", "patch", "input"):
+        if isinstance(args.get(k), str) and "*** " in args[k]:
+            paths += [a or b for a, b in PATCH_FILE.findall(args[k])]
+    out = []
+    for p in paths:
+        full = p if os.path.isabs(p) else os.path.join(base, p)
+        if os.path.isfile(full) and full not in out:
+            out.append(full)
+    return out
+
+
 def ruff(path: str) -> None:
     # Prefer the project's pinned ruff without syncing the environment on every edit
     # (`uv run` would otherwise create .venv / rewrite uv.lock); fall back to ruff on PATH.
@@ -57,15 +94,21 @@ def ruff(path: str) -> None:
 
 
 def main():
-    project = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project and Path(project).is_dir():
-        os.chdir(project)
     try:
-        path = json.load(sys.stdin).get("tool_input", {}).get("file_path", "")
+        data = json.load(sys.stdin)
+        args = data.get("tool_input") or {}
+        assert isinstance(args, dict)
     except Exception:
         return
-    if not path or not Path(path).is_file():
-        return
+    base = str(data.get("cwd") or "") or os.getcwd()  # a relative path is relative to the folder of the session
+    project = project_root(data)
+    if project and Path(project).is_dir():
+        os.chdir(project)
+    for path in edited_files(args, base):
+        format_file(path)
+
+
+def format_file(path: str) -> None:
     ext = Path(path).suffix.lower()
     if ext in (".py", ".pyi"):
         ruff(path)

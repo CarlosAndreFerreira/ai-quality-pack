@@ -50,6 +50,24 @@ MEM = Path(".agents/skills/long-horizon/scripts/memory.py")
 PLUGIN_MEM = Path(__file__).resolve().parents[3] / "skills" / "long-horizon" / "scripts" / "memory.py"
 
 
+def project_root(data: dict) -> str:
+    """The project folder. Claude Code gives CLAUDE_PROJECT_DIR. Other agents (Codex, OpenCode) give the session
+    folder in `cwd`: the project is that folder, or the git top level above it, where the pack's files are."""
+    for name in ("CLAUDE_PROJECT_DIR", "AGENT_PROJECT_DIR"):
+        if os.environ.get(name) and Path(os.environ[name]).is_dir():
+            return os.environ[name]
+    cwd = str(data.get("cwd") or "") or os.getcwd()
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+    except Exception:
+        top = ""
+    for folder in (cwd, top):
+        if folder and (Path(folder, ".agent-memory").is_dir() or Path(folder, ".agents").is_dir()):
+            return folder
+    return top or cwd
+
+
 def record(outcome: str, env: dict) -> None:
     """One `stop` line in .agent-memory/events.jsonl. A failure here must not change the hook's result."""
     try:
@@ -64,7 +82,7 @@ def main() -> int:
         data = json.load(sys.stdin)
     except Exception:
         data = {}
-    project = os.environ.get("CLAUDE_PROJECT_DIR")
+    project = project_root(data if isinstance(data, dict) else {})
     if project and Path(project).is_dir():
         os.chdir(project)  # hooks may start in a subfolder; the pack paths are relative to the project root
     global MEM

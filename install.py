@@ -11,6 +11,8 @@ Options:
   --link DIR           also expose skills to another agent folder (repeatable, e.g. .codex/skills)
   --with-egm           install Google's Elephant-Goldfish Model plugin via the agents' own plugin CLIs
   --with-stop-gate     Claude Code Stop hook: the completion gate must pass before the agent finishes
+  --with-codex         Codex hooks in .codex/hooks.json: digest and formatter; the Stop gate and the guard with their options
+  --with-opencode      OpenCode 2 plugin and subagents in .opencode/: digest and formatter; the gate and the guard with their options
   --with-ci            GitHub Actions workflow: the gate runs on each pull request, with the base branch's gate.json
   --dry-run            print actions only
 Never overwrites your files: templates are added only if absent; settings.json is merged.
@@ -271,6 +273,149 @@ def add_or_upgrade(src: Path, dst: Path, upgrade: bool) -> None:
         shutil.copy2(src, dst)
 
 
+# ---------------------------------------------------------------- other agents: Codex and OpenCode
+# Codex has the hook events and the hook input of Claude Code, in `.codex/hooks.json`. It has no variable for the
+# project folder: the command asks git. The scripts are the ones in `.claude/hooks/`.
+CODEX_HOOKS = {
+    "SessionStart": (None, ".agents/skills/long-horizon/scripts/memory.py", "start"),
+    "PostToolUse": ("apply_patch|Edit|Write", ".claude/hooks/format_on_edit.py"),
+    "Stop": (None, ".claude/hooks/gate_on_stop.py"),
+    "PreToolUse": ("Bash|apply_patch|Edit|Write", ".claude/hooks/guard_pack_files.py"),
+}
+
+
+def codex_entry(event: str, py: str = PY) -> dict:
+    matcher, script, *args = CODEX_HOOKS[event]
+    hook = {"type": "command", "command": " ".join([py, f'"$(git rev-parse --show-toplevel)"/{script}', *args])}
+    return {"matcher": matcher, "hooks": [hook]} if matcher else {"hooks": [hook]}
+
+
+def read_json_object(path: Path):
+    """The JSON object of `path`, {} if there is no file, None (with a warning) if the file is not usable."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        log(f"WARN: {path} is not valid JSON or has an unexpected shape; not modified")
+        return None
+    return data
+
+
+def install_codex(root: Path, stop_gate: bool, guard: bool) -> None:
+    path = root / ".codex" / "hooks.json"
+    data = read_json_object(path)
+    if data is None:
+        return
+    events = ["SessionStart", "PostToolUse"] + (["Stop"] if stop_gate else []) + (["PreToolUse"] if guard else [])
+    hooks, changed = data.setdefault("hooks", {}), False
+    for event in events:
+        entry = codex_entry(event)
+        existing = hooks.setdefault(event, [])
+        if not isinstance(existing, list):
+            log(f"WARN: {path} has an unexpected shape; not modified")
+            return
+        if not any(h.get("command") == entry["hooks"][0]["command"] for e in existing if isinstance(e, dict) for h in e.get("hooks", [])):
+            existing.append(entry)
+            changed = True
+    if not changed:
+        log(f"ok (hooks present): {path}")
+        return
+    log(f"{'merged' if path.exists() else 'added'}: {path} (Codex hooks: {', '.join(events)})")
+    log("NOTE: Codex runs project hooks only after you trust them: start Codex in this repository and use /hooks. "
+        "The hook commands need a POSIX shell; they were not run on Windows.")
+    if not DRY:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def uninstall_codex(root: Path) -> None:
+    path = root / ".codex" / "hooks.json"
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        hooks = data["hooks"]
+        assert isinstance(hooks, dict)
+    except Exception:
+        log(f"kept (no pack hooks found, or not valid JSON): {path}")
+        return
+    changed = False
+    for event in list(hooks):
+        if event not in CODEX_HOOKS or not isinstance(hooks[event], list):
+            continue
+        ours = {codex_entry(event, py)["hooks"][0]["command"] for py in ("python", "python3")}
+        for e in hooks[event]:
+            if isinstance(e, dict) and isinstance(e.get("hooks"), list):
+                kept = [h for h in e["hooks"] if not (isinstance(h, dict) and h.get("command") in ours)]
+                changed = changed or len(kept) != len(e["hooks"])
+                e["hooks"] = kept
+        hooks[event] = [e for e in hooks[event] if not (isinstance(e, dict) and e.get("hooks") == [])]
+        if not hooks[event]:
+            del hooks[event]
+    if not changed:
+        return
+    if not hooks:
+        del data["hooks"]
+    if not data:
+        remove(path)
+        remove_if_empty(root / ".codex")
+        return
+    log(f"removed the pack's hooks from: {path}")
+    if not DRY:
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+OPENCODE_AGENTS = ("evaluator", "criteria", "triage")
+
+
+def opencode_agent_text(name: str) -> str:
+    """The Claude Code subagent file as an OpenCode agent: the same instructions, the OpenCode header."""
+    text = (PACK / "templates" / ".claude" / "agents" / f"{name}.md").read_text(encoding="utf-8")
+    head, _, body = text[4:].partition("\n---\n") if text.startswith("---\n") else ("", "", text)
+    description = next((l[len("description:"):].strip() for l in head.splitlines() if l.startswith("description:")), name)
+    return f"---\ndescription: {description}\nmode: subagent\n---\n{body}"
+
+
+def install_opencode(root: Path, stop_gate: bool, guard: bool, upgrade: bool) -> None:
+    add_or_upgrade(PACK / "templates" / "opencode" / "ai-quality-pack.js", root / ".opencode" / "plugins" / "ai-quality-pack.js", upgrade)
+    for name in OPENCODE_AGENTS:
+        add_if_absent(None, root / ".opencode" / "agents" / f"{name}.md", opencode_agent_text(name))
+    path = root / ".opencode" / "ai-quality-pack.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        assert isinstance(cfg, dict)
+    except Exception:
+        log(f"WARN: {path} is not valid JSON; not modified")
+        return
+    new = dict(cfg, stop_gate=bool(cfg.get("stop_gate") or stop_gate), guard=bool(cfg.get("guard") or guard))
+    if new != cfg or not path.exists():
+        log(f"{'updated' if path.exists() else 'added'}: {path} (stop gate: {'on' if new['stop_gate'] else 'off'}, guard: {'on' if new['guard'] else 'off'})")
+        if not DRY:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(new, indent=2) + "\n", encoding="utf-8")
+    log("NOTE: the plugin is for OpenCode 2. OpenCode cannot stop the agent from finishing: on a red gate the plugin "
+        "sends the gate output to the session one time. For unattended work use `memory.py gated-run`.")
+
+
+def uninstall_opencode(root: Path, force: bool) -> None:
+    base = root / ".opencode"
+    if not base.is_dir():
+        return
+    remove_pack_file(PACK / "templates" / "opencode" / "ai-quality-pack.js", base / "plugins" / "ai-quality-pack.js", force)
+    for name in OPENCODE_AGENTS:
+        dst = base / "agents" / f"{name}.md"
+        if dst.is_file() and (force or dst.read_text(encoding="utf-8") == opencode_agent_text(name)):
+            remove(dst)
+        elif dst.is_file():
+            log(f"kept (you changed it; --force removes it): {dst}")
+    if (base / "ai-quality-pack.json").is_file():
+        remove(base / "ai-quality-pack.json")
+    remove_if_empty(base / "plugins", base / "agents", base)
+
+
 def merge_settings(path: Path, stop_gate: bool = False) -> None:
     ours = {
         "SessionStart": {"hooks": [{"type": "command", "command": hook_command("SessionStart")}]},
@@ -350,6 +495,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
         add_guard(root / ".claude" / "settings.json")
     if a.with_sandbox:
         add_sandbox(root / ".claude" / "settings.json", a.force, a.sandbox_allow_domain)
+    if a.with_codex:
+        install_codex(root, a.with_stop_gate, a.with_guard)
+    if a.with_opencode:
+        install_opencode(root, a.with_stop_gate, a.with_guard, a.upgrade)
     if a.codeowners:
         add_codeowners(root, a.codeowners)
     for p in profiles:
@@ -589,6 +738,8 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
     remove_pack_file(tpl / "CLAUDE.md", root / "CLAUDE.md", False)
     unmerge_settings(root / ".claude" / "settings.json")
+    uninstall_codex(root)
+    uninstall_opencode(root, a.force)
     remove_codeowners(root)
     for d in ("hooks", "agents"):
         pycache = root / ".claude" / d / "__pycache__"
@@ -637,6 +788,10 @@ def main() -> None:
     ap.add_argument("--link", action="append", default=[], help="extra agent skills dir to link, relative to DIR")
     ap.add_argument("--with-egm", action="store_true", help="install Google's Elephant-Goldfish Model plugin")
     ap.add_argument("--with-stop-gate", action="store_true", help="Claude Code Stop hook enforcing the completion gate")
+    ap.add_argument("--with-codex", action="store_true",
+                    help="Codex hooks in .codex/hooks.json (digest, formatter; the Stop gate and the guard with their options)")
+    ap.add_argument("--with-opencode", action="store_true",
+                    help="OpenCode 2 plugin and subagents in .opencode/ (digest, formatter; the gate and the guard with their options)")
     ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
     ap.add_argument("--with-sandbox", action="store_true",
                     help="Claude Code settings: sandbox for shell commands (it must be available) and no read of .env and secrets/ files")
