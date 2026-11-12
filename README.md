@@ -103,14 +103,14 @@ python3 .agents/skills/long-horizon/scripts/memory.py stats            # last 30
 # Run statistics: last 30 days (41 events, 6 sessions)
 gate: 12 runs · 4 failed (33%) · 9 skipped (unchanged) · median 41.0s
   3× failed: uv run pytest -q
-stop hook: 3 blocked · 1 released with the gate still failing
+stop hook: 3 blocked · 1 released without a passing gate
 features: 5 passed · 4 failed gradings · 1.8 evaluator rounds per pass · verified by: evaluator 4, human 1
   ⚠ marked as passing while the gate was not green for that workspace: F-3
 lessons: 3 added · 2 recurred · votes +4/-1
 ```
 
 Two cases that were silent before are now visible:
-- The Stop hook blocks one time only, so that it cannot loop. If the agent then stops with a red gate, the log records `released-red` and the next session digest shows it under "Needs you".
+- The Stop hook blocks one time only, so that it cannot loop. If the agent then stops without a gate pass for its final code, the log records `released-red` and the next session digest shows it under "Needs you".
 - `feature pass --verified-by evaluator` is a statement by the agent. The log records if the gate was green for that workspace at that moment, and `stats` lists the features where it was not.
 
 `skill-eval` keeps the output of each agent run in `.agent-memory/evals/results/<run>-transcripts/`. If the agent prints a JSON result (`claude -p {prompt} --output-format json`), each run also records tokens, cost and turns, and the cost ratio of a verdict uses money or tokens instead of wall-clock time.
