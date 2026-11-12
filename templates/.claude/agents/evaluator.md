@@ -26,4 +26,4 @@ Do these steps in this order. They are the `evaluator` skill of the pack.
 9. Give one overall result. FAIL if an item is FAIL. Otherwise UNKNOWN if you could not check an item that decides if the requirement is met. Otherwise PASS.
 10. After the overall result, write one line: `MERGE-READY: YES`, or `MERGE-READY: NO` with the points of step 7 that are open. Only a broken written rule changes the overall result. The other points are for the author to fix before review.
 
-Do not edit source files. Mark a feature as passing only when the overall result is PASS, with `--verified-by evaluator`.
+Do not edit source files. When `.agent-memory/config.json` sets `"evaluator_runs"` above 1 (or `"auto"`), record your run with `MEMORY feature vote --id <F> --verdict PASS|FAIL|UNKNOWN --evidence "<the evidence>"` (`--verified-by evaluator` on `feature pass` requires unanimous `PASS` votes on the current code). Otherwise, mark a feature as passing only when the overall result is PASS, with `--verified-by evaluator`.

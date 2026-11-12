@@ -21,8 +21,9 @@
 # Limits to know:
 #   - This template was not run end to end by the pack's authors. Run it on a test issue first.
 #   - If the agent step reports an OIDC or token error, add `id-token: write` to the permissions of the `agent` job.
-#   - The agent job has a shell and network access. The tool list in `claude_args` has no web tools, but a shell
-#     command can still send data out. Keep secrets out of this job.
+#   - The agent job runs StepSecurity Harden-Runner with `egress-policy: block` so outbound traffic is restricted to
+#     `api.anthropic.com`, `github.com`, Actions log/artifact hosts, and npm; review `allowed-endpoints` before
+#     running, and keep extra secrets out of this job (the agent still holds `ANTHROPIC_API_KEY`).
 #   - A pull request opened with the default GITHUB_TOKEN does not start other workflows (for example
 #     quality-gate). To start them, use a GitHub App token in `publish` in place of `github.token`.
 #   - A change of `.github/workflows/` cannot be pushed with the default token. Such a run ends in a comment.
@@ -49,6 +50,20 @@ jobs:
     outputs:
       ready: ${{ steps.triage.outputs.ready }}
     steps:
+      - name: Harden Runner (restrict outbound network)
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911  # v2.13.0
+        with:
+          egress-policy: block
+          disable-sudo-and-containers: true
+          allowed-endpoints: |
+            api.anthropic.com:443
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+            registry.npmjs.org:443
+            *.blob.core.windows.net:443
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0

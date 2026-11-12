@@ -52,9 +52,11 @@ if sys.version_info < (3, 9):  # this block must parse and run on Python 3.6: re
              % (os.path.basename(sys.argv[0]), sys.version_info[0], sys.version_info[1]))
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import difflib
+import fnmatch
 import json
 import os
 import re
@@ -63,7 +65,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 SCHEMA = 3
 ROOT = Path(os.environ.get("AGENT_MEMORY_DIR", ".agent-memory"))
@@ -84,6 +86,7 @@ PACK_VERSION = "0.5.0"  # the same as .claude-plugin/plugin.json (a test checks 
 CHAIN_START = "0" * 32  # `prev` of the first event of a chain
 SESSION = ROOT / ".session"
 REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
+REPLAY_BACKUP = ROOT / ".replay-backup.json"  # temporary backup while replaying base tests on new code
 # test files, and markers that turn a test off (the gate reports deleted tests and new markers)
 TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_test\.(py|go|rs)$"
                           r"|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)[^/]+Tests?\.(java|kt|cs)$")
@@ -413,7 +416,7 @@ def gate_fresh():
 
 
 def read_jsonl(path: Path) -> List[dict]:
-    if not path.exists():
+    if not path.is_file():
         return []
     out = []
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -443,6 +446,13 @@ def git(*args: str) -> str:
         return ""
 
 
+def git_ok(*args: str) -> bool:
+    try:
+        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------- features
 def load_features() -> List[dict]:
     by_id: Dict[str, dict] = {}
@@ -456,8 +466,8 @@ def load_features() -> List[dict]:
         if not fid:
             continue
         cur = by_id.setdefault(fid, {"id": fid, "description": "", "criteria": [], "passes": False,
-                                     "evidence": "", "verified_by": "", "updated": e.get("updated", "")})
-        for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated"):
+                                     "evidence": "", "verified_by": "", "votes": [], "updated": e.get("updated", "")})
+        for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated", "votes", "vote_summary"):
             if k in e:
                 cur[k] = e[k]
     return list(by_id.values())
@@ -536,7 +546,9 @@ def load_tasks() -> Dict[str, dict]:
                     t["notes"].append(f"{e.get('ts')} ⚠ id collision after a merge: another task '{e['title']}' also used {tid} — re-open it with a new id")
                 continue  # duplicate open line from a union merge
             t["opened"] = True
-            t.update({k: e[k] for k in ("title", "source", "feature") if e.get(k)})
+            t.update({k: e[k] for k in ("title", "source", "feature", "base") if e.get(k)})
+        if e.get("scope"):
+            t["scope"] = list(e["scope"])
         if e.get("status"):
             t["status"] = e["status"]
         if e.get("note"):
@@ -545,6 +557,8 @@ def load_tasks() -> Dict[str, dict]:
             t["links"].append(e["link"])
         if e.get("worktree"):
             t["worktree"] = e["worktree"]
+        if e.get("base") and not t.get("base"):
+            t["base"] = e["base"]
         t["updated"] = e.get("ts")
     return tasks
 
@@ -554,9 +568,28 @@ def next_task_id(tasks: Dict[str, dict]) -> str:
     return f"T-{(max(nums) + 1) if nums else 1:04d}"
 
 
-def task_event(**kw: str) -> None:
+def task_event(**kw: object) -> None:
     kw["ts"] = dt.datetime.now().isoformat(timespec="seconds")
-    append_line(TASKS, {k: v for k, v in kw.items() if v not in (None, "")})
+    append_line(TASKS, {k: v for k, v in kw.items() if v not in (None, "", [])})
+
+
+GITIGNORE_ENTRIES = ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro", ".replay-backup.json")
+
+
+def ensure_gitignore(create: bool = False) -> None:
+    if not ROOT.is_dir():
+        return
+    gi = ROOT / ".gitignore"
+    if not gi.exists():
+        if not create:
+            return
+        gi.write_text(".lock\n.*.tmp\n.gate-pass\n.repro\nevals/results/\n", encoding="utf-8")
+    text = gi.read_text(encoding="utf-8")
+    missing = [x for x in GITIGNORE_ENTRIES if x not in text.splitlines()]
+    if missing:  # the run log is local telemetry: it is not committed
+        lead = "" if not text or text.endswith("\n") else "\n"  # a last line without a newline stays its own line
+        with gi.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(lead + "\n".join(missing) + "\n")
 
 
 # ---------------------------------------------------------------- commands
@@ -573,15 +606,7 @@ def cmd_init(a: argparse.Namespace) -> None:
     ga = ROOT / ".gitattributes"
     if not ga.exists():  # union merge keeps both sides of append-only logs; loaders de-duplicate
         ga.write_text("features.jsonl merge=union\nlessons.jsonl merge=union\ntasks.jsonl merge=union\nprogress.md merge=union\n", encoding="utf-8")
-    gi = ROOT / ".gitignore"
-    if not gi.exists():
-        gi.write_text(".lock\n.*.tmp\n.gate-pass\n.repro\nevals/results/\n", encoding="utf-8")
-    text = gi.read_text(encoding="utf-8")
-    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro") if x not in text.splitlines()]
-    if missing:  # the run log is local telemetry: it is not committed
-        lead = "" if not text or text.endswith("\n") else "\n"  # a last line without a newline stays its own line
-        with gi.open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(lead + "\n".join(missing) + "\n")
+    ensure_gitignore(create=True)
     print(f"initialised {ROOT}/ (schema {SCHEMA})")
 
 
@@ -707,6 +732,91 @@ def cmd_compact(a: argparse.Namespace) -> None:
     print(f"archived {len(starts) - a.keep} entries to {ARCHIVE}")
 
 
+def code_state_hash() -> str:
+    """Hash of workspace files outside .agent-memory/ and .git/ so evaluator votes bind to exact code."""
+    import hashlib
+    h = hashlib.sha256()
+    root_name = ROOT.as_posix().rstrip("/")
+    head = git("rev-parse", "--verify", "HEAD")
+    if head:
+        h.update(head.encode())
+        h.update(b"\0")
+        h.update(git("diff", "HEAD", "--", ".", f":(exclude){root_name}").encode())
+        for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
+            if f == root_name or f.startswith(root_name + "/"):
+                continue
+            h.update(f.encode())
+            with contextlib.suppress(OSError):
+                h.update(Path(f).read_bytes())
+        return h.hexdigest()
+    files: List[Path] = []
+    for p in Path(".").rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.as_posix().lstrip("./")
+        if (rel == root_name or rel.startswith(root_name + "/")
+                or rel == ".git" or rel.startswith(".git/") or "/__pycache__/" in f"/{rel}"):
+            continue
+        files.append(p)
+    for p in sorted(files, key=lambda x: x.as_posix()):
+        h.update(p.as_posix().encode())
+        with contextlib.suppress(OSError):
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def _diff_has_high_risk_changes(ref: str) -> bool:
+    _, lines, paths = change_size(ref)
+    if lines > RISK_LINES_HIGH:
+        return True
+    all_paths = set(paths) | set(changed_repo_files(ref))
+    if any(rx.search(p) for rx, _ in RISK_PATHS for p in all_paths):
+        return True
+    if test_changes(ref):
+        return True
+    if GATE.exists() and gate_config(ref)[1]:
+        return True
+    return False
+
+
+def required_evaluator_runs(cfg: Optional[dict] = None, ref: Optional[str] = None) -> int:
+    cfg = load_config() if cfg is None else cfg
+    raw = cfg.get("evaluator_runs", 1)
+    if isinstance(raw, str) and raw.strip().lower() == "auto":
+        r = ref
+        if r is None:
+            r = resolve_gate_ref(None)[0] if git_ok("rev-parse", "--verify", "HEAD") else "HEAD"
+        return 3 if _diff_has_high_risk_changes(r) else 1
+    if isinstance(raw, bool):
+        return 1
+    try:
+        n = int(raw)
+        return n if n >= 1 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def aggregate_feature_votes(votes: List[dict], current_hash: str, req: int) -> dict:
+    """Apply the asymmetric rule to votes matching `current_hash`: PASS only on `req` unanimous PASS votes."""
+    valid = [v for v in (votes or []) if v.get("hash") == current_hash]
+    n_pass = sum(1 for v in valid if v.get("verdict") == "PASS")
+    n_fail = sum(1 for v in valid if v.get("verdict") == "FAIL")
+    n_unk = sum(1 for v in valid if v.get("verdict") == "UNKNOWN")
+    stale = len(votes or []) - len(valid)
+    majority_fail = (req // 2) + 1
+    split = (n_pass > 0 and n_fail > 0) or (len(valid) >= req and n_pass < req and n_fail < majority_fail)
+    if n_pass >= req and n_fail == 0 and n_unk == 0:
+        status = "PASS"
+    elif n_fail >= majority_fail:
+        status = "FAIL"
+    elif split:
+        status = "UNKNOWN"
+    else:
+        status = "PENDING"
+    return {"status": status, "split": split, "pass": n_pass, "fail": n_fail, "unknown": n_unk,
+            "total": len(valid), "stale": stale, "required": req, "valid": valid}
+
+
 def cmd_feature(a: argparse.Namespace) -> None:
     ensure()
     with locked():
@@ -721,7 +831,7 @@ def cmd_feature(a: argparse.Namespace) -> None:
                 die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
             guard_secrets(a.desc, *a.criterion)
             rec = {"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
-                   "evidence": "", "verified_by": "", "updated": now()}
+                   "evidence": "", "verified_by": "", "votes": [], "updated": now()}
             fs.append(rec)
             save_features(fs, dict(rec, ev="add"))
             log_event("feature", id=a.id, result="add", criteria=len(a.criterion))
@@ -729,6 +839,9 @@ def cmd_feature(a: argparse.Namespace) -> None:
         elif a.action in ("pass", "fail"):
             if a.id not in by_id:
                 die(f"unknown feature {a.id}")
+            req = required_evaluator_runs()
+            f = by_id[a.id]
+            cur_hash = code_state_hash()
             if a.action == "pass":
                 if not a.evidence:
                     die("PASS requires --evidence (test names / command output you saw)")
@@ -736,7 +849,11 @@ def cmd_feature(a: argparse.Namespace) -> None:
                     die("PASS requires --verified-by (evaluator | human | ci). The implementer does not grade its own work.")
                 if a.verified_by == "self":
                     die("--verified-by self is not accepted; run the `evaluator` skill/subagent")
-            f = by_id[a.id]
+                if a.verified_by == "evaluator" and req > 1:
+                    agg = aggregate_feature_votes(f.get("votes", []), cur_hash, req)
+                    if agg["status"] != "PASS":
+                        die(f"{a.id} needs {req} unanimous PASS evaluator votes on the current code "
+                            f"(has {agg['pass']} PASS, {agg['fail']} FAIL); use `feature vote`")
             streak = 0 if a.action == "pass" else f.get("fail_streak", 0) + 1
             f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
                      fail_streak=streak, updated=now())
@@ -746,6 +863,44 @@ def cmd_feature(a: argparse.Namespace) -> None:
             print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
             if streak >= STUCK_AFTER:
                 print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
+        elif a.action == "vote":
+            if not a.id or a.id not in by_id:
+                die(f"unknown or missing feature {a.id or '(none)'}")
+            if a.verdict not in ("PASS", "FAIL", "UNKNOWN"):
+                die("feature vote needs --verdict PASS|FAIL|UNKNOWN")
+            if not a.evidence:
+                die("feature vote needs --evidence (independent verification command output)")
+            guard_secrets(a.evidence, a.evaluator_id or "")
+            f = by_id[a.id]
+            cur_hash = code_state_hash()
+            req = required_evaluator_runs()
+            votes = list(f.get("votes") or [])
+            valid_count = sum(1 for v in votes if v.get("hash") == cur_hash)
+            votes.append({"verdict": a.verdict, "evidence": a.evidence,
+                          "evaluator_id": a.evaluator_id or f"run-{valid_count + 1}",
+                          "hash": cur_hash, "ts": now()})
+            agg = aggregate_feature_votes(votes, cur_hash, req)
+            vote_summary = {"hash": cur_hash, "required": req, "pass": agg["pass"], "fail": agg["fail"],
+                            "unknown": agg["unknown"], "status": agg["status"], "split": agg["split"]}
+            streak = 0 if agg["status"] == "PASS" else (f.get("fail_streak", 0) + 1 if a.verdict == "FAIL" else f.get("fail_streak", 0))
+            ev_text = "; ".join(v["evidence"] for v in agg["valid"][-req:]) if agg["status"] == "PASS" else a.evidence
+            f.update(votes=votes, vote_summary=vote_summary, passes=(agg["status"] == "PASS"),
+                     evidence=ev_text, verified_by=("evaluator" if agg["status"] == "PASS" else ""),
+                     fail_streak=streak, updated=now())
+            save_features(fs, dict(f, ev="vote"))
+            log_event("feature", id=a.id, result="vote", verdict=a.verdict, status=agg["status"],
+                      votes_pass=agg["pass"], votes_fail=agg["fail"], required=req,
+                      hash=cur_hash[:12], gate_fresh=gate_fresh())
+            if agg["status"] == "PASS":
+                print(f"{a.id} -> PASS ({agg['pass']}/{req} unanimous)")
+            elif agg["status"] == "FAIL":
+                print(f"{a.id} -> FAIL ({agg['fail']}/{agg['total']} fail)")
+                if streak >= STUCK_AFTER:
+                    print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
+            elif agg["status"] == "UNKNOWN":
+                print(f"{a.id} -> UNKNOWN (split {agg['pass']} PASS / {agg['fail']} FAIL on current code)")
+            else:
+                print(f"{a.id} -> PENDING ({agg['pass']}/{req} PASS votes on current code)")
         elif a.action == "show":
             if a.id not in by_id:
                 die(f"unknown feature {a.id}")
@@ -832,9 +987,13 @@ def cmd_task(a: argparse.Namespace) -> None:
         if a.action == "open":
             if not a.title:
                 die("task open needs --title")
-            guard_secrets(a.title, a.source or "")
+            scopes = [s.strip() for s in (a.scope or []) if s.strip()]
+            guard_secrets(a.title, a.source or "", *scopes)
             tid = next_task_id(tasks)
-            task_event(ev="open", id=tid, title=a.title, source=a.source, feature=a.feature, status="open")
+            base = git("rev-parse", "--verify", "HEAD") or None
+            task_event(ev="open", id=tid, title=a.title, source=a.source, feature=a.feature, status="open",
+                       base=base, scope=scopes or None)
+            log_event("task", action="open", id=tid, base=base, scope=scopes or None)
             print(tid)
             return
         if a.action == "list":
@@ -875,7 +1034,10 @@ def cmd_task(a: argparse.Namespace) -> None:
             r = subprocess.run(["git", "worktree", "add", "-b", branch, path], capture_output=True, text=True)
             if r.returncode != 0:
                 die(r.stderr.strip() or "git worktree add failed")
-            task_event(ev="worktree", id=a.id, worktree=path, link=f"branch:{branch}", status="in-progress")
+            base = None if t.get("base") else (git("rev-parse", "--verify", "HEAD") or None)
+            task_event(ev="worktree", id=a.id, worktree=path, link=f"branch:{branch}", status="in-progress", base=base)
+            if base:
+                log_event("task", action="worktree", id=a.id, base=base)
             print(f"{a.id}: worktree {path} on branch {branch}")
             print(f"hint: keep ONE shared memory — in the worktree run: export AGENT_MEMORY_DIR={ROOT.resolve()}")
 
@@ -899,6 +1061,74 @@ def workspace_hash() -> str:
     return h.hexdigest()
 
 
+def _commit_sha(ref: str) -> str:
+    return git("rev-parse", "--verify", f"{ref}^{{commit}}")
+
+
+def resolve_gate_ref(explicit_ref: Optional[str]) -> Tuple[str, str, List[str]]:
+    """(ref, note, warnings) for comparing changes and reading gate.json.
+
+    Precedence: explicit --ref -> AGENT_GATE_REF -> earliest valid active task base (cross-checked with
+    events.jsonl and git ancestry) -> merge-base HEAD origin/<default> -> HEAD.
+    """
+    if explicit_ref:
+        return explicit_ref, "", []
+    env_ref = os.environ.get("AGENT_GATE_REF")
+    if env_ref:
+        return env_ref, "", []
+    warnings: List[str] = []
+    if ROOT.is_dir() and (TASKS.exists() or EVENTS.exists()):
+        tasks = load_tasks()
+        logged_bases: Dict[str, str] = {}
+        with contextlib.suppress(OSError):
+            for e in read_jsonl(EVENTS):
+                if e.get("ev") == "task" and e.get("id") and e.get("base"):
+                    logged_bases.setdefault(str(e["id"]), str(e["base"]))
+        candidates: List[Tuple[str, str]] = []
+        for t in sorted(tasks.values(), key=lambda x: x["id"]):
+            if t.get("status") in ("done", "dropped"):
+                continue
+            tid = str(t["id"])
+            t_base = str(t.get("base") or "")
+            e_base = logged_bases.get(tid, "")
+            if e_base:
+                if t_base != e_base:
+                    warnings.append(f"base commit of task {tid} in {TASKS.name} differs from the run log; using {e_base[:12]}")
+                cand = e_base
+            else:
+                cand = t_base
+            if not cand:
+                continue
+            sha = _commit_sha(cand)
+            if not sha or not git_ok("merge-base", "--is-ancestor", sha, "HEAD"):
+                warnings.append(f"base commit {clean(cand, 12)} of task {tid} is not an ancestor of HEAD; ignored")
+                continue
+            candidates.append((tid, sha))
+        if candidates:
+            best_tid, best_sha = candidates[0]
+            for tid, sha in candidates[1:]:
+                if sha == best_sha:
+                    continue
+                if git_ok("merge-base", "--is-ancestor", sha, best_sha):
+                    best_tid, best_sha = tid, sha
+                elif not git_ok("merge-base", "--is-ancestor", best_sha, sha):
+                    mb = git("merge-base", best_sha, sha)
+                    if mb:
+                        best_tid, best_sha = tid, mb
+            return best_sha, f"changes compared with {best_sha[:12]} (task {best_tid})", warnings
+    remote_ref = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
+    if not remote_ref:
+        for cand in ("origin/main", "origin/master"):
+            if _commit_sha(cand):
+                remote_ref = cand
+                break
+    if remote_ref:
+        mb = git("merge-base", "HEAD", remote_ref)
+        if mb:
+            return mb, f"changes compared with {mb[:12]} ({remote_ref})", warnings
+    return "HEAD", "", warnings
+
+
 def gate_config(ref: str) -> tuple:
     """(config, warning). The agent can write gate.json, so an edit that is not committed does not count:
     the gate runs the version of `ref`. A gate.json that git does not track at `ref` is used as it is."""
@@ -914,7 +1144,15 @@ def gate_config(ref: str) -> tuple:
         committed = json.loads(r.stdout)
     except ValueError:
         return json.loads(text), ""
-    return committed, (f"{GATE.as_posix()} differs from {ref}: the gate ran the committed version. "
+    ref_label = ref[:12] if re.fullmatch(r"[0-9a-fA-F]{40}", ref) else ref
+    if ref != "HEAD":
+        with contextlib.suppress(Exception):
+            hr = subprocess.run(["git", "show", f"HEAD:./{GATE.as_posix()}"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=10)
+            if hr.returncode == 0 and hr.stdout.replace("\r\n", "\n").strip() != r.stdout.replace("\r\n", "\n").strip():
+                return committed, (f"{GATE.as_posix()} was committed after {ref_label}: the gate ran the version of {ref_label}. "
+                                   "A person reviews and commits a change of the gate")
+    return committed, (f"{GATE.as_posix()} differs from {ref_label}: the gate ran the committed version. "
                        "A person reviews and commits a change of the gate")
 
 
@@ -959,11 +1197,184 @@ def blocked_test_changes(ref: str, cfg: dict) -> List[str]:
             if kind in ("deleted", "skip") and not any(fnmatch.fnmatchcase(path, g) for g in allowed)]
 
 
+def _safe_repo_path(rel: str) -> Optional[Path]:
+    top = Path.cwd().resolve()
+    p = (top / rel).resolve()
+    try:
+        p.relative_to(top)
+    except ValueError:
+        return None
+    if p == top:
+        return None
+    return p
+
+
+def _clear_pycache_for(paths: List[str]) -> None:
+    for rel in paths:
+        if not rel.endswith(".py"):
+            continue
+        p = Path(rel)
+        cache_dir = p.parent / "__pycache__"
+        if cache_dir.is_dir():
+            for pyc in cache_dir.glob(f"{p.stem}.*.pyc"):
+                with contextlib.suppress(OSError):
+                    pyc.unlink()
+
+
+def restore_replay_backup() -> List[str]:
+    """Restore workspace test files left behind by an interrupted base-test replay and delete the backup."""
+    if not REPLAY_BACKUP.exists():
+        return []
+    try:
+        raw = json.loads(REPLAY_BACKUP.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [f"could not read {REPLAY_BACKUP.as_posix()}; clean it up by hand"]
+    if not isinstance(raw, dict):
+        return [f"invalid {REPLAY_BACKUP.as_posix()}; clean it up by hand"]
+    files = raw["files"] if list(raw.keys()) == ["files"] and isinstance(raw.get("files"), dict) else raw
+    restored = 0
+    for rel, b64 in files.items():
+        if not isinstance(rel, str):
+            continue
+        p = _safe_repo_path(rel)
+        if p is None:
+            continue
+        if b64 is None:
+            with contextlib.suppress(FileNotFoundError):
+                p.unlink()
+            restored += 1
+        elif isinstance(b64, str):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(base64.b64decode(b64.encode("ascii")))
+            restored += 1
+    _clear_pycache_for(list(files.keys()))
+    with contextlib.suppress(FileNotFoundError):
+        REPLAY_BACKUP.unlink()
+    return [f"restored {restored} test file(s) from interrupted replay backup ({REPLAY_BACKUP.name})"] if restored else []
+
+
+def run_replay_base_tests(ref: str, cfg: dict, limit: int, timeout: int) -> Tuple[str, List[str], str]:
+    """Run `test_command` in-place with the base versions of unapproved modified/deleted test files."""
+    mode = str(cfg.get("replay_base_tests") or "").lower()
+    if mode not in ("warn", "block"):
+        return "skip", [], ""
+    test_cmd = cfg.get("test_command")
+    if not test_cmd or not isinstance(test_cmd, str):
+        return "skip", [], ""
+    allowed = [str(g) for g in (cfg.get("allowed_test_changes") or [])]
+    paths: List[str] = []
+    for line in git("diff", "--name-status", "--no-renames", ref, "--").splitlines():
+        status, _, path = line.partition("\t")
+        if status[:1] in ("M", "D", "T") and TEST_PATH_RE.search(path):
+            if not any(fnmatch.fnmatchcase(path, g) for g in allowed):
+                paths.append(path)
+    if not paths:
+        return "skip", [], ""
+    base_bytes: Dict[str, bytes] = {}
+    for path in paths:
+        r = subprocess.run(["git", "show", f"{ref}:./{path}"], capture_output=True, timeout=10)
+        if r.returncode == 0:
+            base_bytes[path] = r.stdout
+    if not base_bytes:
+        return "skip", [], ""
+    ensure_gitignore(create=True)
+    backup: Dict[str, Optional[str]] = {}
+    for path in base_bytes:
+        p = Path(path)
+        backup[path] = base64.b64encode(p.read_bytes()).decode("ascii") if p.is_file() else None
+    atomic_write(REPLAY_BACKUP, json.dumps(backup, indent=2) + "\n")
+    ok, out = True, ""
+    try:
+        for path, data in base_bytes.items():
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        _clear_pycache_for(list(base_bytes.keys()))
+        try:
+            r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            ok = r.returncode == 0
+            out = (r.stdout + r.stderr)[-limit:]
+        except subprocess.TimeoutExpired:
+            ok = False
+            out = f"timeout after {timeout}s"
+    finally:
+        for path, b64 in backup.items():
+            p = Path(path)
+            if b64 is None:
+                with contextlib.suppress(FileNotFoundError):
+                    p.unlink()
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(base64.b64decode(b64.encode("ascii")))
+        _clear_pycache_for(list(base_bytes.keys()))
+        with contextlib.suppress(FileNotFoundError):
+            REPLAY_BACKUP.unlink()
+    return ("pass" if ok else "fail"), list(base_bytes.keys()), out
+
+
+def match_scope(path: str, patterns: List[str]) -> bool:
+    """True when `path` matches any task scope glob pattern (supporting trailing `/` dirs and `/**/`)."""
+    p = path.replace("\\", "/").lstrip("./")
+    for raw in patterns:
+        g = raw.strip().replace("\\", "/").lstrip("./")
+        if not g:
+            continue
+        if g.endswith("/"):
+            if p.startswith(g) or p == g.rstrip("/"):
+                return True
+            continue
+        if fnmatch.fnmatchcase(p, g):
+            return True
+        if "/**/" in g and fnmatch.fnmatchcase(p, g.replace("/**/", "/")):
+            return True
+    return False
+
+
+def active_task_scopes() -> List[str]:
+    if not ROOT.is_dir() or not TASKS.exists():
+        return []
+    scopes: List[str] = []
+    for t in load_tasks().values():
+        if t.get("status", "open") in ("open", "in-progress") and t.get("scope"):
+            for pat in t["scope"]:
+                if pat not in scopes:
+                    scopes.append(pat)
+    return scopes
+
+
+def changed_repo_files(ref: str) -> List[str]:
+    root_name = ROOT.as_posix().rstrip("/")
+    paths = set()
+    if _commit_sha(ref):
+        diff_lines = git("diff", "--name-only", ref, "--", ".", f":(exclude){root_name}").splitlines()
+    else:
+        diff_lines = (git("diff", "--name-only", "--cached", "--", ".", f":(exclude){root_name}").splitlines()
+                      + git("diff", "--name-only", "--", ".", f":(exclude){root_name}").splitlines())
+    for p in diff_lines + git("ls-files", "-o", "--exclude-standard").splitlines():
+        norm = p.strip().replace("\\", "/").lstrip("./")
+        if not norm or norm == root_name or norm.startswith(root_name + "/") or norm == ".git" or norm.startswith(".git/"):
+            continue
+        paths.add(norm)
+    return sorted(paths)
+
+
+def out_of_scope_files(ref: str) -> List[str]:
+    scopes = active_task_scopes()
+    if not scopes:
+        return []
+    return [p for p in changed_repo_files(ref) if not match_scope(p, scopes)]
+
+
 def cmd_gate(a: argparse.Namespace) -> None:
+    restored_warnings = restore_replay_backup()
+    if ROOT.is_dir():
+        ensure_gitignore(create=False)
     if not GATE.exists():
+        for w in restored_warnings:
+            print(f"gate WARNING: {w}")
         print(f"no {GATE} — nothing to gate (create it with {{\"commands\": [...]}})")
         return
-    ref = a.ref or os.environ.get("AGENT_GATE_REF") or "HEAD"
+    ref, ref_note, ref_warnings = resolve_gate_ref(a.ref)
     cfg, note = gate_config(ref)
     import hashlib
     global _POLICY  # in each gate line of the run log: which version of the rules gave this result
@@ -975,7 +1386,12 @@ def cmd_gate(a: argparse.Namespace) -> None:
         fresh = gate_fresh()
         print("gate: passed for this workspace" if fresh else "gate: no pass for this workspace")
         sys.exit(0 if fresh else 1)
-    warnings = ([note] if note else []) + test_changes(ref)
+    if ref_note:
+        print(f"gate: {ref_note}")
+    warnings = restored_warnings + ref_warnings + ([note] if note else []) + test_changes(ref)
+    oos = out_of_scope_files(ref)
+    if oos:
+        warnings.append(f"{len(oos)} file(s) changed outside the task scope: {', '.join(oos[:10])}")
     if cfg.get("max_changed_lines"):  # a change that is too large to review well: reported, a person decides
         files, changed, _ = change_size(ref)
         if changed > int(cfg["max_changed_lines"]):
@@ -1023,6 +1439,19 @@ def cmd_gate(a: argparse.Namespace) -> None:
                       warnings=warnings or None)
             sys.exit(1)
         print(f"gate ok: {c}")
+    replay_status, replay_paths, replay_out = run_replay_base_tests(ref, cfg, limit, timeout)
+    if replay_status == "fail":
+        msg = "the tests of the base fail on this code: " + ", ".join(replay_paths[:10])
+        if str(cfg.get("replay_base_tests") or "").lower() == "block":
+            print(f"gate FAILED: {msg}")
+            if replay_out:
+                print(replay_out)
+            with contextlib.suppress(FileNotFoundError):
+                GATE_PASS.unlink()
+            log_event("gate", result="fail", failed="base tests", seconds=round(time.time() - t0, 1), warnings=warnings or None)
+            sys.exit(1)
+        warnings.append(msg)
+        print(f"gate WARNING: {msg}")
     GATE_PASS.write_text(wh + "\n", encoding="utf-8")
     log_event("gate", result="pass", commands=len(cmds), seconds=round(time.time() - t0, 1), warnings=warnings or None)
     print("gate PASSED")
@@ -1222,8 +1651,8 @@ def change_size(ref: str) -> tuple:
     return files, lines, paths
 
 
-def change_risk(ref: str, gaps: List[str], warnings: List[str]) -> tuple:
-    """(LOW|MEDIUM|HIGH, reasons). HIGH: where a wrong merge costs most. MEDIUM: large, or a check has no record."""
+def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Optional[List[str]] = None) -> tuple:
+    """(LOW|MEDIUM|HIGH, reasons). HIGH: where a wrong merge costs most. MEDIUM: large, out of scope, or a check has no record."""
     files, lines, paths = change_size(ref)
     high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
     if warnings:
@@ -1235,12 +1664,14 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str]) -> tuple:
     medium = []
     if lines > RISK_LINES_MEDIUM or files > RISK_FILES_MEDIUM:
         medium.append(f"{lines} changed lines in {files} files")
+    if out_of_scope:
+        medium.append(f"{len(out_of_scope)} file(s) changed outside the task scope")
     if gaps:
         medium.append(f"{len(gaps)} check(s) without a record")
     return ("HIGH", high) if high else ("MEDIUM", medium) if medium else ("LOW", ["small change, every check has a record"])
 
 
-def evidence_report(ref: str, cost: Optional[float] = None) -> tuple:
+def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Optional[List[str]] = None) -> tuple:
     """(Markdown text, gaps, warnings, risk label) for exactly this code.
 
     It states what is not verified as plainly as what is: a reviewer decides faster with the gaps in view.
@@ -1266,29 +1697,51 @@ def evidence_report(ref: str, cost: Optional[float] = None) -> tuple:
     else:
         lines.append("- Reproduction: none verified for this code")
         gaps.append("no test was shown to fail before the change and pass after it")
+    req_runs = required_evaluator_runs(ref=ref)
+    cur_code_hash = code_state_hash()
     feats = load_features()
     if feats:
         graded = [f for f in feats if f.get("passes")]
+        graded_labels = []
+        for f in graded[:8]:
+            vs = f.get("vote_summary") or {}
+            ver = f.get("verified_by") or "?"
+            if vs.get("status") == "PASS" and vs.get("required", 1) > 1:
+                graded_labels.append(f"{f['id']} by {ver} ({vs['pass']}/{vs['required']} runs)")
+            else:
+                graded_labels.append(f"{f['id']} by {ver}")
         lines.append(f"- Acceptance criteria: {len(graded)} of {len(feats)} features graded as passing"
-                     + (" (" + ", ".join(f"{f['id']} by {f.get('verified_by') or '?'}" for f in graded[:8]) + ")" if graded else ""))
+                     + (" (" + ", ".join(graded_labels) + ")" if graded_labels else ""))
         open_ids = [f["id"] for f in feats if not f.get("passes")]
         if open_ids:
             gaps.append("features not graded as passing: " + ", ".join(open_ids[:8]))
+        for f in feats:
+            if f.get("passes"):
+                continue
+            agg = aggregate_feature_votes(f.get("votes", []), cur_code_hash, req_runs) if f.get("votes") else None
+            vs = f.get("vote_summary") or {}
+            if agg and agg["split"]:
+                gaps.append(f"evaluator split on {f['id']} ({agg['pass']} PASS, {agg['fail']} FAIL of {req_runs} runs)")
+            elif vs.get("split"):
+                gaps.append(f"evaluator split on {f['id']} ({vs.get('pass', 0)} PASS, {vs.get('fail', 0)} FAIL of {vs.get('required', req_runs)} runs)")
         selfgraded = [f["id"] for f in graded if (f.get("verified_by") or "") not in ("evaluator", "human", "ci")]
         if selfgraded:
             gaps.append("graded without an independent verifier: " + ", ".join(selfgraded[:8]))
     else:
         lines.append("- Acceptance criteria: none recorded")
         gaps.append("no acceptance criteria were recorded")
-    warnings = test_changes(ref)
+    warnings = list(extra_warnings or []) + test_changes(ref)
     if GATE.exists():
         note = gate_config(ref)[1]
         warnings = ([note] if note else []) + warnings
     for w in warnings[:10]:
         lines.append(f"- Warning: {clean(w, 200)}")
+    oos = out_of_scope_files(ref)
+    if oos:
+        lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
-    risk, reasons = change_risk(ref, gaps, warnings)
+    risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos)
     lines.append(f"- Review risk: {risk} ({'; '.join(reasons)})")
     lines.append(f"- Cost: ${cost:.2f} (given by the caller)" if cost is not None else "- Cost: not recorded")
     lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])
@@ -1298,7 +1751,8 @@ def evidence_report(ref: str, cost: Optional[float] = None) -> tuple:
 def cmd_evidence(a: argparse.Namespace) -> None:
     """What was verified for exactly this code, as Markdown for a pull request or a final report."""
     ensure()
-    text, gaps, warnings, _ = evidence_report(a.base, a.cost_usd)
+    ref, _, ref_warnings = resolve_gate_ref(a.base)
+    text, gaps, warnings, _ = evidence_report(ref, a.cost_usd, ref_warnings)
     print(text)
     if a.strict and (gaps or warnings):
         sys.exit(1)
@@ -1932,13 +2386,15 @@ def main() -> None:
     s.add_argument("--keep", type=int, default=20)
     s.set_defaults(fn=cmd_compact)
 
-    s = sub.add_parser("feature", help="features: add | pass | fail | show | list")
-    s.add_argument("action", choices=["add", "pass", "fail", "show", "list"])
+    s = sub.add_parser("feature", help="features: add | pass | fail | vote | show | list")
+    s.add_argument("action", choices=["add", "pass", "fail", "vote", "show", "list"])
     s.add_argument("--id")
     s.add_argument("--desc")
     s.add_argument("--criterion", action="append", help="testable acceptance criterion (repeatable)")
     s.add_argument("--evidence")
     s.add_argument("--verified-by", choices=["evaluator", "human", "ci", "self"])
+    s.add_argument("--verdict", choices=["PASS", "FAIL", "UNKNOWN"])
+    s.add_argument("--evaluator-id", help="label identifying an independent evaluator run")
     s.set_defaults(fn=cmd_feature)
 
     s = sub.add_parser("lesson", help="playbook: add | vote | list | candidates | status")
@@ -1962,6 +2418,7 @@ def main() -> None:
     s.add_argument("--title")
     s.add_argument("--source", help="where the request came from (issue #12, user chat, CI run…)")
     s.add_argument("--feature")
+    s.add_argument("--scope", action="append", help="allowed file/dir glob for this task (repeatable)")
     s.add_argument("--status")
     s.add_argument("--note")
     s.add_argument("--link")
@@ -1972,7 +2429,7 @@ def main() -> None:
     s.add_argument("--force", action="store_true")
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the gate passed for exactly this workspace")
     s.add_argument("--ref", help="git ref whose gate.json counts, and against which test changes are reported "
-                                 "(default: AGENT_GATE_REF, else HEAD; in CI use the base branch)")
+                                 "(default: AGENT_GATE_REF, else earliest active task base, origin default merge-base, or HEAD)")
     s.set_defaults(fn=cmd_gate)
     s = sub.add_parser("gated-run", help="run an agent command, then the gate; a red gate goes back to the agent "
                                          "(for unattended runs, where hooks may not run)")
@@ -1994,7 +2451,7 @@ def main() -> None:
     s.set_defaults(fn=cmd_repro)
     sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
     s = sub.add_parser("evidence", help="Markdown block for a pull request: what was verified for this code, and what was not")
-    s.add_argument("--base", default="HEAD", help="ref to compare with (in a pull request: the base branch)")
+    s.add_argument("--base", default=None, help="ref to compare with (default: active task base, origin default merge-base, or HEAD)")
     s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--strict", action="store_true", help="exit 1 when something is not verified or a warning exists")
     s.set_defaults(fn=cmd_evidence)

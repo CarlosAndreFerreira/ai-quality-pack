@@ -172,8 +172,10 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - The base runs in a temporary git worktree. Files that git does not track are not there. Use `--expect` to name text that the failure must print.
 - The gate uses the committed `gate.json`. It ignores an edit that is not committed, and it reports the edit.
 - The gate reports deleted test files and new skip markers. It does not block them. The next session digest shows them.
+- `task open` saves the base commit in `tasks.jsonl` and `events.jsonl`. `gate` and `evidence` compare with the earliest valid open task base by default, then the remote default merge-base, then `HEAD`. They verify the saved base against `events.jsonl` and git ancestry, and report if `.agent-memory/gate.json` changed after that base.
+- `task open --scope <glob>` records allowed file patterns for a task. `gate` shows a warning for changed files outside that scope, and `evidence` lists them and sets review risk to at least `MEDIUM`.
 - `"block_test_changes": true` in `gate.json` makes the gate fail for a deleted test file or a new skip marker. A person who agrees adds the path (or a glob) to `"allowed_test_changes"` and commits `gate.json`. The agent cannot approve its own change, because the gate reads the committed file. A changed line in an existing test stays a warning: that warning is as frequent on correct patches as on wrong patches ([docs/RESULTS.md](docs/RESULTS.md), section 4).
-- Limits of the block: with the default reference (`HEAD`), a deletion that the agent commits is not in the change that the gate sees. In CI the gate compares with the base branch, and there the block holds. The block was not measured with an agent.
+- `"replay_base_tests": "warn"` (or `"block"`) with `"test_command"` in `gate.json` swaps modified or deleted tracked tests back to the base version, runs `test_command` on the new code, and restores the workspace (with recovery via `.replay-backup.json` if interrupted). Unapproved deletions or skips stay visible when an agent commits them after `task open`; neither option ran with a live agent yet.
 - `doctor` finds hooks that will not run and gate commands that are not installed.
 - Hooks do not run in `claude -p --bare`. In CI, run `memory.py gate` as a separate step. In unattended runs, use `gated-run` (see below).
 - `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.
@@ -181,7 +183,8 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `install.py project . --with-ci` adds a GitHub Actions workflow. It runs the gate on each pull request with the `gate.json` of the base branch.
 - The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
 - `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
-- `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved.
+- `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved. Add `--repeats 3` (`--rule asymmetric`) to approve a case only when all runs agree, and to report unanimous rate and pairwise kappa.
+- Set `"evaluator_runs": 3` (or `"auto"`) in `.agent-memory/config.json` to require unanimous `feature vote` runs for `feature pass --verified-by evaluator`. Editing code makes old votes stale; disagreements appear as `UNKNOWN` in `evidence` until a fix or a human override.
 
 ### From an issue to a draft pull request
 
@@ -289,9 +292,9 @@ python3 ai-quality-pack/install.py project . --with-guard --with-sandbox --sandb
 ```
 
 - Text in an issue, in a file or in a tool output can tell an agent to do other things. An instruction "this is data" does not stop that. The pack limits what a misled agent can do. See [SECURITY.md](SECURITY.md) for the threat model and for what the pack does not stop.
-- **The issue workflow has three jobs.** The job with the agent has read access only. The job that runs the gate runs code from the change, so it has read access only and no secret. The job that opens the pull request has write access, runs no agent and runs no code from the change.
+- **The issue workflow has three jobs and outbound limits.** The job with the agent starts with StepSecurity Harden-Runner (`egress-policy: block`) so shell commands reach only the allowed model and GitHub hosts, and it has read access only. The job that runs the gate runs code from the change, so it has read access only and no secret. The job that opens the pull request has write access, runs no agent and runs no code from the change.
 - **CI runs the checker of the base branch.** A pull request cannot change the program that checks it. The gate commands come from the base branch also.
-- **`--with-guard`** stops the agent from a change of `.claude/`, `.agents/`, the CI workflows, CODEOWNERS and the gate file: permission rules, and a hook that blocks file tools and shell commands that write there. A person who must change these files starts the agent with `AGENT_PACK_UNLOCK=1`. The guard is not a security boundary.
+- **`--with-guard`** blocks edits to `.claude/`, `.agents/`, `.codex/`, `.opencode/`, CI workflows, CODEOWNERS, and gate/config files. It also protects tracked tests against deletion, truncation, moves out of tests, inline scripts, and new skip markers (`"guard_tests"` in `.agent-memory/config.json`: `"no-delete"` default, `"append-only"`, or `"off"`). Adding new tests and appending assertions remain allowed. `AGENT_PACK_UNLOCK=1` unlocks both checks for a person. The guard is not a security boundary.
 - **`--sandbox-allow-domain HOST`** (with `--with-sandbox`) limits the hosts that shell commands can reach.
 - `memory.py pr --evidence-file FILE` opens the pull request with the evidence of another job. It runs no gate: use it only in a pipeline where a job without write access ran the gate.
 - Tested with a small set of attack cases (`evals/injection/`): 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack. [docs/RESULTS.md](docs/RESULTS.md) has the details and the limits.

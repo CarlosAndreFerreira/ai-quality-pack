@@ -58,7 +58,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 MEM = Path(os.environ.get("AGENT_MEMORY_DIR", ".agent-memory"))
 EVALS = MEM / "evals"
@@ -545,6 +545,59 @@ def mcc(tp: int, tn: int, fp: int, fn: int) -> Optional[float]:
     return round((tp * tn - fp * fn) / d, 2) if d else None
 
 
+def aggregate_case_verdicts(verdicts: List[str], rule: str = "asymmetric") -> str:
+    """Combine repeat judge verdicts for one case. Under `asymmetric`, PASS requires all runs to agree."""
+    k = len(verdicts)
+    if k == 0:
+        return "UNKNOWN"
+    if k == 1:
+        return verdicts[0] if verdicts[0] in ("PASS", "FAIL") else "UNKNOWN"
+    n_pass = sum(1 for v in verdicts if v == "PASS")
+    n_fail = sum(1 for v in verdicts if v == "FAIL")
+    if rule == "majority":
+        if n_pass > k / 2:
+            return "PASS"
+        if n_fail > k / 2:
+            return "FAIL"
+        return "UNKNOWN"
+    if rule == "strict-fail":
+        if n_fail >= 1:
+            return "FAIL"
+        return "PASS" if n_pass == k else "UNKNOWN"
+    if n_pass == k:
+        return "PASS"
+    if n_fail >= (k // 2) + 1:
+        return "FAIL"
+    return "UNKNOWN"
+
+
+def judge_agreement(per_case: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+    """Return (case_unanimity_rate, pairwise_fleiss_kappa) across multi-run cases."""
+    multi = [c["verdicts"] for c in per_case if len(c.get("verdicts", [])) >= 2]
+    if not multi:
+        return None, None
+    unanimity = round(sum(1 for vs in multi if len(set(vs)) == 1) / len(multi), 4)
+    labels = ("PASS", "FAIL", "UNKNOWN")
+    counts_global = {l: 0 for l in labels}
+    total_ratings, total_pairs, agree_pairs = 0, 0, 0
+    for vs in multi:
+        k = len(vs)
+        total_ratings += k
+        total_pairs += k * (k - 1)
+        by_lbl = {l: 0 for l in labels}
+        for raw in vs:
+            lbl = raw if raw in ("PASS", "FAIL") else "UNKNOWN"
+            by_lbl[lbl] += 1
+            counts_global[lbl] += 1
+        agree_pairs += sum(c * (c - 1) for c in by_lbl.values())
+    if total_pairs == 0 or total_ratings == 0:
+        return unanimity, None
+    p_o = agree_pairs / total_pairs
+    p_e = sum((n / total_ratings) ** 2 for n in counts_global.values())
+    kappa = (1.0 if p_o == 1.0 else 0.0) if (1.0 - p_e) <= 1e-12 else round((p_o - p_e) / (1.0 - p_e), 3)
+    return unanimity, kappa
+
+
 def judge_summary(rows: List[dict]) -> dict:
     """rows: {"label": "correct"|"wrong", "verdict": "PASS"|"FAIL"|"UNKNOWN"}. A wrong case is the positive."""
     n = lambda label, verdict: sum(r["label"] == label and r["verdict"] == verdict for r in rows)
@@ -622,6 +675,8 @@ def cmd_judge(a) -> None:
         cases.append(c)
     if not cases:
         die(f"{a.cases} has no cases")
+    if a.repeats < 1:
+        die("--repeats must be at least 1")
     runs = a.repeats * len(cases)
     if runs > a.max_runs and not a.yes:
         die(f"{runs} judge runs planned (> --max-runs {a.max_runs}); this costs tokens. Re-run with --yes to confirm.")
@@ -652,7 +707,7 @@ def cmd_judge(a) -> None:
                     log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
                 except OSError:
                     pass
-                rows.append({"id": c["id"], "label": c["label"], "verdict": verdict, "stated": bool(found),
+                rows.append({"id": c["id"], "label": c["label"], "rep": rep + 1, "verdict": verdict, "stated": bool(found),
                              "seconds": round(time.time() - t0, 1), **parse_usage(stdout)})
                 print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}" + ("" if found else " (no verdict line)"), flush=True)
             finally:
@@ -661,16 +716,38 @@ def cmd_judge(a) -> None:
                 else:
                     cleanup(repo, wt)
     s = judge_summary(rows)
+    report: dict = {
+        "kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "judge_cmd": cmd_t,
+        "repeats": a.repeats, "rule": a.rule, "summary": s, "rows": rows,
+    }
+    agg, ag_rate, kap = None, None, None
+    if a.repeats > 1:
+        per_case = []
+        for c in cases:
+            verdicts = [r["verdict"] for r in rows if r["id"] == c["id"]]
+            agg_v = aggregate_case_verdicts(verdicts, rule=a.rule)
+            per_case.append({
+                "id": c["id"], "label": c["label"], "verdict": agg_v, "verdicts": verdicts,
+                "unanimous": len(set(verdicts)) == 1 and bool(verdicts), "rule": a.rule,
+            })
+        agg = judge_summary(per_case)
+        ag_rate, kap = judge_agreement(per_case)
+        report.update({"per_case": per_case, "aggregated": agg, "agreement_rate": ag_rate, "kappa": kap})
     RESULTS.mkdir(parents=True, exist_ok=True)
     out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-judge.json"
-    out.write_text(json.dumps({"kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "judge_cmd": cmd_t,
-                               "repeats": a.repeats, "summary": s, "rows": rows}, indent=2), encoding="utf-8")
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     pct = lambda x: "n/a" if x is None else f"{x:.0%}"
     print(f"\njudge on {s['runs']} runs ({s['wrong']} wrong, {s['correct']} correct)")
     print(f"  wrong work approved:    {s['wrong_approved']}/{s['wrong']} ({pct(s['wrong_approved_rate'])}, 95% CI {s['wrong_approved_ci95']})")
     print(f"  correct work rejected:  {s['correct_rejected']}/{s['correct']} ({pct(s['correct_rejected_rate'])}, 95% CI {s['correct_rejected_ci95']})")
     print(f"  no decision (UNKNOWN):  {s['unknown']}/{s['runs']} ({pct(s['unknown_rate'])})")
     print(f"  MCC on decided cases:   {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
+    if agg is not None:
+        print(f"\naggregated ({a.repeats} runs, {a.rule}) on {agg['runs']} cases ({agg['wrong']} wrong, {agg['correct']} correct)")
+        print(f"  wrong work approved:    {agg['wrong_approved']}/{agg['wrong']} ({pct(agg['wrong_approved_rate'])}, 95% CI {agg['wrong_approved_ci95']})")
+        print(f"  correct work rejected:  {agg['correct_rejected']}/{agg['correct']} ({pct(agg['correct_rejected_rate'])}, 95% CI {agg['correct_rejected_ci95']})")
+        print(f"  no decision / split:    {agg['unknown']}/{agg['runs']} ({pct(agg['unknown_rate'])})")
+        print(f"  unanimous cases:        {pct(ag_rate)} · pairwise kappa: {kap if kap is not None else 'n/a'}")
     costed = [r["cost_usd"] for r in rows if isinstance(r.get("cost_usd"), (int, float))]
     print(f"  cost:                   " + (f"${sum(costed):.2f} for {len(costed)} of {len(rows)} runs" if costed else "not reported by the judge command")
           + f" · {sum(r['seconds'] for r in rows) / 60:.0f} minutes")
@@ -741,7 +818,9 @@ def main() -> None:
     j.add_argument("--cases", required=True, help="JSON lines: id, label (correct|wrong), prompt, optional setup")
     j.add_argument("--judge-cmd", help="headless judge template, e.g. \"claude -p {prompt}\"; must print VERDICT: PASS|FAIL|UNKNOWN")
     j.add_argument("--skills", default=".agents/skills", help="skills dir relative to the repo root")
-    j.add_argument("--repeats", type=int, default=1)
+    j.add_argument("--repeats", "--reps", dest="repeats", type=int, default=1, help="judge runs per case (default 1)")
+    j.add_argument("--rule", choices=["asymmetric", "majority", "strict-fail"], default="asymmetric",
+                   help="how repeat verdicts per case are combined (default asymmetric: PASS needs unanimity)")
     j.add_argument("--timeout", type=int, default=900)
     j.add_argument("--max-runs", type=int, default=20)
     j.add_argument("--yes", action="store_true", help="confirm runs above --max-runs")

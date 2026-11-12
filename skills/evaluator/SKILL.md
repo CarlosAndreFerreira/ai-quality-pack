@@ -39,6 +39,8 @@ Required fixes: <one line each, smallest change>
 ```
 
 ## After grading
-- All PASS → `memory.py feature pass --id <F> --evidence "<the evidence lines>" --verified-by evaluator`
-- Any FAIL → `memory.py feature fail --id <F>`. Hand the report back to the implementer. If the same kind of failure keeps coming back, record it with `learn-from-mistakes`.
+- Multi-run mode (`"evaluator_runs"` > 1 or `"auto"` in `.agent-memory/config.json`): record each independent run with `memory.py feature vote --id <F> --verdict PASS|FAIL|UNKNOWN --evidence "<the evidence lines>" --evaluator-id <id>`. The asymmetric rule grants `PASS` only on unanimous `PASS` votes for the current code state; splits stay `UNKNOWN` in the evidence report until fixed or resolved by a person.
+- Single-run mode (`"evaluator_runs": 1`, default):
+  - All PASS → `memory.py feature pass --id <F> --evidence "<the evidence lines>" --verified-by evaluator`
+  - Any FAIL → `memory.py feature fail --id <F>`. Hand the report back to the implementer. If the same kind of failure keeps coming back, record it with `learn-from-mistakes`.
 - Max 3 evaluate→fix rounds. Then set the task to `needs-human` with the open failures.

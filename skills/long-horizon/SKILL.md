@@ -27,7 +27,7 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 5. Run the test suite. Red with no explanation in the digest → fix that first.
 
 ## 2. Pick and contract ONE unit of work
-1. `memory.py task open --title "..." --source "user chat|issue #12" [--feature F-003]` → prints `T-000N`.
+1. `memory.py task open --title "..." --source "user chat|issue #12" [--feature F-003] [--scope "src/billing/**"]` → prints `T-000N`. When `--scope` is set, the gate warns on changes outside the allowed globs.
 2. If it is a feature, it must have acceptance criteria agreed **before** coding (the "sprint contract"):
    `memory.py feature add --id F-003 --desc "..." --criterion "POST /refresh returns 401 for reused token" --criterion "..."`
    Criteria state *what* must be true, not *how* to build it.
@@ -44,6 +44,7 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 0. Run the completion gate: `memory.py gate` (commands in `.agent-memory/gate.json`; it is skipped when nothing changed since the last pass). In Claude Code an optional Stop hook enforces it.
 1. Run the `evaluator` skill (separate context). Only the evaluator, a human or CI marks a feature as passing:
    `memory.py feature pass --id F-003 --evidence "<tests/commands seen>" --verified-by evaluator`
+   If `.agent-memory/config.json` sets `"evaluator_runs"` > 1 (or `"auto"`), record independent evaluator runs with `memory.py feature vote --id F-003 --verdict PASS|FAIL|UNKNOWN --evidence "..."` (`PASS` needs unanimity on the current code).
 2. `memory.py task status --id T-000N --status done`
 3. `memory.py progress --task T-000N --done "<what changed>" --next "<next concrete step>"`
 4. Commit `.agent-memory/` together with the code.
