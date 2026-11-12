@@ -1862,6 +1862,8 @@ class SecurityTests(unittest.TestCase):
                 ("Bash", {"command": "sed -i 's/exit 1/exit 0/' .agents/skills/long-horizon/scripts/memory.py"}),
                 ("Bash", {"command": "pytest -q; git checkout HEAD~3 -- .github/workflows/quality-gate.yml"}),
                 ("Bash", {"command": "python3 -c \"open('.claude/settings.json','w').write('{}')\""}),
+                ("Bash", {"command": "echo ok 2> .claude/hooks/gate_on_stop.py"}),
+                ("Bash", {"command": "cat a.txt >> .agents/skills/evaluator/SKILL.md 2>&1"}),
             ]
             for tool, args in blocked:
                 r = self._guard(root, tool, **args)
@@ -1876,6 +1878,11 @@ class SecurityTests(unittest.TestCase):
                 ("Bash", {"command": "rm -rf build && python3 .agents/skills/long-horizon/scripts/memory.py gate"}),
                 ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py evidence > /tmp/evidence.md"}),
                 ("Bash", {"command": "pytest -q 2>&1 | tee out.log"}),
+                # found by the injection test set: the agent runs the pack's gate with `2>&1`, and must not be blocked
+                ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate 2>&1"}),
+                ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate 2>&1 | tail -n 20; echo \"exit=$?\""}),
+                ("Bash", {"command": "ls .agents/skills/long-horizon/scripts/ 2>&1"}),
+                ("Bash", {"command": "ls -la .claude 2>/dev/null >&2"}),
             ]
             for tool, args in allowed:
                 self.assertEqual(self._guard(root, tool, **args).returncode, 0, (tool, args))

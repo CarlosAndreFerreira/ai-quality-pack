@@ -51,8 +51,9 @@ WRITES = re.compile(
     r"(^|\s)(rm|mv|cp|chmod|chown|truncate|dd|ln|tee|install|touch|mkdir|rmdir)\s"
     r"|\bsed\s+(-[A-Za-z]*i|--in-place)"
     r"|\bgit\s+(checkout|restore|apply|rm|mv|stash|reset|clean)\b"
-    r"|\b(python[0-9.]*|node|perl|ruby|bash|sh)\s+-[ce]\b"
-    r"|>>?")
+    r"|\b(python[0-9.]*|node|perl|ruby|bash|sh)\s+-[ce]\b")
+# where a redirection writes: `> file`, `>> file`, `2> file`. `2>&1` and `>&2` join two streams and write no file.
+REDIRECT = re.compile(r"(?<![0-9&])[0-9]?>>?\s*[\"']?([^\s\"'&|;<>]+)")
 MESSAGE = ("Blocked: {what} is one of the files that check the agent's work (gate, hooks, skills, CI). "
            "Do not change it. If the task needs this change, stop and tell the user: a person makes it.\n")
 
@@ -81,14 +82,15 @@ def main() -> int:
             return 2
     elif tool == "Bash":
         command = str(args.get("command") or "").replace("\\", "/")
-        for part in re.split(r"&&|\|\||;|\n|(?<!>)\|(?!\|)", command):
-            if NAMES.search(part) and WRITES.search(part):
-                # running a pack script and sending its output to a file outside the protected paths is normal work
-                target = re.search(r">>?\s*[\"']?([^\s\"'&|;]+)", part)
-                only_redirect = target and not NAMES.search(target.group(1)) and not WRITES.search(part.replace(target.group(0), " "))
-                if not only_redirect:
-                    sys.stderr.write(MESSAGE.format(what="`" + part.strip()[:120] + "`"))
-                    return 2
+        for part in re.split(r"&&|\|\||;|\n|(?<![>&])\|(?!\|)", command):
+            if not NAMES.search(part):
+                continue
+            # A part that names a protected path is blocked when it has a write command, or sends output into such a
+            # path. Running a pack script, with `2>&1` or with output to another file, is normal work.
+            to_protected = any(NAMES.search(m.group(1)) for m in REDIRECT.finditer(part))
+            if WRITES.search(part) or to_protected:
+                sys.stderr.write(MESSAGE.format(what="`" + part.strip()[:120] + "`"))
+                return 2
     return 0
 
 
