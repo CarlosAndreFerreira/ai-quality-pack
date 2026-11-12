@@ -1165,6 +1165,174 @@ def cmd_pr(a: argparse.Namespace) -> None:
     print(f"pr: draft pull request opened ({risk} review risk, {len(gaps)} check(s) without a record): {url.splitlines()[-1] if url else ''}")
 
 
+# ---------------------------------------------------------------- triage (is the requirement ready for work?)
+# A cheap first filter for a requirement that cannot be worked on. It is a set of text rules: it finds an empty
+# or one-line issue, not a subtle ambiguity. The `triage` subagent reads the repository and does the real check.
+TRIAGE_OUTCOME = re.compile(
+    r"\b(should|shall|must|expect\w*|instead|so that|in order to|acceptance|wants?|needs? to|actual\w*|returns?|raises?|"
+    r"errors?|fails?|failing|crash\w*|traceback|incorrect\w*|wrong\w*|broken|not work\w*|doesn'?t|does not|cannot|can'?t|"
+    r"unable|allow\w*|support\w*|ensure|missing|unexpected\w*|add|remove|rename|replace|update|make)\b", re.I)
+TRIAGE_BUG = re.compile(r"\b(bug|errors?|crash\w*|fails?|failing|broken|wrong\w*|exception|regression|traceback|incorrect\w*)\b", re.I)
+TRIAGE_EVIDENCE = re.compile(r"```|`[^`\n]+`|Traceback|^\s*\d+[.)]\s|\b[\w./-]+\.[A-Za-z]{1,5}\b|\b\w+\(\)|\b\d+\.\d+(\.\d+)?\b", re.M)
+TRIAGE_TYPES = (
+    ("docs", re.compile(r"\b(docs?|documentation|readme|typo|docstring|comment)\b", re.I)),
+    ("ci", re.compile(r"\b(ci|workflow|github actions?|pipeline)\b", re.I)),
+    ("build", re.compile(r"\b(build|packag\w+|dependenc\w+|upgrade|bump|compile|install\w*)\b", re.I)),
+    ("fix", TRIAGE_BUG),
+    ("feature", re.compile(r"\b(add|support|allow|feature|implement|new)\b", re.I)),
+)
+
+
+def triage_text(text: str) -> dict:
+    words = re.findall(r"[A-Za-z0-9_]+", text)
+    kind = next((name for name, rx in TRIAGE_TYPES if rx.search(text)), "other")
+    questions, notes = [], []
+    heads = [m.start() for m in re.finditer(r"^#{1,6} .*$", text, re.M)]
+    empty = [h for h in re.findall(r"^#{2,6} +(.+?)\s*\n(?=\s*(?:#{1,6} |\Z))", text, re.M)]
+    if len(words) < 12 and not (TRIAGE_OUTCOME.search(text) and TRIAGE_EVIDENCE.search(text)):  # short and complete is fine
+        questions.append("Describe the change. What happens now, and what must happen after the change?")
+    else:
+        if len(words) < 40 and not TRIAGE_OUTCOME.search(text) and not TRIAGE_EVIDENCE.search(text):
+            questions.append("What must be true when this is done? Give the expected result for one concrete input.")
+        if kind == "fix" and len(words) < 60 and not TRIAGE_EVIDENCE.search(text):
+            questions.append("How can the problem be seen? Give the steps, the input, or the text of the error.")
+    if len(empty) >= 2 and len(heads) >= 2:  # a long text with empty template sections is still workable: a note
+        (questions if len(words) < 80 else notes).append(
+            "Fill in the empty sections of the template: " + ", ".join(clean(e, 40) for e in empty[:5]) + ".")
+    items = len(re.findall(r"^\s*(?:[-*]|\d+[.)])\s+\S", text, re.M))
+    if items >= 6:
+        notes.append(f"the text has {items} list items: if they are separate changes, use one issue for each")
+    if questions == [] and not TRIAGE_EVIDENCE.search(text):
+        notes.append("the text names no file, command or identifier: the agent must find the place in the code")
+    return {"result": "NEEDS-INFO" if questions else "READY", "type": kind, "words": len(words), "questions": questions, "notes": notes}
+
+
+def cmd_triage(a: argparse.Namespace) -> None:
+    """Exit 0: ready for work. Exit 4: the requirement needs an answer first; the output is the text for the issue."""
+    text = Path(a.file).read_text(encoding="utf-8", errors="replace") if a.file else sys.stdin.read()
+    t = triage_text(text)
+    if ROOT.exists():
+        log_event("triage", result=t["result"].lower(), type=t["type"], questions=len(t["questions"]))
+    if a.json:
+        print(json.dumps(t, indent=2, ensure_ascii=False))
+    elif t["questions"]:
+        print("### Before work can start on this issue\n")
+        print("\n".join(f"- {q}" for q in t["questions"]))
+        print("\nThe agent starts when the issue has this information. Edit the issue, then add the label again.")
+    else:
+        print(f"triage: READY (type: {t['type']}, {t['words']} words)")
+    for n in t["notes"]:
+        print(f"note: {n}", file=sys.stderr if t["questions"] or a.json else sys.stdout)
+    sys.exit(4 if t["questions"] else 0)
+
+
+# ---------------------------------------------------------------- factory report
+def wilson(k: int, n: int) -> Optional[list]:
+    """95% Wilson interval of k out of n, as two fractions."""
+    if not n:
+        return None
+    z, p = 1.96, k / n
+    mid, half = (p + z * z / (2 * n)) / (1 + z * z / n), z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / (1 + z * z / n)
+    return [round(max(0.0, mid - half), 2), round(min(1.0, mid + half), 2)]
+
+
+def gh_time(s: Optional[str]) -> Optional[dt.datetime]:
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")) if s else None
+    except ValueError:
+        return None
+
+
+def cmd_factory(a: argparse.Namespace) -> None:
+    """Numbers of the agent line: what came out, what was merged, how fast, at what cost, and what was reverted.
+
+    Two sources. GitHub (durable): the pull requests on branches with the agent prefix. The local run log
+    (this machine only, and a CI runner loses it): pull requests refused for a red gate, triage results.
+    """
+    from collections import Counter
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=a.days)
+    data: dict = {"days": a.days, "branch_prefix": a.branch_prefix}
+    if not a.no_github:
+        try:
+            raw = json.loads(gh("pr", "list", "--state", "all", "--limit", "1000", "--json",
+                                "number,title,headRefName,state,isDraft,createdAt,mergedAt,closedAt,body") or "[]")
+        except (SystemExit, ValueError):
+            raw = None
+        if raw is None:
+            data["github"] = None
+        else:
+            mine = [p for p in raw if str(p.get("headRefName", "")).startswith(a.branch_prefix)
+                    and (gh_time(p.get("createdAt")) or since) >= since]
+            merged = [p for p in mine if p.get("state") == "MERGED"]
+            closed = [p for p in mine if p.get("state") == "CLOSED"]
+            hours = sorted((gh_time(p["mergedAt"]) - gh_time(p["createdAt"])).total_seconds() / 3600
+                           for p in merged if gh_time(p.get("mergedAt")) and gh_time(p.get("createdAt")))
+            costs = {p["number"]: float(m.group(1)) for p in mine for m in [re.search(r"Cost: \$([0-9]+(?:\.[0-9]+)?)", p.get("body") or "")] if m}
+            risks = Counter(m.group(1) for p in mine for m in [re.search(r"Review risk: (HIGH|MEDIUM|LOW)", p.get("body") or "")] if m)
+            numbers = {p["number"] for p in merged}
+            reverted = {n for p in raw if re.match(r"\s*revert\b", p.get("title") or "", re.I)
+                        for n in numbers if re.search(rf"#{n}\b", (p.get("title") or "") + " " + (p.get("body") or ""))}
+            decided = len(merged) + len(closed)
+            data["github"] = {
+                "pull_requests": len(mine), "merged": len(merged), "closed_without_merge": len(closed),
+                "open": len(mine) - decided, "open_drafts": sum(1 for p in mine if p.get("state") == "OPEN" and p.get("isDraft")),
+                "merge_rate": round(len(merged) / decided, 2) if decided else None, "merge_rate_ci95": wilson(len(merged), decided),
+                "median_hours_to_merge": round(hours[len(hours) // 2], 1) if hours else None,
+                "cost_usd": round(sum(costs.values()), 2) if costs else None, "with_cost": len(costs),
+                "cost_per_merged_usd": round(sum(costs.values()) / len(merged), 2) if costs and merged and len(costs) == len(mine) else None,
+                "review_risk": dict(risks), "reverted": len(reverted),
+                "revert_rate": round(len(reverted) / len(merged), 2) if merged else None,
+            }
+    if ROOT.exists():
+        cut = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
+        evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= cut]
+        prs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "pr")
+        runs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "gated-run")
+        tri = Counter(e.get("result", "?") for e in evs if e.get("ev") == "triage")
+        tried = prs["opened"] + prs["refused-red-gate"]
+        data["local"] = {
+            "pr_opened": prs["opened"], "pr_refused_red_gate": prs["refused-red-gate"], "pr_refused_duplicate": prs["refused-duplicate"],
+            "false_done_rate": round(prs["refused-red-gate"] / tried, 2) if tried else None,
+            "false_done_ci95": wilson(prs["refused-red-gate"], tried),
+            "gated_runs_pass": runs["pass"], "gated_runs_fail": runs["fail"],
+            "triage_ready": tri["ready"], "triage_needs_info": tri["needs-info"],
+        }
+    if a.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+
+    def rate(x, ci):
+        return "no data" if x is None else f"{x:.0%}" + (f" (95% interval {ci[0]:.0%} to {ci[1]:.0%})" if ci else "")
+    print(f"# Factory report: last {a.days} days, branches `{a.branch_prefix}*`")
+    g = data.get("github")
+    if a.no_github:
+        pass
+    elif g is None:
+        print("GitHub: not available (the GitHub CLI did not answer). The numbers below are from this machine only.")
+    else:
+        print(f"pull requests: {g['pull_requests']} opened · {g['merged']} merged · {g['closed_without_merge']} closed without merge · "
+              f"{g['open']} open ({g['open_drafts']} drafts)")
+        print(f"merge rate (of the decided ones): {rate(g['merge_rate'], g['merge_rate_ci95'])}")
+        print("time to merge: " + (f"median {g['median_hours_to_merge']} hours" if g["median_hours_to_merge"] is not None else "no data"))
+        if g["cost_usd"] is None:
+            print("cost: not recorded in the pull requests (`memory.py pr --cost-usd`)")
+        elif g["cost_per_merged_usd"] is not None:
+            print(f"cost: ${g['cost_usd']:.2f} for all runs · ${g['cost_per_merged_usd']:.2f} for each merged pull request")
+        else:
+            print(f"cost: ${g['cost_usd']:.2f} in {g['with_cost']} of {g['pull_requests']} pull requests "
+                  "(not enough for a cost for each merged pull request)")
+        if g["review_risk"]:
+            print("review risk: " + " · ".join(f"{k} {v}" for k, v in sorted(g["review_risk"].items())))
+        print(f"stability: {g['reverted']} of {g['merged']} merged pull requests were reverted" if g["merged"] else "stability: no merged pull request")
+    loc = data.get("local")
+    if loc:
+        print(f"this machine: {loc['pr_opened']} pull requests opened · {loc['pr_refused_red_gate']} refused for a red gate · "
+              f"{loc['pr_refused_duplicate']} refused as duplicates")
+        print(f"work that ended with a red gate (false \"done\"): {rate(loc['false_done_rate'], loc['false_done_ci95'])}")
+        print(f"unattended runs: {loc['gated_runs_pass']} ended green · {loc['gated_runs_fail']} ended red · "
+              f"triage: {loc['triage_ready']} ready · {loc['triage_needs_info']} sent back with questions")
+
+
 # ---------------------------------------------------------------- doctor
 def cmd_doctor(a: argparse.Namespace) -> None:
     """Check that the pack can do its work in this repository. Exit 1 when something will not work."""
@@ -1396,6 +1564,16 @@ def main() -> None:
     s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--dry-run", action="store_true", help="run the checks and print the text; push nothing, open nothing")
     s.set_defaults(fn=cmd_pr)
+    s = sub.add_parser("triage", help="is the requirement ready for work? exit 4 and the questions for the issue when it is not")
+    s.add_argument("--file", help="file with the issue text (default: stdin)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_triage)
+    s = sub.add_parser("factory", help="numbers of the agent line: pull requests, merge rate, time to merge, cost, reverts")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--branch-prefix", default="agent/", help="branches that the agent line opens (default agent/)")
+    s.add_argument("--no-github", action="store_true", help="only the local run log")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_factory)
     s = sub.add_parser("diff-view", help="the change since a base, without the comments it added (for the evaluator)")
     s.add_argument("--base", default="HEAD")
     s.set_defaults(fn=cmd_diff_view)

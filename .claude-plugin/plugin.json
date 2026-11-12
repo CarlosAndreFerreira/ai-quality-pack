@@ -18,6 +18,7 @@
   ],
   "agents": [
     "./templates/.claude/agents/evaluator.md",
-    "./templates/.claude/agents/criteria.md"
+    "./templates/.claude/agents/criteria.md",
+    "./templates/.claude/agents/triage.md"
   ]
 }

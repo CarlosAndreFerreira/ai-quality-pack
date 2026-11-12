@@ -1291,5 +1291,108 @@ class PullRequestTests(unittest.TestCase):
             self.assertFalse((root / ".github").exists())
 
 
+class TriageAndFactoryTests(unittest.TestCase):
+    """Triage of a requirement before work, and the numbers of the agent line."""
+
+    def _repo(self, t):
+        root = Path(t)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        return root
+
+    def test_triage_sends_a_thin_issue_back_with_questions(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([MEM, "triage"], root, stdin="Login is broken")
+            self.assertEqual(r.returncode, 4)
+            self.assertIn("### Before work can start on this issue", r.stdout)
+            self.assertIn("What happens now, and what must happen after the change?", r.stdout)
+            (root / "issue.md").write_text("# Export is wrong\n\nThe monthly export gives the wrong numbers for some customers, "
+                                           "and we need this fixed before the end of the quarter.\n", encoding="utf-8")
+            r = run([MEM, "triage", "--file", "issue.md", "--json"], root)
+            self.assertEqual(r.returncode, 4)
+            data = json.loads(r.stdout)
+            self.assertEqual((data["result"], data["type"]), ("NEEDS-INFO", "fix"))
+            self.assertIn("How can the problem be seen?", data["questions"][0])
+            template = "## Steps to reproduce\n\n## Expected behaviour\n\n## Actual behaviour\n"
+            self.assertEqual(run([MEM, "triage"], root, stdin=template).returncode, 4)
+
+    def test_triage_lets_a_workable_issue_pass(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            issue = ("`DataArray.integrate` has a `dim` argument, but `Dataset.integrate` has a `coord` argument.\n"
+                     "It should be `coord` in both. Should this need a deprecation cycle?\n")
+            r = run([MEM, "triage"], root, stdin=issue)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("triage: READY", r.stdout)
+            # a long text with empty template sections is still workable: a note, not a stop
+            long_text = issue * 6 + "\n## Other comments\n\n## Release notes\n"
+            r = run([MEM, "triage"], root, stdin=long_text)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("note: Fill in the empty sections", r.stdout)
+            self.assertEqual(run([MEM, "triage"], Path(t).parent, stdin=issue).returncode, 0)  # works without .agent-memory/
+
+    def test_triage_subagent_and_workflow_step_are_installed(self):
+        wf = (PACK / "templates/ci/agent-issue.yml").read_text(encoding="utf-8")
+        self.assertLess(wf.index("- name: Triage"), wf.index("- name: Agent"))
+        self.assertIn("if: steps.triage.outputs.ready == 'true'", wf)
+        self.assertIn("$MEMORY triage --file .agent-issue.md", wf)
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            agent = (root / ".claude/agents/triage.md").read_text(encoding="utf-8")
+            self.assertIn("tools: Read, Grep, Glob", agent)  # it cannot write code
+            self.assertIn("TRIAGE: ASK", agent)
+            self.assertTrue((root / ".agents/skills/triage/SKILL.md").is_file())
+
+    def test_factory_report_counts_merges_time_cost_and_reverts(self):
+        import datetime
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            tools = root / "tools"
+            tools.mkdir()
+            (tools / "gh.py").write_text(FAKE_GH, encoding="utf-8")
+            now = datetime.datetime.now(datetime.timezone.utc)
+            iso = lambda hours: (now - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = "## Verification evidence\n- Review risk: LOW (small change)\n- Cost: $0.50 (given by the caller)\n"
+            prs = [
+                {"number": 1, "title": "Fix add", "headRefName": "agent/issue-1", "state": "MERGED", "isDraft": False,
+                 "createdAt": iso(50), "mergedAt": iso(48), "closedAt": iso(48), "body": body},
+                {"number": 2, "title": "Fix sub", "headRefName": "agent/issue-2", "state": "CLOSED", "isDraft": False,
+                 "createdAt": iso(40), "mergedAt": None, "closedAt": iso(30), "body": "- Review risk: HIGH (it changes dependencies)\n"},
+                {"number": 3, "title": "Fix mul", "headRefName": "agent/issue-3", "state": "OPEN", "isDraft": True,
+                 "createdAt": iso(5), "mergedAt": None, "closedAt": None, "body": ""},
+                {"number": 4, "title": "Human work", "headRefName": "feature/x", "state": "MERGED", "isDraft": False,
+                 "createdAt": iso(20), "mergedAt": iso(19), "closedAt": iso(19), "body": ""},
+                {"number": 5, "title": "Revert \"Fix add\"", "headRefName": "revert-1", "state": "MERGED", "isDraft": False,
+                 "createdAt": iso(10), "mergedAt": iso(9), "closedAt": iso(9), "body": "Reverts owner/repo#1"},
+                {"number": 6, "title": "Old agent work", "headRefName": "agent/issue-0", "state": "MERGED", "isDraft": False,
+                 "createdAt": iso(24 * 90), "mergedAt": iso(24 * 89), "closedAt": iso(24 * 89), "body": ""},
+            ]
+            (tools / "open_prs.json").write_text(json.dumps(prs), encoding="utf-8")
+            py = sys.executable.replace("\\", "/")
+            env = dict(os.environ, AGENT_GH=f'"{py}" "{(tools / "gh.py").as_posix()}"')
+            run([MEM, "triage"], root, stdin="Login is broken")
+            run([MEM, "triage"], root, stdin="`add(2, 2)` returns 0. It should return 4.")
+            r = run([MEM, "factory"], root, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            for text in ("pull requests: 3 opened · 1 merged · 1 closed without merge · 1 open (1 drafts)",
+                         "merge rate (of the decided ones): 50% (95% interval",
+                         "time to merge: median 2.0 hours",
+                         "cost: $0.50 in 1 of 3 pull requests",
+                         "review risk: HIGH 1 · LOW 1",
+                         "stability: 1 of 1 merged pull requests were reverted",
+                         "triage: 1 ready · 1 sent back with questions"):
+                self.assertIn(text, r.stdout)
+            data = json.loads(run([MEM, "factory", "--json"], root, env=env).stdout)
+            self.assertEqual(data["github"]["revert_rate"], 1.0)
+            self.assertIsNone(data["github"]["cost_per_merged_usd"])  # one pull request has no cost: no average is given
+            env_bad = dict(os.environ, AGENT_GH=f'"{py}" -c "import sys; sys.exit(1)"')
+            r = run([MEM, "factory"], root, env=env_bad)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("GitHub: not available", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -176,6 +176,29 @@ python3 .agents/skills/long-horizon/scripts/memory.py pr --title "Fix add" --iss
 - `--cost-usd` puts the cost of the run in the block.
 - Limit: the workflow template was not run on GitHub. Run it on a test issue first, and read the comments at the top of the file.
 
+### Triage: is the issue ready for work?
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py triage --file issue.md
+```
+
+- Exit code 0: the text is ready for work. Exit code 4: the text is too thin, and the output is the questions for the issue.
+- The issue workflow runs this check first. A thin issue gets the questions as a comment, and no agent run starts.
+- The check is a set of text rules. It finds an empty or one-line issue. It does not find a subtle ambiguity.
+- The `triage` subagent does the real check: it reads the repository and gives `TRIAGE: READY` with its assumptions, or `TRIAGE: ASK` with at most 3 questions. It has read-only tools.
+- Measured: the text check passed 53 of 53 valid SWE-bench Verified issues, after three rules were adjusted on the same issues. It stopped 9 of 9 thin requests that we wrote. The subagent is not measured.
+
+### Factory report
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py factory --days 30
+```
+
+- From GitHub (branches `agent/*`): pull requests opened, merged and closed, the merge rate with a 95% interval, the median time to merge, the cost, the review risk, and the merged pull requests that were reverted.
+- From the local run log: pull requests refused for a red gate (work that ended as "done" with a red gate), unattended runs, triage results.
+- The cost for each merged pull request shows only when each pull request has a cost in its text.
+- Limit: the local run log is on one machine. A CI runner does not keep it.
+
 ### Unattended runs: the gate without hooks
 
 ```bash

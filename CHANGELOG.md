@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — triage and factory report (docs/EVOLUTION.md: F4, F8)
+- **`memory.py triage`**: a text check of an issue before work. Exit code 4 gives the questions for the issue. The issue workflow runs it first: a thin issue gets a comment, and no agent run starts.
+- **New `triage` subagent** (read-only tools) and **`triage` skill**: decide `TRIAGE: READY` or `TRIAGE: ASK` from the requirement and the repository. Not measured.
+- **`memory.py factory`**: pull requests of the agent line from GitHub (merge rate with interval, time to merge, cost, review risk, reverts), and refused pull requests, unattended runs and triage results from the local run log.
+- 4 tests.
+
 ## Unreleased — from an issue to a draft pull request (docs/EVOLUTION.md: F3, F5)
 - **`memory.py pr`**: opens a draft pull request with the evidence block, only after a green gate. It stops if an open pull request has the same branch or closes the same issue, and if work is not committed. It never merges. It needs the GitHub CLI.
 - **The evidence block has a review risk and the cost.** The risk is `HIGH`, `MEDIUM` or `LOW`, from the paths that changed, the size of the change and the checks without a record. The cost comes from the caller (`--cost-usd`).

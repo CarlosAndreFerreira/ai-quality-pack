@@ -331,7 +331,7 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     agents_md = (PACK / "templates" / "AGENTS.md").read_text(encoding="utf-8").replace("{{COMMANDS}}", cmds)
     add_if_absent(None, root / "AGENTS.md", agents_md)
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
-    for agent in ("evaluator.md", "criteria.md"):
+    for agent in ("evaluator.md", "criteria.md", "triage.md"):
         add_or_upgrade(PACK / "templates" / ".claude" / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
     if a.with_ci:
         add_if_absent(PACK / "templates" / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml")
@@ -467,7 +467,7 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     remove_skills(skills, a.force)
     remove_if_empty(root / ".agents")
     tpl = PACK / "templates"
-    for rel in ("agents/evaluator.md", "agents/criteria.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py"):
+    for rel in ("agents/evaluator.md", "agents/criteria.md", "agents/triage.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py"):
         remove_pack_file(tpl / ".claude" / rel, root / ".claude" / rel, a.force)
     remove_pack_file(tpl / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml", a.force)
     remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
