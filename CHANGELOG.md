@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — operating rules, Antigravity evaluator (docs/EVOLUTION.md: F7, F9)
+- README has the operating rules: three points where a person decides (question, plan, pull request), and one issue, one worktree, one pull request.
+- The Antigravity evaluator has the same steps as the Claude Code evaluator. It had the text of an older version.
+- 1 test.
+
 ## Unreleased — evals in the repository, hardening (docs/EVOLUTION.md: E0, E5, E6)
 - **`evals/judge-cases/`**: 24 calibration cases for the evaluator (12 wrong, 12 correct patches from agent runs, labelled by hidden tests), with a label check that uses no agent. The installer does not copy `evals/`.
 - **`skill-eval judge` takes cases with their own code** (`"repo"`, `"patch"`): the judge works in a new repository, away from the labels.

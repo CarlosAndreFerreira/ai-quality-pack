@@ -1737,5 +1737,19 @@ class EvalsAndHardeningTests(unittest.TestCase):
         self.assertNotIn("\t", wf)
 
 
+class EvaluatorCopiesTests(unittest.TestCase):
+    def test_antigravity_evaluator_has_the_same_steps_as_the_claude_code_one(self):
+        steps = {}
+        for name in ("templates/.claude/agents/evaluator.md", "templates/antigravity/agents/evaluator.md"):
+            body = (PACK / name).read_text(encoding="utf-8").split("---\n", 2)[2]
+            steps[name] = re.sub(r"(?m)^0\. .*\n", "", body)        # step 0 names where memory.py is: it differs by agent
+        a, b = steps.values()
+        self.assertEqual(a, b)
+        self.assertIn("MERGE-READY", a)
+        agy = (PACK / "templates/antigravity/agents/evaluator.md").read_text(encoding="utf-8")
+        self.assertIn("~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py", agy)
+        self.assertNotIn("UNVERIFIABLE", agy)
+
+
 if __name__ == "__main__":
     unittest.main()

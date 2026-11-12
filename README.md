@@ -91,6 +91,25 @@ mistake / win → lesson add (dedup) → digest every session → helpful/harmfu
              recurring or harmful → skill-evolve proposal → skill-eval verdict → human approves → commit (revertible)
 ```
 
+## Operating rules
+
+These rules need no code. They keep a line of agents useful when it runs without a person at each step.
+
+**Three points where a person decides, and no more.** A person accepts 93% of an agent's permission requests (Anthropic, on the auto mode of Claude Code): a request at each step is not a control. Put the person where the decision has value:
+
+1. **At the start: the question.** If the issue does not say enough, the result is a question on the issue (`memory.py triage`, the `triage` subagent). No code.
+2. **Before a large or irreversible change: the plan.** A data migration, a deletion, a public API change, a new dependency: the agent stops and waits (`plan-before-code`, AGENTS.md).
+3. **At the end: the pull request.** The agent opens a draft with the evidence and the review risk. A person reviews it and merges it. Nothing in the pack merges.
+
+Between these points the checks are deterministic: the gate, the secret scan, the reproduction check, the warnings for changed tests.
+
+**One issue, one worktree, one pull request.** Do not build an orchestrator. Reports of many agents on one codebase show merge conflicts and agents that undo the work of other agents ([Cursor, scaling agents](https://cursor.com/blog/scaling-agents); [Anthropic, building a C compiler](https://www.anthropic.com/engineering/building-c-compiler)).
+
+- Each task has its own branch and its own git worktree: `memory.py task worktree --id <T>`.
+- Do not run two tasks that change the same files at the same time. Run them one after the other.
+- Each task ends in one pull request. `memory.py pr` refuses a second pull request for the same branch or the same issue, and refuses work on the main branch.
+- Keep a task small enough for one review: the gate warns above `max_changed_lines`.
+
 ## Measuring skill changes (`skill-eval`)
 
 ```bash
@@ -303,9 +322,9 @@ python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
 - `unittest` suite (installer, memory, gate, evals, concurrency). CI on Linux, macOS and Windows (Python 3.9 and 3.13).
 
 ## Limitations
-- **Not measured end to end.** The design sources report gains for *their* systems, not for this pack.
+- **Measured in part.** [docs/RESULTS.md](docs/RESULTS.md) has what we measured. The complete pack was not measured against the bare agent on hard issues. The design sources report gains for *their* systems, not for this pack.
 - **Antigravity**: `install.py global` installs a native Antigravity plugin (`~/.gemini/config/plugins/ai-quality-pack/`) with `plugin.json`, global `rules/AGENTS.md`, and the isolated `evaluator` subagent (`agents/evaluator.md`).
-- **No sandbox.** Agents run with your permissions. Use a devcontainer or VM for unattended runs.
+- **No sandbox by default.** Agents run with your permissions. `install.py --with-sandbox` turns on the Claude Code sandbox for shell commands (not on native Windows). For unattended runs, use a container or a VM also.
 - The run log sees only what goes through `memory.py` and the pack hooks. It does not see the agent's reasoning or its other tool calls. Two sessions in one checkout at the same time share one session id file, so their events can get the wrong id.
 - Recurrence counting depends on the agent reusing lesson keys. Duplicate detection is lexical, not semantic.
 
