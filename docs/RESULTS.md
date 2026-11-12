@@ -44,7 +44,29 @@ Setup of all agent runs: Claude Haiku, Claude Code in headless mode, each run in
 - So "resolved" in SWE-bench means "passes the hidden tests", not "has no defect". The rate of correct work rejected is an upper bound of the evaluator's error.
 - For the 5 wrong patches that the evaluator approved, the defect is in behaviour that only the hidden tests exercise.
 - A judge that only runs the visible tests approves 12 of the 12 wrong patches in `evals/judge-cases/`. This is the floor that an evaluator must beat.
-- Not measured: an older version of the evaluator on the same patches (the run is in progress), and the evaluator on the 24 cases of `evals/judge-cases/`.
+
+The version of the evaluator before the rewrite (it read the implementer's criteria and had no `UNKNOWN`), on the same 42 patches:
+
+| | Older evaluator | Current evaluator |
+|---|---|---|
+| Wrong patches approved | 6 of 19 (32%, 95% interval 15% to 54%) | 5 of 19 (26%, 95% interval 12% to 49%) |
+| Correct patches rejected | 8 of 23 (35%, 95% interval 19% to 55%) | 9 of 23 (39%, 95% interval 22% to 59%) |
+| No decision | 7 | 6 |
+| Same as the official label | 21 of 42 | 22 of 42 |
+
+- The rewrite of the evaluator shows no measurable gain on these patches.
+- The two versions gave the same verdict on 24 of 42 patches only. One verdict for one patch is not stable. A comparison of versions needs more than one run for each patch.
+
+The current evaluator on the 24 cases of `evals/judge-cases/` (two small tasks):
+
+| | PASS | FAIL |
+|---|---|---|
+| Wrong patches (12) | 0 (0%, 95% interval 0% to 24%) | 12 |
+| Correct patches (12) | 9 | 3 (25%, 95% interval 9% to 53%) |
+
+- Cost: 0.21 US dollars and 14 minutes for 24 cases. No case without a decision.
+- The 3 rejections are on one task. The evaluator found that the fix raises an error for an infinite price, where the old code returned it. This is true for the 3 patches, and for the reference solution also. The requirement does not cover this input: the rejection is too strict, not false.
+- The evaluator is much better on these small tasks (0 of 12 wrong patches approved) than on the SWE-bench issues (5 of 19). Do not use the small set to predict the result on large repositories.
 
 ## 4. Deterministic checks
 
