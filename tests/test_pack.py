@@ -1751,5 +1751,34 @@ class EvaluatorCopiesTests(unittest.TestCase):
         self.assertNotIn("UNVERIFIABLE", agy)
 
 
+class ReleaseTests(unittest.TestCase):
+    def test_one_version_in_the_manifests_the_readme_and_the_changelog(self):
+        plugin = json.loads((PACK / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"]
+        agy = json.loads((PACK / "templates/antigravity/plugin.json").read_text(encoding="utf-8"))["version"]
+        changelog = re.search(r"(?m)^## (\d+\.\d+\.\d+) ", (PACK / "CHANGELOG.md").read_text(encoding="utf-8")).group(1)
+        readme = re.search(r"Status: v(\d+\.\d+\.\d+)", (PACK / "README.md").read_text(encoding="utf-8")).group(1)
+        self.assertEqual({plugin, agy, changelog, readme}, {plugin})
+        self.assertNotIn("## Unreleased", (PACK / "CHANGELOG.md").read_text(encoding="utf-8").split(f"## {plugin} ")[0] + "x")
+
+    def test_judge_reads_the_cost_from_a_json_list_of_events(self):
+        events = [{"type": "system"}, {"type": "assistant", "message": {"content": "VERDICT: PASS"}},
+                  {"type": "result", "result": "VERDICT: PASS", "total_cost_usd": 0.0125, "num_turns": 3}]
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i"], cwd=root, check=True, capture_output=True)
+            (root / "judge.py").write_text("print(%r)\n" % json.dumps(events), encoding="utf-8")
+            (root / "cases.jsonl").write_text(json.dumps({"id": "a", "label": "correct", "prompt": "p"}) + "\n"
+                                              + json.dumps({"id": "b", "label": "wrong", "prompt": "p"}) + "\n", encoding="utf-8")
+            py = sys.executable.replace("\\", "/")
+            r = run([EVAL, "judge", "--cases", "cases.jsonl", "--judge-cmd", f'"{py}" "{(root / "judge.py").as_posix()}"'], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("cost:                   $0.03 for 2 of 2 runs", r.stdout)
+            report = json.loads(sorted((root / ".agent-memory/evals/results").glob("*-judge.json"))[-1].read_text(encoding="utf-8"))
+            self.assertEqual([row["cost_usd"] for row in report["rows"]], [0.0125, 0.0125])
+
+
 if __name__ == "__main__":
     unittest.main()

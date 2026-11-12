@@ -1,11 +1,30 @@
 # Changelog
 
-## Unreleased — operating rules, Antigravity evaluator (docs/EVOLUTION.md: F7, F9)
+## 0.5.0 — 2026-11-12
+
+The pack moves from a set of skills to a quality-control station for agent work: a reproduction check, a gate that an agent cannot make easy, an evaluator with a calibration set, a draft pull request with evidence, and the numbers that we measured ([docs/RESULTS.md](docs/RESULTS.md)).
+
+- **Install**: Claude Code plugin and marketplace, `install.py uninstall`, `doctor`, scripts that start on Python 3.6 to 3.8.
+- **Checks**: `repro`, gate guards (committed gate file, deleted or changed tests, skip markers, secrets, size, complexity), `gated-run` for runs without hooks.
+- **Evaluator**: reads the requirement and not the author's narrative, gives `PASS`, `FAIL` or `UNKNOWN` and a merge-readiness line; `criteria` and `triage` subagents.
+- **From an issue to a pull request**: `triage`, `pr` (draft, after a green gate, never merged), `evidence` with review risk, the issue workflow, `factory`, `audit`, `provenance`.
+- **Measurement**: `skill-eval` intervals, `power` and `judge`; `evals/judge-cases/` with 24 labelled cases.
+- **Not measured**: the complete pack against the bare agent on hard issues. The rewrite of the evaluator shows no measurable gain on 42 SWE-bench patches. The issue workflow was not run on GitHub.
+
+Changes that need attention in an upgrade:
+- A lesson that an agent records is not in the session digest until a person confirms it (`memory.py lesson confirm`). Older lessons stay visible.
+- The session digest has a size limit of 6000 characters.
+- The gate fails on a line that looks like a secret. `"secret_scan": false` in `gate.json` turns this off.
+- The gate runs the committed `gate.json`.
+
+
+### operating rules, Antigravity evaluator (docs/EVOLUTION.md: F7, F9)
 - README has the operating rules: three points where a person decides (question, plan, pull request), and one issue, one worktree, one pull request.
 - The Antigravity evaluator has the same steps as the Claude Code evaluator. It had the text of an older version.
 - 1 test.
+- `skill-eval judge` reads the cost from a JSON list of events, and prints the cost and the time of the set.
 
-## Unreleased — evals in the repository, hardening (docs/EVOLUTION.md: E0, E5, E6)
+### evals in the repository, hardening (docs/EVOLUTION.md: E0, E5, E6)
 - **`evals/judge-cases/`**: 24 calibration cases for the evaluator (12 wrong, 12 correct patches from agent runs, labelled by hidden tests), with a label check that uses no agent. The installer does not copy `evals/`.
 - **`skill-eval judge` takes cases with their own code** (`"repo"`, `"patch"`): the judge works in a new repository, away from the labels.
 - **`docs/RESULTS.md`**: the measured numbers, with intervals, costs and limits.
@@ -14,13 +33,13 @@
 - **`install.py --codeowners OWNER`** and **`--with-sandbox`** (Claude Code sandbox with `failIfUnavailable`, and no read of `.env` and `secrets/` files).
 - 5 tests.
 
-## Unreleased — smaller memory, complexity of the change (docs/EVOLUTION.md: E7, E8)
+### smaller memory, complexity of the change (docs/EVOLUTION.md: E7, E8)
 - **The session digest has a size limit** (6000 characters, `--max-chars`).
 - **A lesson that an agent records waits for a person.** It enters the digest after `memory.py lesson confirm --key <key>` in a terminal. Each new lesson records its origin, the commit and the session. Older lessons stay visible.
 - **`memory.py complexity`**: Python functions that the change made more complex than a limit. `"max_complexity"` in `gate.json` shows them as gate warnings. The installer sets it to 10 for Python projects, with `"max_changed_lines": 400`.
 - 5 tests.
 
-## Unreleased — merge readiness and governance (docs/EVOLUTION.md: F6, F10)
+### merge readiness and governance (docs/EVOLUTION.md: F6, F10)
 - **The gate scans the change for secrets** before it runs the project's commands. It stops on a line that looks like a secret and never prints the value. `pack:allow-secret` on a line marks a false alarm; `"secret_scan": false` turns the scan off. `memory.py secrets --base <ref>` runs the scan alone.
 - **`memory.py provenance`**: a commit trailer for agent work, off until a person sets it. `--check <base>` finds commits without it. `memory.py pr` puts it in the pull request text.
 - **`memory.py audit`**: the run log as an audit record with a checksum. The issue workflow keeps it as an artifact.
@@ -28,35 +47,35 @@
 - `"max_changed_lines"` in `gate.json` makes the gate warn about a large change. `doctor` says when the gate has no lint or type check command.
 - 6 tests.
 
-## Unreleased — triage and factory report (docs/EVOLUTION.md: F4, F8)
+### triage and factory report (docs/EVOLUTION.md: F4, F8)
 - **`memory.py triage`**: a text check of an issue before work. Exit code 4 gives the questions for the issue. The issue workflow runs it first: a thin issue gets a comment, and no agent run starts.
 - **New `triage` subagent** (read-only tools) and **`triage` skill**: decide `TRIAGE: READY` or `TRIAGE: ASK` from the requirement and the repository. Not measured.
 - **`memory.py factory`**: pull requests of the agent line from GitHub (merge rate with interval, time to merge, cost, review risk, reverts), and refused pull requests, unattended runs and triage results from the local run log.
 - 4 tests.
 
-## Unreleased — from an issue to a draft pull request (docs/EVOLUTION.md: F3, F5)
+### from an issue to a draft pull request (docs/EVOLUTION.md: F3, F5)
 - **`memory.py pr`**: opens a draft pull request with the evidence block, only after a green gate. It stops if an open pull request has the same branch or closes the same issue, and if work is not committed. It never merges. It needs the GitHub CLI.
 - **The evidence block has a review risk and the cost.** The risk is `HIGH`, `MEDIUM` or `LOW`, from the paths that changed, the size of the change and the checks without a record. The cost comes from the caller (`--cost-usd`).
 - **`install.py --with-issue-workflow`**: a GitHub Actions workflow. The label `agent` on an issue starts an agent run with a limit of turns and of US dollars. The workflow, not the agent, runs the gate and opens the draft pull request. Without a pull request, it writes a comment on the issue. Not run on GitHub yet.
 - 4 tests.
 
-## Unreleased — old Python, and the gate without hooks (docs/EVOLUTION.md: F2)
+### old Python, and the gate without hooks (docs/EVOLUTION.md: F2)
 - **The scripts start on Python 3.6 to 3.8.** In two repositories with Python 3.6, `memory.py` stopped with a `SyntaxError`, so `repro` and the gate did not run. Each script and hook now starts again with a newer Python from `PATH` (or `AGENT_PACK_PYTHON`). If none is found, it prints the cause and exits with code 1.
 - **`memory.py gated-run`**: runs an agent command, then the gate. A red gate goes back to the agent with the gate output, for a set number of rounds. Exit code 1 means that the gate still fails. Use it in unattended runs: hooks do not run in `claude -p --bare`.
 - **`install.py uninstall`** (F1): removes what the pack installed in a project, or with `--global` in the home directory. It keeps files that you changed (`--force` removes them), `AGENTS.md`, your other hooks and `.agent-memory/` (`--purge-memory` removes it). `--dry-run` shows the list.
 - **Claude Code plugin** (F1): the repository is a plugin and its own marketplace (`claude plugin marketplace add`, `claude plugin install ai-quality-pack@ai-quality-pack`). The plugin has the skills, the two subagents and the three hooks. `aqp-memory` is on `PATH` and stands for `memory.py`. The Stop gate runs only where `.agent-memory/gate.json` exists. Run in two agent sessions on Linux; not run on Windows. The `evaluator` subagent now finds the memory command as its first step: in the first session it did not use `aqp-memory`.
 - 10 tests.
 
-## Unreleased — evaluator: a missing record is not a FAIL
+### evaluator: a missing record is not a FAIL
 - First calibration run (2 graded patches): the evaluator rejected a correct patch because no criteria, no reproduction and no gate file were recorded, not because of a defect in the code. The evaluator now keeps the two apart: FAIL is for a defect that it showed; a missing record goes under "Not verified". It gives one overall result (FAIL, else UNKNOWN, else PASS), and it makes its own reproduction when none is recorded.
 
-## Unreleased — evolution plan, third batch (docs/EVOLUTION.md: E0, E3, F5)
+### evolution plan, third batch (docs/EVOLUTION.md: E0, E3, F5)
 - **`skill-eval judge`**: measures an evaluator on cases with a known answer. Each case has a label (`correct` or `wrong`), a prompt and an optional setup command. The judge must print `VERDICT: PASS`, `FAIL` or `UNKNOWN`. The report gives the rate of wrong work approved and of correct work rejected, each with a 95% interval, the share with no decision, and the MCC. The pack ships the tool; a case set comes from your own graded work.
 - **`memory.py evidence`**: a Markdown block for a pull request. It says what the checks recorded for exactly this code (gate, reproduction, acceptance criteria, warnings, size of the change) and lists what is not verified. `--strict` exits 1 when a gap or a warning exists.
 - The pack's CI runs on a manual trigger only. README has the checks to run before a push.
 - 4 tests.
 
-## Unreleased — evolution plan, second batch (docs/EVOLUTION.md: E1, E6)
+### evolution plan, second batch (docs/EVOLUTION.md: E1, E6)
 - **The evaluator does not read the author's narrative.** It reads the requirement first and writes what must be true, reads the change with the new `memory.py diff-view` (the comments that the change added are hidden), and treats the recorded criteria as the implementer's reading. Its task is to find defects. The third verdict is `UNKNOWN`, and it does not let a feature pass. Not measured on the benchmark yet.
 - **New `criteria` subagent** (read-only tools): writes acceptance criteria from the requirement before the implementation, and asks when the requirement is ambiguous.
 - **`install.py --with-ci`**: a GitHub Actions workflow that runs the gate on pull requests with the base branch's `gate.json`, and shows gate warnings as annotations. Actions are pinned by commit.
@@ -65,7 +84,7 @@
 - `memory.py` and `skill_eval.py` write UTF-8 to a pipe and never fail on a character that a console cannot show.
 - 5 tests.
 
-## Unreleased — evolution plan, first features (docs/EVOLUTION.md: E2, E4, E5, F1)
+### evolution plan, first features (docs/EVOLUTION.md: E2, E4, E5, F1)
 - **`memory.py repro`**: shows a fix with a test that fails on the base commit and passes on the current code. The base runs in a throw-away git worktree with the test files copied onto it. Results: `verified`, `not-reproduced` (the test passes on the base), `wrong-failure` (`--expect` text missing), `still-failing`, `base-timeout`. `repro --check` is true only for exactly the verified code. Limit: files that git does not track are not in the base checkout.
 - **The gate runs the committed `gate.json`.** An edit that is not committed does not count, and the gate reports it. `--ref` or `AGENT_GATE_REF` selects the ref (in CI, the base branch).
 - **The gate reports deleted test files and new skip markers** since that ref. It reports them and does not block. The next session digest shows them under "Needs you".
@@ -73,12 +92,12 @@
 - **`skill-eval`**: the report gives the 95% interval of the paired per-task difference and the share of tasks where every run passed (pass^k). New `skill-eval power` gives the number of tasks needed to detect a change.
 - 7 tests.
 
-## Unreleased — observability follow-ups
+### observability follow-ups
 - **A Stop-hook release is `released-green` only when the gate passed for exactly the final code.** The hook looked only for the `.gate-pass` file, so a pass from before the last edit was logged as green. New `memory.py gate --check` runs nothing and exits 0 only for a pass on the current workspace.
 - **`memory.py init` no longer joins its new `.gitignore` lines to a last line that has no newline.** `evals/results/` became `evals/results/events.jsonl`, and the results and the run log were no longer ignored.
 - 2 tests.
 
-## Unreleased — observability
+### observability
 - **Run log.** `memory.py` and the hooks append to `.agent-memory/events.jsonl` (local, git-ignored): session start, gate pass/fail/skip with duration and the failing command, feature gradings, lesson adds and votes, Stop-hook blocks and releases. Each line has the agent session id (from the SessionStart hook input, or `AGENT_SESSION_ID`). No prompt or code text. `AGENT_MEMORY_EVENTS=0` turns it off; a log that cannot be written never fails a command.
 - **`memory.py stats`** (`--days`, `--json`): gate failure rate and top failing commands, evaluator rounds per pass, who verified, features marked as passing while the gate was not green, stops released on a red gate.
 - **The Stop hook's one-time release is no longer silent.** A stop on a red gate is logged as `released-red` and reported under "Needs you" in the next digest, until a gate pass.
@@ -87,7 +106,7 @@
 - README: how to join the run log with Claude Code's own OpenTelemetry export by session id.
 - 7 tests.
 
-## Unreleased — proposed fix P1 (benchmark report, 2026-11-11)
+### proposed fix P1 (benchmark report, 2026-11-11)
 - **Hook commands no longer depend on the agent's current directory.** The installer wrote `python3 .claude/hooks/gate_on_stop.py`. Claude Code runs a hook in the current directory, which follows the agent's `cd`. After `cd tests` the script was not found, the CLI reported "Stop hook error" and the agent stopped without the gate. The commands are now `python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/...`. The 0.4.2 fix moved into the project root inside the script, but the script never started. Seen in 2 of 10 benchmark runs on SWE-bench.
 - **The installer repairs the commands of an older install** in place, without adding a second copy.
 - **The session-start digest reports hooks that will not run** (script missing, or relative path) under "Needs you".

@@ -167,6 +167,8 @@ def parse_usage(stdout: str) -> dict:
             d = json.loads(cand)
         except ValueError:
             continue
+        if isinstance(d, list):  # a list of events: the result event is the last one with a cost or a turn count
+            d = next((e for e in reversed(d) if isinstance(e, dict) and (e.get("type") == "result" or "total_cost_usd" in e)), None)
         if not isinstance(d, dict):
             continue
         out = {}
@@ -669,6 +671,9 @@ def cmd_judge(a) -> None:
     print(f"  correct work rejected:  {s['correct_rejected']}/{s['correct']} ({pct(s['correct_rejected_rate'])}, 95% CI {s['correct_rejected_ci95']})")
     print(f"  no decision (UNKNOWN):  {s['unknown']}/{s['runs']} ({pct(s['unknown_rate'])})")
     print(f"  MCC on decided cases:   {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
+    costed = [r["cost_usd"] for r in rows if isinstance(r.get("cost_usd"), (int, float))]
+    print(f"  cost:                   " + (f"${sum(costed):.2f} for {len(costed)} of {len(rows)} runs" if costed else "not reported by the judge command")
+          + f" · {sum(r['seconds'] for r in rows) / 60:.0f} minutes")
     print(f"report: {out.as_posix()}\ntranscripts: {logdir.as_posix()}")
 
 
