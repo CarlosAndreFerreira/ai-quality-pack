@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — evolution plan, first features (docs/EVOLUTION.md: E2, E4, E5, F1)
+- **`memory.py repro`**: shows a fix with a test that fails on the base commit and passes on the current code. The base runs in a throw-away git worktree with the test files copied onto it. Results: `verified`, `not-reproduced` (the test passes on the base), `wrong-failure` (`--expect` text missing), `still-failing`, `base-timeout`. `repro --check` is true only for exactly the verified code. Limit: files that git does not track are not in the base checkout.
+- **The gate runs the committed `gate.json`.** An edit that is not committed does not count, and the gate reports it. `--ref` or `AGENT_GATE_REF` selects the ref (in CI, the base branch).
+- **The gate reports deleted test files and new skip markers** since that ref. It reports them and does not block. The next session digest shows them under "Needs you".
+- **`memory.py doctor`**: checks git, memory, `.gitignore`, the hook commands and scripts, and that each gate command can run. It says that hooks do not run in `claude -p --bare`.
+- **`skill-eval`**: the report gives the 95% interval of the paired per-task difference and the share of tasks where every run passed (pass^k). New `skill-eval power` gives the number of tasks needed to detect a change.
+- 7 tests.
+
 ## Unreleased — observability follow-ups
 - **A Stop-hook release is `released-green` only when the gate passed for exactly the final code.** The hook looked only for the `.gate-pass` file, so a pass from before the last edit was logged as green. New `memory.py gate --check` runs nothing and exits 0 only for a pass on the current workspace.
 - **`memory.py init` no longer joins its new `.gitignore` lines to a last line that has no newline.** `evals/results/` became `evals/results/events.jsonl`, and the results and the run log were no longer ignored.

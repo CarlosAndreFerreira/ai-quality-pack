@@ -599,5 +599,152 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("total_cost_usd", (log / run1["transcript"]).read_text(encoding="utf-8"))
 
 
+class EvolutionTests(unittest.TestCase):
+    """Reproduction check, gate guards, doctor, and the skill-eval statistics."""
+
+    def _git(self, root, *args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, check=True, capture_output=True)
+
+    def _repo(self, t):
+        root = Path(t)
+        self._git(root, "init", "-q")
+        (root / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")  # the defect
+        self._git(root, "add", "calc.py")
+        self._git(root, "commit", "-q", "-m", "init")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        self.py = sys.executable.replace("\\", "/")
+        (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+        return root
+
+    def _events(self, root, ev):
+        path = root / ".agent-memory/events.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        return [e for e in map(json.loads, lines) if e["ev"] == ev]
+
+    def _repro(self, root, *extra):
+        return run([MEM, "repro", "--test", f'"{self.py}" test_calc.py', "--test-file", "test_calc.py", *extra], root)
+
+    def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")  # the fix, not committed
+            r = self._repro(root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("repro VERIFIED", r.stdout)
+            self.assertEqual([e["result"] for e in self._events(root, "repro")], ["verified"])
+            self.assertEqual(run([MEM, "repro", "--check"], root).returncode, 0)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b + 0\n", encoding="utf-8")
+            self.assertEqual(run([MEM, "repro", "--check"], root).returncode, 1)  # verified for other code
+            worktrees = subprocess.run(["git", "worktree", "list"], cwd=root, capture_output=True, text=True).stdout
+            self.assertEqual(len(worktrees.strip().splitlines()), 1)  # the throw-away checkout is gone
+            self.assertIn("1 verified", run([MEM, "stats"], root).stdout)
+
+    def test_repro_rejects_a_test_that_passes_on_the_base_or_still_fails(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = self._repro(root)  # no fix: the test fails on the base and on the current code
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro STILL-FAILING", r.stdout)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (root / "test_calc.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")  # cannot fail
+            r = self._repro(root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro NOT-REPRODUCED", r.stdout)
+            (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+            r = self._repro(root, "--expect", "AssertionError: wrong sum")  # fails on the base for another reason
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro WRONG-FAILURE", r.stdout)
+            self.assertEqual(run([MEM, "repro", "--check"], root).returncode, 1)
+
+    def test_gate_runs_the_committed_gate_json_and_reports_the_edit(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            gate = root / ".agent-memory/gate.json"
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 1)  # not tracked yet: used as it is
+            self._git(root, "add", ".agent-memory/gate.json")
+            self._git(root, "commit", "-q", "-m", "gate")
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "import sys; sys.exit(0)"']}), encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")  # the agent made the gate easy: the committed one still runs
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("gate WARNING: .agent-memory/gate.json differs from HEAD", r.stdout)
+            digest = run([MEM, "start"], root, stdin="").stdout
+            self.assertIn("Gate warning: .agent-memory/gate.json differs from HEAD", digest)
+            self._git(root, "commit", "-q", "-am", "a person accepts the new gate")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertNotIn("WARNING", r.stdout)
+            self.assertNotIn("Gate warning", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_gate_reports_deleted_tests_and_new_skip_markers(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "tests").mkdir()
+            (root / "tests/test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+            (root / "tests/test_b.py").write_text("def test_b():\n    assert True\n", encoding="utf-8")
+            (root / "notes.py").write_text("x = 1\n", encoding="utf-8")
+            (root / ".agent-memory/gate.json").write_text(
+                json.dumps({"commands": [f'"{self.py}" -c "import sys; sys.exit(0)"']}), encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "tests")
+            self.assertNotIn("WARNING", run([MEM, "gate"], root, stdin="").stdout)
+            (root / "tests/test_a.py").unlink()
+            (root / "tests/test_b.py").write_text("import pytest\n\n@pytest.mark.skip(reason='flaky')\ndef test_b():\n    assert True\n", encoding="utf-8")
+            (root / "notes.py").write_text("# @pytest.mark.skip is fine outside a test file\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)  # reported, not blocked
+            self.assertIn("gate WARNING: test file deleted: tests/test_a.py", r.stdout)
+            self.assertIn("gate WARNING: skip marker added in tests/test_b.py", r.stdout)
+            self.assertNotIn("notes.py", r.stdout)
+            self.assertEqual(len(self._events(root, "gate")[-1]["warnings"]), 2)
+            self.assertIn("Gate warning: test file deleted", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_doctor_finds_a_gate_command_that_cannot_run(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            r = run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            mem = root / ".agents/skills/long-horizon/scripts/memory.py"
+            (root / ".agent-memory/gate.json").write_text(
+                json.dumps({"commands": [f'"{self.py}" -c "import sys; sys.exit(0)"']}), encoding="utf-8")
+            r = run([mem, "doctor"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("doctor: 0 problem(s)", r.stdout)
+            self.assertIn("--bare", r.stdout)  # the Stop gate does not run there
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": ["no-such-tool-xyz check ."]}), encoding="utf-8")
+            (root / ".claude/hooks/gate_on_stop.py").unlink()
+            r = run([mem, "doctor"], root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("`no-such-tool-xyz` is not installed or not on PATH", r.stdout)
+            self.assertIn("gate_on_stop.py` is missing", r.stdout)
+
+    def test_skill_eval_reports_paired_interval_and_pass_all(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("skill_eval_under_test", EVAL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        runs = lambda *passed: [{"passed": p, "tampered": False, "seconds": 1.0} for p in passed]
+        per_task = {  # baseline passes 2 of 3 on every task; the candidate passes all runs on 3 of 4 tasks
+            f"T{i}": {"split": "evolve", "base": runs(True, True, False), "cand": runs(*([True] * 3 if i else [False] * 3))}
+            for i in range(4)}
+        s = mod.summarise(per_task, "base", "cand")["evolve"]
+        self.assertEqual((s["base"]["pass_all"], s["cand"]["pass_all"]), (0.0, 0.75))
+        self.assertEqual(s["tasks"], 4)
+        low, high = s["delta_ci95"]
+        self.assertLess(low, 0)  # 4 tasks: the interval of the difference includes zero
+        self.assertGreater(high, s["delta"])
+        self.assertIsNone(mod.paired_ci([0.5]))
+        self.assertEqual(mod.paired_ci([0.2] * 5), [0.2, 0.2])
+
+    def test_skill_eval_power_says_when_the_task_set_is_too_small(self):
+        with tempfile.TemporaryDirectory() as t:
+            r = run([EVAL, "power", "--delta", "0.15", "--rho", "0.6", "--tasks", "10"], t)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("paired design (same tasks, both variants): 67 tasks", r.stdout)
+            self.assertIn("independent samples: 167 tasks", r.stdout)
+            self.assertIn("10 tasks cannot show a change of +15%", r.stdout)
+            self.assertEqual(run([EVAL, "power", "--delta", "0"], t).returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

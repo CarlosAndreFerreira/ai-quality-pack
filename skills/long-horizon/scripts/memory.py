@@ -54,6 +54,12 @@ GATE_PASS = ROOT / ".gate-pass"
 EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
 EVENTS_OLD = ROOT / "events.1.jsonl"
 SESSION = ROOT / ".session"
+REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
+# test files, and markers that turn a test off (the gate reports deleted tests and new markers)
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_test\.(py|go|rs)$"
+                          r"|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)[^/]+Tests?\.(java|kt|cs)$")
+SKIP_RE = re.compile(r"@(pytest\.mark\.(skip|skipif|xfail)|unittest\.(skip|skipIf|skipUnless|expectedFailure)|Disabled|Ignore)\b"
+                     r"|\bpytest\.skip\(|\b(it|test|describe)\.(skip|todo)\(|\bx(it|describe)\(|\bt\.Skip(f|Now)?\(|#\[ignore\]")
 EVENTS_MAX = 2_000_000
 STUCK_AFTER = 3
 ENTRY_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}", re.M)
@@ -399,9 +405,9 @@ def cmd_init(a: argparse.Namespace) -> None:
         ga.write_text("features.jsonl merge=union\nlessons.jsonl merge=union\ntasks.jsonl merge=union\nprogress.md merge=union\n", encoding="utf-8")
     gi = ROOT / ".gitignore"
     if not gi.exists():
-        gi.write_text(".lock\n.*.tmp\n.gate-pass\nevals/results/\n", encoding="utf-8")
+        gi.write_text(".lock\n.*.tmp\n.gate-pass\n.repro\nevals/results/\n", encoding="utf-8")
     text = gi.read_text(encoding="utf-8")
-    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session") if x not in text.splitlines()]
+    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session", ".repro") if x not in text.splitlines()]
     if missing:  # the run log is local telemetry: it is not committed
         lead = "" if not text or text.endswith("\n") else "\n"  # a last line without a newline stays its own line
         with gi.open("a", encoding="utf-8", newline="\n") as fh:
@@ -431,6 +437,9 @@ def cmd_start(a: argparse.Namespace) -> None:
             broken.append(f"A session stopped without a passing completion gate for its final code ({e.get('ts', '?')}). "
                           "Run `memory.py gate` and fix it before new work.")
             break
+    last_gate = next((e for e in reversed(read_jsonl(EVENTS)) if e.get("ev") == "gate"), None)
+    for w in ((last_gate or {}).get("warnings") or [])[:5]:  # tests turned off or deleted, gate.json edited
+        broken.append(f"Gate warning: {clean(w, 200)}.")
     if human or stuck or broken:  # attention first (Super-agent: speak only when a person must act)
         out += ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
         out += [f"- {f['id']} stuck: evaluator failed it {f['fail_streak']}× in a row — needs a human decision" for f in stuck]
@@ -693,11 +702,47 @@ def workspace_hash() -> str:
     return h.hexdigest()
 
 
+def gate_config(ref: str) -> tuple:
+    """(config, warning). The agent can write gate.json, so an edit that is not committed does not count:
+    the gate runs the version of `ref`. A gate.json that git does not track at `ref` is used as it is."""
+    text = GATE.read_text(encoding="utf-8")
+    try:
+        r = subprocess.run(["git", "show", f"{ref}:./{GATE.as_posix()}"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=10)
+    except Exception:
+        return json.loads(text), ""
+    if r.returncode != 0 or r.stdout.replace("\r\n", "\n").strip() == text.replace("\r\n", "\n").strip():
+        return json.loads(text), ""
+    try:
+        committed = json.loads(r.stdout)
+    except ValueError:
+        return json.loads(text), ""
+    return committed, (f"{GATE.as_posix()} differs from {ref}: the gate ran the committed version. "
+                       "A person reviews and commits a change of the gate")
+
+
+def test_changes(ref: str) -> List[str]:
+    """Test files deleted and skip markers added since `ref`. Reported, not blocked: a person decides."""
+    out: List[str] = []
+    for line in git("diff", "--name-status", "--no-renames", ref, "--").splitlines():
+        status, _, path = line.partition("\t")
+        if status.startswith("D") and TEST_PATH_RE.search(path):
+            out.append(f"test file deleted: {path}")
+    cur = ""
+    for line in git("diff", "-U0", "--no-renames", ref, "--").splitlines():
+        if line.startswith("+++ "):
+            cur = line[6:] if line.startswith("+++ b/") else ""
+        elif line.startswith("+") and cur and TEST_PATH_RE.search(cur) and SKIP_RE.search(line):
+            out.append(f"skip marker added in {cur}: {clean(line[1:].strip(), 80)}")
+    return out[:20]
+
+
 def cmd_gate(a: argparse.Namespace) -> None:
     if not GATE.exists():
         print(f"no {GATE} — nothing to gate (create it with {{\"commands\": [...]}})")
         return
-    cfg = json.loads(GATE.read_text(encoding="utf-8"))
+    ref = a.ref or os.environ.get("AGENT_GATE_REF") or "HEAD"
+    cfg, note = gate_config(ref)
     cmds = cfg.get("commands", [])
     limit = int(cfg.get("max_output", 3000))
     timeout = int(cfg.get("timeout", 900))
@@ -705,10 +750,13 @@ def cmd_gate(a: argparse.Namespace) -> None:
         fresh = gate_fresh()
         print("gate: passed for this workspace" if fresh else "gate: no pass for this workspace")
         sys.exit(0 if fresh else 1)
+    warnings = ([note] if note else []) + test_changes(ref)
+    for w in warnings:
+        print(f"gate WARNING: {w}")
     wh = workspace_hash()
     if not a.force and GATE_PASS.exists() and GATE_PASS.read_text(encoding="utf-8").strip() == wh:
         print("gate: workspace unchanged since last pass — skipped")
-        log_event("gate", result="skipped")
+        log_event("gate", result="skipped", warnings=warnings or None)
         return
     t0 = time.time()
     for c in cmds:
@@ -722,12 +770,154 @@ def cmd_gate(a: argparse.Namespace) -> None:
             print(f"gate FAILED: {c}\n" + out[-limit:])
             with contextlib.suppress(FileNotFoundError):
                 GATE_PASS.unlink()
-            log_event("gate", result="fail", failed=safe_cmd(c), timed_out=timed_out, seconds=round(time.time() - t0, 1))
+            log_event("gate", result="fail", failed=safe_cmd(c), timed_out=timed_out, seconds=round(time.time() - t0, 1),
+                      warnings=warnings or None)
             sys.exit(1)
         print(f"gate ok: {c}")
     GATE_PASS.write_text(wh + "\n", encoding="utf-8")
-    log_event("gate", result="pass", commands=len(cmds), seconds=round(time.time() - t0, 1))
+    log_event("gate", result="pass", commands=len(cmds), seconds=round(time.time() - t0, 1), warnings=warnings or None)
     print("gate PASSED")
+
+
+# ---------------------------------------------------------------- reproduction check
+def repro_fresh() -> bool:
+    """True when a reproduction was verified for exactly this workspace."""
+    try:
+        return json.loads(REPRO.read_text(encoding="utf-8")).get("hash") == workspace_hash()
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_repro(a: argparse.Namespace) -> None:
+    """A fix is shown by a test that fails on the base commit and passes on the current code.
+
+    The base runs in a throw-away git worktree of `--base`, with the `--test-file` files copied from the
+    current workspace on top of it. Limit: files that git does not track (a virtual environment,
+    node_modules) are not in that worktree, so the test can fail there for another reason. `--expect`
+    names text that the failure on the base must print.
+    """
+    ensure()
+    if a.check:
+        ok = repro_fresh()
+        print("repro: verified for this workspace" if ok else "repro: no verified reproduction for this workspace")
+        sys.exit(0 if ok else 1)
+    if not a.test:
+        die("repro needs --test \"<command>\" (and --test-file for each test file that the base does not have)")
+    sha = git("rev-parse", "--verify", f"{a.base}^{{commit}}")
+    top = git("rev-parse", "--show-toplevel")
+    if not sha or not top:
+        die(f"repro needs a git repository and a known --base (got {a.base})")
+    rel = Path.cwd().resolve().relative_to(Path(top).resolve())
+
+    def run_test(cwd: Path) -> tuple:
+        try:
+            r = subprocess.run(a.test, shell=True, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=a.timeout)
+            return r.returncode, r.stdout + r.stderr
+        except subprocess.TimeoutExpired:
+            return None, f"timeout after {a.timeout}s"
+
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="repro-"))
+    wt = tmp / "base"
+    try:
+        r = subprocess.run(["git", "worktree", "add", "--detach", str(wt), sha], capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"could not check out {a.base}: {clean(r.stderr.strip(), 200)}")
+        for f in a.test_file:
+            if not Path(f).is_file():
+                die(f"--test-file {f} is not a file")
+            dst = wt / rel / f
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst)
+        before, before_out = run_test(wt / rel)
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)], capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["git", "worktree", "prune"], capture_output=True)
+    after, after_out = run_test(Path("."))
+
+    if before == 0:
+        result, why = "not-reproduced", "the test passes on the base: it does not show the problem"
+    elif before is None:
+        result, why = "base-timeout", f"the test did not finish on the base ({a.timeout}s)"
+    elif a.expect and a.expect not in before_out:
+        result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
+    elif after != 0:
+        result, why = "still-failing", "the test still fails on the current code"
+    else:
+        result, why = "verified", "the test fails on the base and passes on the current code"
+    with contextlib.suppress(OSError):
+        if result == "verified":
+            REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha}) + "\n", encoding="utf-8")
+        else:
+            REPRO.unlink()
+    log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12])
+    print(f"repro {result.upper()}: {why}")
+    if before not in (0, None):
+        print("failure on the base (check that it is the problem and not a missing dependency):\n"
+              + clean(before_out.strip()[-600:], 600))
+    if result == "still-failing":
+        print("output on the current code:\n" + clean(after_out.strip()[-600:], 600))
+    sys.exit(0 if result == "verified" else 1)
+
+
+# ---------------------------------------------------------------- doctor
+def cmd_doctor(a: argparse.Namespace) -> None:
+    """Check that the pack can do its work in this repository. Exit 1 when something will not work."""
+    import shlex
+    import shutil
+    problems: List[str] = []
+    notes: List[str] = []
+    if sys.version_info < (3, 9):
+        problems.append("Python 3.9 or later is needed")
+    if not git("rev-parse", "--is-inside-work-tree"):
+        problems.append("this is not a git repository: the gate cannot see changes, and `repro` cannot run")
+    if not ROOT.is_dir():
+        problems.append(f"{ROOT}/ is missing: run `memory.py init`")
+    else:
+        gi = ROOT / ".gitignore"
+        have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+        miss = [x for x in (".gate-pass", "events.jsonl", ".session", ".repro") if x not in have]
+        if miss:
+            problems.append(f"{gi.as_posix()} does not ignore {', '.join(miss)}: run `memory.py init`")
+    if not SETTINGS.exists():
+        notes.append("no .claude/settings.json: the Claude Code hooks are not installed")
+    else:
+        problems += hook_problems()
+        try:
+            hooks = json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks", {})
+        except ValueError:
+            hooks = {}
+            problems.append(f"{SETTINGS.as_posix()} is not valid JSON")
+        if "gate_on_stop.py" in json.dumps(hooks.get("Stop", [])):
+            notes.append("hooks do not run in `claude -p --bare`: in unattended runs and in CI, run `memory.py gate` as its own step")
+        else:
+            notes.append("the Stop gate is not installed (`install.py project . --with-stop-gate`): the gate runs only when the agent runs it")
+    if not GATE.exists():
+        notes.append(f"no {GATE.as_posix()}: there is no completion gate")
+    else:
+        try:
+            cmds = json.loads(GATE.read_text(encoding="utf-8")).get("commands", [])
+        except ValueError:
+            cmds = None
+            problems.append(f"{GATE.as_posix()} is not valid JSON")
+        if cmds == []:
+            problems.append(f"{GATE.as_posix()} has no commands")
+        for c in cmds or []:
+            try:
+                exe = shlex.split(c, posix=os.name != "nt")[0].strip('"')
+            except (ValueError, IndexError):
+                continue
+            if not shutil.which(exe) and not Path(exe).exists():
+                problems.append(f"gate command `{clean(c, 80)}` cannot run: `{exe}` is not installed or not on PATH")
+    for p in problems:
+        print(f"PROBLEM: {p}")
+    for n in notes:
+        print(f"note: {n}")
+    print(f"doctor: {len(problems)} problem(s), {len(notes)} note(s)")
+    sys.exit(1 if problems else 0)
 
 
 # ---------------------------------------------------------------- run log commands
@@ -764,6 +954,7 @@ def cmd_stats(a: argparse.Namespace) -> None:
             open_fails[g.get("id", "?")] = open_fails.get(g.get("id", "?"), 0) + 1
         else:
             rounds.append(open_fails.pop(g.get("id", "?"), 0) + 1)
+    repros = Counter(e.get("result", "?") for e in evs if e.get("ev") == "repro")
     lessons = Counter(e.get("action", "?") for e in evs if e.get("ev") == "lesson")
     votes = Counter(e.get("vote", "?") for e in evs if e.get("ev") == "lesson" and e.get("action") == "vote")
     data = {
@@ -778,6 +969,7 @@ def cmd_stats(a: argparse.Namespace) -> None:
                      "rounds_per_pass": round(sum(rounds) / len(rounds), 1) if rounds else None,
                      "verified_by": dict(Counter(g.get("verified_by", "?") for g in passes)),
                      "passed_without_green_gate": sorted({g.get("id", "?") for g in passes if g.get("gate_fresh") is False})},
+        "repro": {"verified": repros["verified"], "not_verified": sum(repros.values()) - repros["verified"]},
         "lessons": {"added": lessons["add"], "recurred": lessons["recur"], "helpful": votes["helpful"], "harmful": votes["harmful"]},
     }
     if a.json:
@@ -798,6 +990,8 @@ def cmd_stats(a: argparse.Namespace) -> None:
           + (" · verified by: " + ", ".join(f"{k} {v}" for k, v in f["verified_by"].items()) if passes else ""))
     if f["passed_without_green_gate"]:
         print("  ⚠ marked as passing while the gate was not green for that workspace: " + ", ".join(f["passed_without_green_gate"]))
+    if sum(repros.values()):
+        print(f"reproductions: {data['repro']['verified']} verified · {data['repro']['not_verified']} not verified")
     print(f"lessons: {l['added']} added · {l['recurred']} recurred · votes +{l['helpful']}/-{l['harmful']}")
 
 
@@ -860,7 +1054,18 @@ def main() -> None:
     s = sub.add_parser("gate", help="run .agent-memory/gate.json commands; skipped if workspace unchanged since last pass")
     s.add_argument("--force", action="store_true")
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the gate passed for exactly this workspace")
+    s.add_argument("--ref", help="git ref whose gate.json counts, and against which test changes are reported "
+                                 "(default: AGENT_GATE_REF, else HEAD; in CI use the base branch)")
     s.set_defaults(fn=cmd_gate)
+    s = sub.add_parser("repro", help="show a fix: a test that fails on the base commit and passes on the current code")
+    s.add_argument("--test", help="shell command that runs the reproduction test")
+    s.add_argument("--test-file", action="append", default=[], help="test file to copy onto the base (repeatable)")
+    s.add_argument("--base", default="HEAD", help="commit without the fix (default HEAD: the fix is not committed)")
+    s.add_argument("--expect", help="text that the failure on the base must print")
+    s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
+    s.set_defaults(fn=cmd_repro)
+    sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("event", help="append one run-log event to events.jsonl (used by hooks)")
     s.add_argument("--ev", required=True)

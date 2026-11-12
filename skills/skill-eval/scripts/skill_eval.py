@@ -290,6 +290,29 @@ def wilson(passed: int, n: int, z: float = 1.96) -> list:
     return [round((c - r) / d, 2), round((c + r) / d, 2)]
 
 
+# two-sided 95% Student t for 1..29 degrees of freedom (above that, the normal 1.96)
+T95 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
+       2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045]
+
+
+def paired_ci(diffs: List[float]) -> Optional[list]:
+    """95% interval of the mean per-task difference (candidate - baseline). Tasks are the sample: the same
+    task runs under both variants, so the difference removes how hard each task is (Miller 2024)."""
+    n = len(diffs)
+    if n < 2:
+        return None
+    m = sum(diffs) / n
+    se = math.sqrt(sum((d - m) ** 2 for d in diffs) / (n - 1) / n)
+    t = T95[n - 2] if n - 1 <= len(T95) else 1.96
+    return [round(m - t * se, 3), round(m + t * se, 3)]
+
+
+def pass_all(rows: Dict[str, dict], name: str) -> float:
+    """pass^k with k = the repeats: the share of tasks where every run passed. A variant that passes
+    2 of 3 runs on each task has a 67% pass rate and a pass^3 of 0."""
+    return round(sum(all(r["passed"] for r in v[name]) for v in rows.values()) / len(rows), 3)
+
+
 def rate(runs: List[dict]) -> float:
     return sum(r["passed"] for r in runs) / len(runs) if runs else 0.0
 
@@ -316,9 +339,10 @@ def summarise(per_task: Dict[str, dict], a: str, b: str) -> dict:
         basis = next((k for k in ("cost_usd", "tokens") if total(k, a) and total(k, b) is not None), "seconds")
         spent = {name: {k: round(total(k, name), 4) for k in ("cost_usd", "tokens") if total(k, name) is not None} for name in (a, b)}
         out[split] = {
-            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n), **spent[a]},
-            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n), **spent[b]},
-            "delta": round((bp - ap) / n, 3), "tasks_better": wins, "tasks_worse": losses,
+            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n), "pass_all": pass_all(rows, a), **spent[a]},
+            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n), "pass_all": pass_all(rows, b), **spent[b]},
+            "delta": round((bp - ap) / n, 3), "tasks": len(rows),
+            "delta_ci95": paired_ci([rate(v[b]) - rate(v[a]) for v in rows.values()]), "tasks_better": wins, "tasks_worse": losses,
             "sign_test_p": round(sign_test(wins, losses), 3), "hard_losses": hard_losses,
             "tampered": tampered, "cost_ratio": round(total(basis, b) / (total(basis, a) or 1e-9), 2), "cost_basis": basis,
         }
@@ -392,7 +416,9 @@ def report(kind, label, s, v, reasons, noise, per_task, a, agent_cmd, extra=None
         names = [k for k in x if isinstance(x[k], dict)]
         b, c = x[names[0]], x[names[1]]
         print(f"\n[{split}] {names[0]} {b['passed']}/{b['runs']} ({b['rate']:.0%}, CI {b['ci95']}) → "
-              f"{names[1]} {c['passed']}/{c['runs']} ({c['rate']:.0%}, CI {c['ci95']}); Δ {x['delta']:+.0%}; "
+              f"{names[1]} {c['passed']}/{c['runs']} ({c['rate']:.0%}, CI {c['ci95']}); Δ {x['delta']:+.0%}"
+              + (f" (95% CI {x['delta_ci95'][0]:+.0%} to {x['delta_ci95'][1]:+.0%}, {x['tasks']} tasks, paired)" if x.get("delta_ci95") else "")
+              + f"; every run passed: {b['pass_all']:.0%} → {c['pass_all']:.0%} of tasks; "
               f"tasks +{x['tasks_better']}/-{x['tasks_worse']}; p={x['sign_test_p']}; cost ×{x['cost_ratio']} ({x['cost_basis']})")
     print(f"\nVERDICT: {v}\n  - " + "\n  - ".join(reasons) + f"\nreport: {out.as_posix()}"
           + (f"\ntranscripts: {extra['transcripts']}" if extra and extra.get("transcripts") else ""))
@@ -482,6 +508,30 @@ def cmd_history(a) -> None:
         print(f"{r['date']} {r.get('skill',''):<20} {r['verdict']:<26} Δ{r.get('delta',0):+.0%}  {r.get('decision','')}  — {r.get('hypothesis','')}")
 
 
+def cmd_power(a) -> None:
+    """How many tasks a comparison needs. Normal approximation, one run per task and variant.
+    Paired: the same tasks run under both variants (what `run` and `ablate` do); rho is the correlation
+    of a task's result between the variants. Miller (2024) reports 0.3 to 0.7 between models."""
+    from statistics import NormalDist
+    if not 0 < a.base < 1 or a.delta == 0 or not -1 < a.rho < 1:
+        die("power needs 0 < --base < 1, --delta not 0, and -1 < --rho < 1")
+    z = NormalDist().inv_cdf(1 - a.alpha / 2) + NormalDist().inv_cdf(a.power)
+    p2 = min(max(a.base + a.delta, 0.001), 0.999)
+    v1, v2 = a.base * (1 - a.base), p2 * (1 - p2)
+    var_paired = v1 + v2 - 2 * a.rho * math.sqrt(v1 * v2)
+    paired = math.ceil(z * z * var_paired / a.delta ** 2)
+    unpaired = math.ceil(z * z * (v1 + v2) / a.delta ** 2)
+    print(f"to detect a change of {a.delta:+.0%} from a pass rate of {a.base:.0%} "
+          f"(alpha {a.alpha}, power {a.power:.0%}, correlation {a.rho}):")
+    print(f"  paired design (same tasks, both variants): {paired} tasks")
+    print(f"  independent samples: {unpaired} tasks for each variant")
+    if a.tasks:
+        mde = z * math.sqrt(var_paired / a.tasks)
+        print(f"  with {a.tasks} tasks, paired: the smallest change you can detect is about +/-{mde:.0%}")
+        if mde > abs(a.delta):
+            print(f"  so {a.tasks} tasks cannot show a change of {a.delta:+.0%}: a result inside +/-{mde:.0%} says nothing")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Measure skill changes on verifiable tasks (A/B, A/A calibration, ablation).")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -513,6 +563,14 @@ def main() -> None:
     h = sub.add_parser("history", help="show past measurements (avoid re-proposing falsified ideas)")
     h.add_argument("--skill")
     h.set_defaults(fn=cmd_history)
+    w = sub.add_parser("power", help="how many tasks are needed to detect a given change (run nothing)")
+    w.add_argument("--delta", type=float, required=True, help="change in pass rate to detect, e.g. 0.15")
+    w.add_argument("--base", type=float, default=0.5, help="pass rate of the baseline (default 0.5, the worst case)")
+    w.add_argument("--rho", type=float, default=0.5, help="correlation of a task's result between variants")
+    w.add_argument("--alpha", type=float, default=0.05)
+    w.add_argument("--power", type=float, default=0.8)
+    w.add_argument("--tasks", type=int, help="also print the smallest change that this many tasks can detect")
+    w.set_defaults(fn=cmd_power)
     a = p.parse_args()
     a.fn(a)
 
