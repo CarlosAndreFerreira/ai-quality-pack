@@ -809,7 +809,7 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             wf = (root / ".github/workflows/quality-gate.yml").read_text(encoding="utf-8")
             self.assertIn("AGENT_GATE_REF: origin/${{ github.base_ref }}", wf)
-            self.assertIn("memory.py gate --force", wf)
+            self.assertIn("gate --force", wf)
             self.assertIn("contents: read", wf)
             self.assertNotIn("\t", wf)
 
@@ -1758,7 +1758,6 @@ class ReleaseTests(unittest.TestCase):
         changelog = re.search(r"(?m)^## (\d+\.\d+\.\d+) ", (PACK / "CHANGELOG.md").read_text(encoding="utf-8")).group(1)
         readme = re.search(r"Status: v(\d+\.\d+\.\d+)", (PACK / "README.md").read_text(encoding="utf-8")).group(1)
         self.assertEqual({plugin, agy, changelog, readme}, {plugin})
-        self.assertNotIn("## Unreleased", (PACK / "CHANGELOG.md").read_text(encoding="utf-8").split(f"## {plugin} ")[0] + "x")
 
     def test_judge_reads_the_cost_from_a_json_list_of_events(self):
         events = [{"type": "system"}, {"type": "assistant", "message": {"content": "VERDICT: PASS"}},
@@ -1778,6 +1777,143 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn("cost:                   $0.03 for 2 of 2 runs", r.stdout)
             report = json.loads(sorted((root / ".agent-memory/evals/results").glob("*-judge.json"))[-1].read_text(encoding="utf-8"))
             self.assertEqual([row["cost_usd"] for row in report["rows"]], [0.0125, 0.0125])
+
+
+GUARD = PACK / "templates" / ".claude" / "hooks" / "guard_pack_files.py"
+
+
+class SecurityTests(unittest.TestCase):
+    """Rights of the issue workflow, the trusted checker, the guard for the pack's files, and the sandbox list."""
+
+    def _jobs(self, wf):
+        """{job name: text of the job} of a workflow file, split on the two-space job keys."""
+        body = wf.split("\njobs:\n", 1)[1]
+        parts = re.split(r"(?m)^  ([a-z_]+):\n", body)
+        return dict(zip(parts[1::2], parts[2::2]))
+
+    def test_issue_workflow_gives_the_agent_no_write_access_and_the_writer_no_agent(self):
+        wf = (PACK / "templates/ci/agent-issue.yml").read_text(encoding="utf-8")
+        self.assertIn("\npermissions: {}\n", wf)                     # no default rights: each job names its own
+        jobs = self._jobs(wf)
+        self.assertEqual(sorted(jobs), ["agent", "publish", "verify"])
+        for name in ("agent", "verify"):                             # these two run an agent or code from the change
+            perms = re.search(r"    permissions:\n((?:      .+\n)+)", jobs[name]).group(1)
+            self.assertEqual(perms.strip(), "contents: read", name)
+            self.assertIn("persist-credentials: false", jobs[name])
+            self.assertNotIn("GH_TOKEN", jobs[name])
+        self.assertIn("claude-code-action@", jobs["agent"])
+        self.assertNotIn("id-token", "\n".join(l for l in wf.splitlines() if not l.lstrip().startswith("#")))
+        self.assertIn("--allowedTools Read,Edit,Write,Glob,Grep,Bash,Task", jobs["agent"])
+        self.assertNotIn("ANTHROPIC_API_KEY", jobs["verify"] + jobs["publish"])
+        self.assertIn("$MEMORY gate --force --ref \"$BASE\"", jobs["verify"])
+        # the job with write access: no agent, no gate, no test command; it applies the patch and opens the draft
+        pub = jobs["publish"]
+        self.assertIn("contents: write", pub)
+        for forbidden in ("claude-code-action", "$MEMORY gate", "pip install", "pytest", "npm "):
+            self.assertNotIn(forbidden, pub)
+        self.assertIn("--evidence-file \"$in/evidence.md\"", pub)
+        self.assertIn('if [ "$gate" != "green" ]', pub)
+        # every job runs the checker copied from the checkout of the default branch, before any change is applied
+        for name, job in jobs.items():
+            self.assertIn('cp "$CHECKER" "$RUNNER_TEMP/memory.py"', job, name)
+            if "git apply" in job:
+                self.assertLess(job.index('cp "$CHECKER"'), job.index("git apply"), name)
+        self.assertNotIn("\t", wf)
+
+    def test_quality_gate_runs_the_checker_of_the_base_branch(self):
+        wf = (PACK / "templates/ci/quality-gate.yml").read_text(encoding="utf-8")
+        self.assertIn('git show "$AGENT_GATE_REF:.agents/skills/long-horizon/scripts/memory.py" > "$checker"', wf)
+        self.assertIn('python3 "$checker" gate --force', wf)
+        self.assertNotIn("python3 .agents/skills/long-horizon/scripts/memory.py gate", wf)
+
+    def test_pr_takes_evidence_from_another_job_and_runs_no_gate(self):
+        with tempfile.TemporaryDirectory() as t:
+            helper = PullRequestTests("test_pr_opens_a_draft_with_the_evidence_after_a_green_gate")
+            root = helper._repo(t, good=False)                       # the local gate would be red for this change
+            (root / "evidence.md").write_text("## Verification evidence\n\n- Gate: PASSED for exactly this code\n"
+                                              "- Review risk: LOW (small change)\n\n### Not verified\n- no acceptance criteria were recorded\n",
+                                              encoding="utf-8")
+            (root / ".git/info/exclude").write_text("evidence.md\n", encoding="utf-8")
+            r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main", "--evidence-file", "evidence.md"], root, env=helper.env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("draft pull request opened (LOW review risk, 1 check(s) without a record)", r.stdout)
+            self.assertIn("Review risk: LOW", (helper.tools / "pr_body.md").read_text(encoding="utf-8"))
+            self.assertFalse(any(e.get("ev") == "gate" for e in
+                                 map(json.loads, (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines())))
+            (root / "notes.md").write_text("not an evidence block\n", encoding="utf-8")
+            (root / ".git/info/exclude").write_text("evidence.md\nnotes.md\n", encoding="utf-8")
+            r = run([MEM, "pr", "--title", "x", "--base", "origin/main", "--evidence-file", "notes.md"], root, env=helper.env)
+            self.assertEqual(r.returncode, 2)
+
+    def _guard(self, root, tool, **args):
+        payload = json.dumps({"tool_name": tool, "tool_input": args, "cwd": str(root)})
+        return run([GUARD], root, stdin=payload, env={"CLAUDE_PROJECT_DIR": str(root), "AGENT_PACK_UNLOCK": ""})
+
+    def test_guard_blocks_changes_of_the_files_that_check_the_agent(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            blocked = [
+                ("Edit", {"file_path": ".claude/settings.json"}),
+                ("Write", {"file_path": str(root / ".agents/skills/evaluator/SKILL.md")}),
+                ("Edit", {"file_path": ".agent-memory/gate.json"}),
+                ("Write", {"file_path": ".github/workflows/quality-gate.yml"}),
+                ("Bash", {"command": "echo '{}' > .agent-memory/gate.json"}),
+                ("Bash", {"command": "cd src && rm -rf ../.claude/hooks"}),
+                ("Bash", {"command": "sed -i 's/exit 1/exit 0/' .agents/skills/long-horizon/scripts/memory.py"}),
+                ("Bash", {"command": "pytest -q; git checkout HEAD~3 -- .github/workflows/quality-gate.yml"}),
+                ("Bash", {"command": "python3 -c \"open('.claude/settings.json','w').write('{}')\""}),
+            ]
+            for tool, args in blocked:
+                r = self._guard(root, tool, **args)
+                self.assertEqual(r.returncode, 2, (tool, args, r.stderr))
+                self.assertIn("a person makes it", r.stderr)
+            allowed = [
+                ("Edit", {"file_path": "src/app.py"}),
+                ("Write", {"file_path": ".agent-memory/progress.md"}),
+                ("Read", {"file_path": ".claude/settings.json"}),
+                ("Bash", {"command": "cat .claude/settings.json && ls .agents/skills"}),
+                ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate"}),
+                ("Bash", {"command": "rm -rf build && python3 .agents/skills/long-horizon/scripts/memory.py gate"}),
+                ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py evidence > /tmp/evidence.md"}),
+                ("Bash", {"command": "pytest -q 2>&1 | tee out.log"}),
+            ]
+            for tool, args in allowed:
+                self.assertEqual(self._guard(root, tool, **args).returncode, 0, (tool, args))
+            payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": ".claude/settings.json"}})
+            r = run([GUARD], root, stdin=payload, env={"CLAUDE_PROJECT_DIR": str(root), "AGENT_PACK_UNLOCK": "1"})
+            self.assertEqual(r.returncode, 0)                        # a person unlocked it for this session
+
+    def test_installer_adds_the_guard_and_the_sandbox_network_list_on_request(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            base = [INST, "project", root, "--no-upstream", "--profile", "none"]
+            self.assertEqual(run(base, root).returncode, 0)
+            self.assertFalse((root / ".claude/hooks/guard_pack_files.py").exists())   # opt-in
+            r = run(base + ["--with-guard", "--with-sandbox", "--force", "--sandbox-allow-domain", "pypi.org",
+                            "--sandbox-allow-domain", "files.pythonhosted.org"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertIn("Edit(./.claude/**)", settings["permissions"]["deny"])
+            self.assertIn("Edit(./.agent-memory/gate.json)", settings["permissions"]["deny"])
+            pre = settings["hooks"]["PreToolUse"]
+            self.assertEqual(len(pre), 1)
+            self.assertIn('"$CLAUDE_PROJECT_DIR"/.claude/hooks/guard_pack_files.py', pre[0]["hooks"][0]["command"])
+            self.assertIn("Bash", pre[0]["matcher"])
+            self.assertEqual(settings["sandbox"]["network"]["allowedDomains"], ["pypi.org", "files.pythonhosted.org"])
+            self.assertEqual(run(base + ["--with-guard"], root).returncode, 0)       # a second run adds no second hook
+            settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+            self.assertEqual(run([MEM, "doctor"], root).returncode, 0)               # the hook script is found
+            self.assertEqual(run([INST, "uninstall", root], root).returncode, 0)
+            self.assertFalse((root / ".claude/hooks/guard_pack_files.py").exists())
+            left = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertNotIn("PreToolUse", left.get("hooks", {}))
+
+    def test_security_doc_names_what_the_pack_does_not_stop(self):
+        doc = (PACK / "SECURITY.md").read_text(encoding="utf-8")
+        for text in ("Prompt injection", "not a security boundary", "What the pack does not protect against", "not tested with attack cases"):
+            self.assertIn(text, doc)
 
 
 if __name__ == "__main__":

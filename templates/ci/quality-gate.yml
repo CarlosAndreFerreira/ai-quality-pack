@@ -9,7 +9,8 @@
 #       /.claude/                 @your-team
 #       /.github/                 @your-team
 #       /tests/                   @your-team
-# - Limit: the gate script itself comes from the pull request. The CODEOWNERS lines above cover that.
+# - The gate program (`memory.py`) and the gate commands come from the base branch. The tests come from the pull
+#   request: the CODEOWNERS lines above, and the warnings for changed tests, cover that.
 name: quality-gate
 on:
   pull_request:
@@ -33,8 +34,14 @@ jobs:
           AGENT_GATE_REF: origin/${{ github.base_ref }}
           AGENT_MEMORY_EVENTS: "0"
         run: |
+          # The checker is the copy of the base branch: a pull request cannot change the program that checks it.
+          checker="$RUNNER_TEMP/memory.py"
+          if ! git show "$AGENT_GATE_REF:.agents/skills/long-horizon/scripts/memory.py" > "$checker" 2>/dev/null; then
+            cp .agents/skills/long-horizon/scripts/memory.py "$checker"
+            echo "::warning title=Quality gate::The base branch has no copy of the checker. This run used the copy of the pull request."
+          fi
           status=0
-          python3 .agents/skills/long-horizon/scripts/memory.py gate --force | tee "$RUNNER_TEMP/gate.log" || status=$?
+          python3 "$checker" gate --force | tee "$RUNNER_TEMP/gate.log" || status=$?
           grep '^gate WARNING: ' "$RUNNER_TEMP/gate.log" | sed 's/^gate WARNING: /::warning title=Quality gate::/' || true
           exit $status
   # Known vulnerabilities in the dependencies. The secret scan is part of the gate above (`memory.py secrets`).

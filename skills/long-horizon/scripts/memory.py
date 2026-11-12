@@ -1184,16 +1184,27 @@ def cmd_pr(a: argparse.Namespace) -> None:
         die("there are changes that are not committed: commit the work first, the pull request holds commits")
     if not git("log", "--oneline", f"{base}..HEAD").strip():
         die(f"`{branch}` has no commit that `{base}` does not have")
-    if not GATE.exists():
-        die(f"no {GATE}: a pull request needs a gate that passed. Create it with {{\"commands\": [...]}}")
-    g = subprocess.run([sys.executable, str(Path(__file__).resolve()), "gate", "--ref", base], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
-    if g.returncode != 0:
-        print((g.stdout + g.stderr).strip())
-        log_event("pr", result="refused-red-gate")
-        print("pr: the gate is red. No pull request was opened.")
-        sys.exit(1)
-    text, gaps, warnings, risk = evidence_report(base, a.cost_usd)
+    if a.evidence_file:
+        # A pipeline ran the gate in another job, without write access, and gives its evidence here. This job then
+        # runs no code of the change. The caller answers for the gate result: use it only after a green gate.
+        text = Path(a.evidence_file).read_text(encoding="utf-8", errors="replace").strip()
+        if "## Verification evidence" not in text:
+            die(f"{a.evidence_file} is not an evidence block of `memory.py evidence`")
+        m = re.search(r"Review risk: (HIGH|MEDIUM|LOW)", text)
+        risk = m.group(1) if m else "UNKNOWN"
+        tail = text.split("### Not verified", 1)[1] if "### Not verified" in text else ""
+        gaps = [l for l in tail.splitlines() if l.startswith("- ") and not l.startswith("- nothing")]
+    else:
+        if not GATE.exists():
+            die(f"no {GATE}: a pull request needs a gate that passed. Create it with {{\"commands\": [...]}}")
+        g = subprocess.run([sys.executable, str(Path(__file__).resolve()), "gate", "--ref", base], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if g.returncode != 0:
+            print((g.stdout + g.stderr).strip())
+            log_event("pr", result="refused-red-gate")
+            print("pr: the gate is red. No pull request was opened.")
+            sys.exit(1)
+        text, gaps, warnings, risk = evidence_report(base, a.cost_usd)
     issue = str(a.issue) if a.issue else ""
     if not a.dry_run or os.environ.get("AGENT_GH"):
         try:
@@ -1833,6 +1844,8 @@ def main() -> None:
     s.add_argument("--issue", type=int, help="issue that the pull request closes; also used to find a duplicate")
     s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--dry-run", action="store_true", help="run the checks and print the text; push nothing, open nothing")
+    s.add_argument("--evidence-file", help="evidence block from a job that ran the gate already (a pipeline with separate "
+                                           "rights): no gate and no project code runs here")
     s.set_defaults(fn=cmd_pr)
     s = sub.add_parser("triage", help="is the requirement ready for work? exit 4 and the questions for the issue when it is not")
     s.add_argument("--file", help="file with the issue text (default: stdin)")

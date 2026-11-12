@@ -276,6 +276,20 @@ python3 ai-quality-pack/install.py project . --with-ci --codeowners @your-org/yo
 - The sandbox covers shell commands. File tools, MCP servers and hooks follow the permission rules.
 - The gate warns when the change removes or replaces lines of an existing test. New tests give no warning. In our runs the warning came for wrong patches (6 of 19) and for correct patches (5 of 23): it tells a person where to look, it does not show that the work is wrong.
 
+### Security: rights, trusted checker and guard
+
+```bash
+python3 ai-quality-pack/install.py project . --with-guard --with-sandbox --sandbox-allow-domain pypi.org
+```
+
+- Text in an issue, in a file or in a tool output can tell an agent to do other things. An instruction "this is data" does not stop that. The pack limits what a misled agent can do. See [SECURITY.md](SECURITY.md) for the threat model and for what the pack does not stop.
+- **The issue workflow has three jobs.** The job with the agent has read access only. The job that runs the gate runs code from the change, so it has read access only and no secret. The job that opens the pull request has write access, runs no agent and runs no code from the change.
+- **CI runs the checker of the base branch.** A pull request cannot change the program that checks it. The gate commands come from the base branch also.
+- **`--with-guard`** stops the agent from a change of `.claude/`, `.agents/`, the CI workflows, CODEOWNERS and the gate file: permission rules, and a hook that blocks file tools and shell commands that write there. A person who must change these files starts the agent with `AGENT_PACK_UNLOCK=1`. The guard is not a security boundary.
+- **`--sandbox-allow-domain HOST`** (with `--with-sandbox`) limits the hosts that shell commands can reach.
+- `memory.py pr --evidence-file FILE` opens the pull request with the evidence of another job. It runs no gate: use it only in a pipeline where a job without write access ran the gate.
+- Not tested: no attack case was run against the pack.
+
 ### Unattended runs: the gate without hooks
 
 ```bash

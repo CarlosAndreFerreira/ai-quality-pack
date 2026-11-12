@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — security: rights, trusted checker, guard, threat model
+- **The issue workflow has three jobs with different rights**: the agent (read access), the gate (read access, no secret), and the pull request (write access, no agent, no code from the change). The agent job has no `id-token` right and a fixed tool list.
+- **CI runs `memory.py` of the base branch**, in `quality-gate` and in the issue workflow.
+- **`install.py --with-guard`**: permission rules and a `PreToolUse` hook that stop the agent from a change of `.claude/`, `.agents/`, the CI workflows, CODEOWNERS and the gate file. `AGENT_PACK_UNLOCK=1` opens it for a person.
+- **`--sandbox-allow-domain HOST`**: the hosts that shell commands can reach in the sandbox.
+- **`memory.py pr --evidence-file`**: the pull request with the evidence of a job that ran the gate.
+- **SECURITY.md** has the threat model: the trust boundaries, each risk with its control, and what the pack does not protect against.
+- 6 tests. Not tested with attack cases.
+
 ## 0.5.0 — 2026-11-12
 
 The pack moves from a set of skills to a quality-control station for agent work: a reproduction check, a gate that an agent cannot make easy, an evaluator with a calibration set, a draft pull request with evidence, and the numbers that we measured ([docs/RESULTS.md](docs/RESULTS.md)).

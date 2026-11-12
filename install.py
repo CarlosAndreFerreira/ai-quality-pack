@@ -82,6 +82,7 @@ HOOK_SCRIPTS = {
     "SessionStart": (".agents/skills/long-horizon/scripts/memory.py", "start"),
     "PostToolUse": (".claude/hooks/format_on_edit.py",),
     "Stop": (".claude/hooks/gate_on_stop.py",),
+    "PreToolUse": (".claude/hooks/guard_pack_files.py",),
 }
 
 
@@ -344,8 +345,11 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     for hook in ("format_on_edit.py", "gate_on_stop.py"):
         add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / hook, root / ".claude" / "hooks" / hook, a.upgrade)
     merge_settings(root / ".claude" / "settings.json", a.with_stop_gate)
+    if a.with_guard:
+        add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / "guard_pack_files.py", root / ".claude" / "hooks" / "guard_pack_files.py", a.upgrade)
+        add_guard(root / ".claude" / "settings.json")
     if a.with_sandbox:
-        add_sandbox(root / ".claude" / "settings.json", a.force)
+        add_sandbox(root / ".claude" / "settings.json", a.force, a.sandbox_allow_domain)
     if a.codeowners:
         add_codeowners(root, a.codeowners)
     for p in profiles:
@@ -410,7 +414,37 @@ def remove_codeowners(root: Path) -> None:
         remove(path)
 
 
-def add_sandbox(path: Path, force: bool) -> None:
+GUARD_DENY = ["Edit(./.claude/**)", "Edit(./.agents/**)", "Edit(./.github/workflows/**)", "Edit(./.github/CODEOWNERS)",
+              "Edit(./.agent-memory/gate.json)", "Edit(./.agent-memory/config.json)"]
+
+
+def add_guard(path: Path) -> None:
+    """Claude Code settings: the agent may not change the files that check its work (permission rules and a hook)."""
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log(f"WARN: {path} is not valid JSON; not modified")
+            return
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        log(f"WARN: {path} has an unexpected shape; not modified")
+        return
+    deny = data.setdefault("permissions", {}).setdefault("deny", [])
+    deny += [r for r in GUARD_DENY if r not in deny]
+    cmd = hook_command("PreToolUse")
+    existing = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    if not any(h.get("command") == cmd for e in existing for h in e.get("hooks", [])):
+        existing.append({"matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash", "hooks": [{"type": "command", "command": cmd}]})
+    log(f"{'merged' if path.exists() else 'added'}: {path} (the agent may not change .claude/, .agents/, CI workflows, CODEOWNERS and the gate file)")
+    log("NOTE: this stops an agent that edits its checks by habit or because a file told it to. It is not a security "
+        "boundary: the checks that count run in CI. A person who must change these files starts the agent with AGENT_PACK_UNLOCK=1.")
+    if not DRY:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def add_sandbox(path: Path, force: bool, domains: list) -> None:
     """Claude Code settings: no read of secret files, and shell commands in the operating system sandbox."""
     data = {}
     if path.exists():
@@ -430,6 +464,13 @@ def add_sandbox(path: Path, force: bool) -> None:
     else:
         sandbox = data.setdefault("sandbox", {})
         sandbox.update(enabled=True, failIfUnavailable=True)
+        if domains:  # shell commands reach these hosts only: a command cannot send data to another host
+            allowed = sandbox.setdefault("network", {}).setdefault("allowedDomains", [])
+            allowed += [d for d in domains if d not in allowed]
+            log(f"NOTE: shell commands in the sandbox reach only: {', '.join(allowed)}")
+        else:
+            log("NOTE: no network list was given (--sandbox-allow-domain). Shell commands in the sandbox follow the "
+                "default network rules of Claude Code.")
         log("NOTE: sandbox on, and Claude Code stops at startup where the sandbox cannot run (native Windows; Linux and "
             "WSL2 without `bubblewrap` and `socat`). The sandbox covers shell commands only: file tools, MCP servers and "
             "hooks follow the permission rules.")
@@ -541,7 +582,8 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     remove_skills(skills, a.force)
     remove_if_empty(root / ".agents")
     tpl = PACK / "templates"
-    for rel in ("agents/evaluator.md", "agents/criteria.md", "agents/triage.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py"):
+    for rel in ("agents/evaluator.md", "agents/criteria.md", "agents/triage.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py",
+                "hooks/guard_pack_files.py"):
         remove_pack_file(tpl / ".claude" / rel, root / ".claude" / rel, a.force)
     remove_pack_file(tpl / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml", a.force)
     remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
@@ -565,7 +607,7 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     for backup in sorted(root.glob(".claude/**/.backup")) + sorted(root.glob(".agents/**/.backup")):
         log(f"kept: {backup} (backups from --upgrade)")
     log("NOTE: files from a language profile (for example .editorconfig) and the EGM plugin are not removed. "
-        "Sandbox and permission settings from --with-sandbox stay in .claude/settings.json: remove them by hand.")
+        "Sandbox and permission settings from --with-sandbox and --with-guard stay in .claude/settings.json: remove them by hand.")
 
 
 def uninstall_global(a: argparse.Namespace) -> None:
@@ -598,6 +640,10 @@ def main() -> None:
     ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
     ap.add_argument("--with-sandbox", action="store_true",
                     help="Claude Code settings: sandbox for shell commands (it must be available) and no read of .env and secrets/ files")
+    ap.add_argument("--sandbox-allow-domain", action="append", default=[], metavar="HOST",
+                    help="with --with-sandbox: a host that shell commands may reach (repeatable), for example pypi.org")
+    ap.add_argument("--with-guard", action="store_true",
+                    help="Claude Code settings: the agent may not change .claude/, .agents/, CI workflows and the gate file")
     ap.add_argument("--codeowners", metavar="OWNER",
                     help="add CODEOWNERS lines: OWNER (for example @your-org/your-team) reviews the gate, the hooks, CI and the tests")
     ap.add_argument("--with-issue-workflow", action="store_true",
