@@ -221,6 +221,24 @@ python3 .agents/skills/long-horizon/scripts/memory.py audit --out audit.jsonl
 - `provenance` is off until a person sets a trailer. Then the agent adds the trailer to its commits, `--check` finds commits without it, and `memory.py pr` puts it in the pull request text.
 - `audit` writes the run log (sessions, gate runs, gradings, pull requests, triage) with a checksum. The issue workflow keeps it as an artifact for 90 days.
 
+### Memory: small and confirmed
+
+- The session digest has a size limit of 6000 characters (`memory.py start --max-chars`). The most urgent items come first, so the cut removes the end.
+- A lesson that an agent records is not in the digest until a person confirms it: `memory.py lesson confirm --key <key>`, in a terminal. Text that a model wrote does not become a standing instruction without a person.
+- Each new lesson records who wrote it (agent or human), the commit and the session. `memory.py lesson list` shows the lessons that wait.
+- Lessons from before this version stay in the digest.
+- Limit: the terminal check stops an agent that confirms by habit. It is not a security boundary: `AGENT_MEMORY_HUMAN=1` passes it.
+
+### Complexity of the change
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py complexity --base origin/main --max 10
+```
+
+- It reports the Python functions that the change made more complex than the limit. A function that was over the limit before, and did not grow, is not reported.
+- `"max_complexity": 10` in `gate.json` makes the gate show these functions as warnings. It does not block. The installer sets it for Python projects, with `"max_changed_lines": 400`.
+- The count is an approximation of cyclomatic complexity. Python only. For other languages, put the linter's rule in the gate commands.
+
 ### Unattended runs: the gate without hooks
 
 ```bash

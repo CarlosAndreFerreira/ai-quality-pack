@@ -43,3 +43,5 @@ Count ≥ 2, or harmful > helpful → run `skill-evolve`.
 
 ## Limits
 One lesson per event. No speculative lessons. No secrets, customer data or personal data.
+
+A lesson that you record is not in the session digest yet. A person confirms it with `memory.py lesson confirm --key <k>` in a terminal. Tell the user which lessons wait. Do not confirm a lesson yourself.

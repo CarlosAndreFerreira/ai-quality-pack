@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — smaller memory, complexity of the change (docs/EVOLUTION.md: E7, E8)
+- **The session digest has a size limit** (6000 characters, `--max-chars`).
+- **A lesson that an agent records waits for a person.** It enters the digest after `memory.py lesson confirm --key <key>` in a terminal. Each new lesson records its origin, the commit and the session. Older lessons stay visible.
+- **`memory.py complexity`**: Python functions that the change made more complex than a limit. `"max_complexity"` in `gate.json` shows them as gate warnings. The installer sets it to 10 for Python projects, with `"max_changed_lines": 400`.
+- 5 tests.
+
 ## Unreleased — merge readiness and governance (docs/EVOLUTION.md: F6, F10)
 - **The gate scans the change for secrets** before it runs the project's commands. It stops on a line that looks like a secret and never prints the value. `pack:allow-secret` on a line marks a false alarm; `"secret_scan": false` turns the scan off. `memory.py secrets --base <ref>` runs the scan alone.
 - **`memory.py provenance`**: a commit trailer for agent work, off until a person sets it. `--check <base>` finds commits without it. `memory.py pr` puts it in the pull request text.

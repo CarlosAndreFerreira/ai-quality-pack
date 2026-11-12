@@ -360,7 +360,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
         gate = root / ".agent-memory" / "gate.json"
         cmds = [c for p in profiles for c in GATES.get(p, [])]
         if cmds and not gate.exists():
-            gate.write_text(json.dumps({"commands": cmds, "max_output": 3000, "timeout": 900}, indent=2) + "\n", encoding="utf-8")
+            cfg = {"commands": cmds, "max_output": 3000, "timeout": 900, "max_changed_lines": 400}
+            if "python" in profiles:
+                cfg["max_complexity"] = 10  # same limit as the ruff C90 rule of the Python profile
+            gate.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
             log(f"added: {gate} (edit to match this repo)")
     else:
         log("memory: init .agent-memory/ (+ gate.json from profile)")

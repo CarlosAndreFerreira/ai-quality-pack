@@ -1510,5 +1510,119 @@ class GovernanceTests(unittest.TestCase):
         self.assertIn("actions/upload-artifact@", wf)
 
 
+COMPLEX = """
+def simple(x):
+    return x + 1
+
+
+def old_and_complex(a, b, c, d):
+    if a:
+        return 1
+    if b:
+        return 2
+    if c:
+        return 3
+    if d and a or b:
+        return 4
+    for i in range(3):
+        if i:
+            return i
+    return 0
+"""
+
+
+class MemoryAndComplexityTests(unittest.TestCase):
+    """A smaller digest, lessons that a person confirms, and the complexity of the change."""
+
+    def _git(self, root, *args):
+        r = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def _repo(self, t):
+        root = Path(t)
+        self._git(root, "init", "-q", "-b", "main")
+        (root / "app.py").write_text(COMPLEX, encoding="utf-8")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "base")
+        return root
+
+    def test_a_lesson_from_an_agent_enters_the_digest_only_after_a_person_confirms_it(self):
+        human = {"AGENT_MEMORY_HUMAN": "1"}
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            rule = "Close the cursor before the function returns."
+            r = run([MEM, "lesson", "add", "--key", "close-cursor", "--rule", rule], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("after a person confirms it", r.stdout)
+            digest = run([MEM, "start"], root, stdin="").stdout
+            self.assertNotIn(rule, digest)
+            self.assertIn("1 lesson(s) that an agent recorded wait for a person", digest)
+            listed = run([MEM, "lesson", "list"], root, stdin="").stdout
+            self.assertRegex(listed, r"close-cursor: .*\[not confirmed; by agent at [0-9a-f]{7,}\]")
+            r = run([MEM, "lesson", "confirm", "--key", "close-cursor"], root, stdin="")
+            self.assertEqual(r.returncode, 2)  # no terminal: an agent cannot confirm by habit
+            self.assertIn("a person confirms a lesson", r.stderr)
+            r = run([MEM, "lesson", "add", "--key", "other-rule", "--rule", "Name the unit in each log line.", "--by", "human"], root, stdin="")
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(run([MEM, "lesson", "confirm", "--key", "close-cursor"], root, stdin="", env=human).returncode, 0)
+            digest = run([MEM, "start"], root, stdin="").stdout
+            self.assertIn(rule, digest)
+            self.assertNotIn("wait for a person", digest)
+            r = run([MEM, "lesson", "add", "--key", "other-rule", "--rule", "Name the unit in each log line.", "--by", "human"], root, stdin="", env=human)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("Name the unit in each log line.", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_a_lesson_from_before_origins_were_recorded_stays_in_the_digest(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            old = {"key": "old-rule", "kind": "mistake", "rule": "Keep the old rule visible.", "count": 1, "helpful": 0,
+                   "harmful": 0, "seen": ["x"], "status": "active"}
+            (root / ".agent-memory/lessons.jsonl").write_text(json.dumps(old) + "\n", encoding="utf-8")
+            self.assertIn("Keep the old rule visible.", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_the_digest_has_a_size_limit(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            for i in range(30):
+                run([MEM, "feature", "add", "--id", f"F-{i}", "--desc", "a feature with a long description " * 5, "--criterion", "c"], root)
+            full = run([MEM, "start", "--max-chars", "0", "--features", "30"], root, stdin="").stdout
+            self.assertNotIn("the digest was cut", full)
+            self.assertGreater(len(full), 4000)
+            cut = run([MEM, "start", "--max-chars", "1000", "--features", "30"], root, stdin="").stdout
+            self.assertIn("the digest was cut at 1000 of", cut)
+            self.assertLess(len(cut), 1700)
+            self.assertIn("Ritual:", cut)  # the last line is kept
+            default = run([MEM, "start", "--features", "30"], root, stdin="").stdout
+            self.assertLess(len(default), 6800)
+
+    def test_complexity_reports_only_what_the_change_made_worse(self):
+        grown = COMPLEX + "\n\ndef new_and_complex(a, b, c):\n" + "".join(f"    if a == {i}:\n        return {i}\n" for i in range(7)) + "    return b or c\n"
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertEqual(run([MEM, "complexity", "--max", "5"], root).returncode, 0)  # nothing changed
+            (root / "app.py").write_text(grown, encoding="utf-8")
+            (root / "extra.py").write_text("def tiny():\n    return 1\n", encoding="utf-8")
+            r = run([MEM, "complexity", "--max", "5"], root)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("app.py: `new_and_complex` has complexity 9 (limit 5, new function)", r.stdout)
+            self.assertNotIn("old_and_complex", r.stdout)  # over the limit before the change, and not worse
+            self.assertNotIn("tiny", r.stdout)
+            py = sys.executable.replace("\\", "/")
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "print(1)"'], "max_complexity": 5}), encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)  # a warning: a person decides
+            self.assertIn("gate WARNING: app.py: `new_and_complex` has complexity 9", r.stdout)
+
+    def test_python_profile_gate_has_the_size_and_complexity_limits(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+            self.assertEqual(run([INST, "project", root, "--no-upstream"], root).returncode, 0)
+            gate = json.loads((root / ".agent-memory/gate.json").read_text(encoding="utf-8"))
+            self.assertEqual((gate["max_complexity"], gate["max_changed_lines"]), (10, 400))
+
+
 if __name__ == "__main__":
     unittest.main()
