@@ -530,11 +530,36 @@ class ObservabilityTests(unittest.TestCase):
             self.assertEqual(stops, [("blocked", "s-1"), ("released-red", "s-1")])
             digest = run([MEM, "start"], root, stdin="").stdout
             self.assertIn("Needs you", digest)
-            self.assertIn("completion gate still failing", digest)
-            self.assertIn("1 released with the gate still failing", run([MEM, "stats"], root).stdout)
+            self.assertIn("without a passing completion gate", digest)
+            self.assertIn("1 released without a passing gate", run([MEM, "stats"], root).stdout)
             (root / "ok.flag").write_text("1", encoding="utf-8")
             run([MEM, "gate"], root, stdin="")
-            self.assertNotIn("completion gate still failing", run([MEM, "start"], root, stdin="").stdout)
+            self.assertNotIn("without a passing completion gate", run([MEM, "start"], root, stdin="").stdout)
+
+    def test_release_is_green_only_for_a_pass_on_the_final_code(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            hook = root / ".claude/hooks/gate_on_stop.py"
+            release = json.dumps({"session_id": "s-1", "stop_hook_active": True})
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            self.assertEqual(run([MEM, "gate", "--check"], root, stdin="").returncode, 0)
+            (root / "later_edit.py").write_text("x = 1\n", encoding="utf-8")  # after the pass: nothing checked it
+            self.assertEqual(run([MEM, "gate", "--check"], root, stdin="").returncode, 1)
+            self.assertEqual(run([hook], root, stdin=release).returncode, 0)
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            self.assertEqual(run([hook], root, stdin=release).returncode, 0)
+            stops = [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
+            self.assertEqual(stops, ["released-red", "released-green"])
+
+    def test_init_keeps_a_gitignore_line_that_has_no_final_newline(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / ".agent-memory").mkdir()
+            (root / ".agent-memory/.gitignore").write_text(".lock\nevals/results/", encoding="utf-8")  # an older install
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            lines = (root / ".agent-memory/.gitignore").read_text(encoding="utf-8").splitlines()
+            for line in ("evals/results/", "events.jsonl", "events.1.jsonl", ".session"):
+                self.assertIn(line, lines)
 
     def test_upgrade_replaces_an_older_hook_script(self):
         with tempfile.TemporaryDirectory() as t:

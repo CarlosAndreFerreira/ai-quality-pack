@@ -400,11 +400,12 @@ def cmd_init(a: argparse.Namespace) -> None:
     gi = ROOT / ".gitignore"
     if not gi.exists():
         gi.write_text(".lock\n.*.tmp\n.gate-pass\nevals/results/\n", encoding="utf-8")
-    have = gi.read_text(encoding="utf-8").splitlines()
-    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session") if x not in have]
+    text = gi.read_text(encoding="utf-8")
+    missing = [x for x in ("events.jsonl", "events.1.jsonl", ".session") if x not in text.splitlines()]
     if missing:  # the run log is local telemetry: it is not committed
+        lead = "" if not text or text.endswith("\n") else "\n"  # a last line without a newline stays its own line
         with gi.open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write("\n".join(missing) + "\n")
+            fh.write(lead + "\n".join(missing) + "\n")
     print(f"initialised {ROOT}/ (schema {SCHEMA})")
 
 
@@ -427,7 +428,7 @@ def cmd_start(a: argparse.Namespace) -> None:
         if e.get("ev") == "gate" and e.get("result") == "pass":
             break
         if e.get("ev") == "stop" and e.get("outcome") == "released-red":
-            broken.append(f"A session stopped with the completion gate still failing ({e.get('ts', '?')}). "
+            broken.append(f"A session stopped without a passing completion gate for its final code ({e.get('ts', '?')}). "
                           "Run `memory.py gate` and fix it before new work.")
             break
     if human or stuck or broken:  # attention first (Super-agent: speak only when a person must act)
@@ -700,6 +701,10 @@ def cmd_gate(a: argparse.Namespace) -> None:
     cmds = cfg.get("commands", [])
     limit = int(cfg.get("max_output", 3000))
     timeout = int(cfg.get("timeout", 900))
+    if a.check:  # no command runs: did the gate pass for exactly this code? (the Stop hook asks this on a release)
+        fresh = gate_fresh()
+        print("gate: passed for this workspace" if fresh else "gate: no pass for this workspace")
+        sys.exit(0 if fresh else 1)
     wh = workspace_hash()
     if not a.force and GATE_PASS.exists() and GATE_PASS.read_text(encoding="utf-8").strip() == wh:
         print("gate: workspace unchanged since last pass — skipped")
@@ -787,7 +792,7 @@ def cmd_stats(a: argparse.Namespace) -> None:
           + f" · {g['skipped']} skipped (unchanged)" + (f" · median {g['median_seconds']}s" if secs else ""))
     for c, n in g["fails_by_command"].items():
         print(f"  {n}× failed: {c}")
-    print(f"stop hook: {st['blocked']} blocked · {st['released_red']} released with the gate still failing")
+    print(f"stop hook: {st['blocked']} blocked · {st['released_red']} released without a passing gate")
     print(f"features: {f['passed']} passed · {f['failed_gradings']} failed gradings"
           + (f" · {f['rounds_per_pass']} evaluator rounds per pass" if rounds else "")
           + (" · verified by: " + ", ".join(f"{k} {v}" for k, v in f["verified_by"].items()) if passes else ""))
@@ -854,6 +859,7 @@ def main() -> None:
 
     s = sub.add_parser("gate", help="run .agent-memory/gate.json commands; skipped if workspace unchanged since last pass")
     s.add_argument("--force", action="store_true")
+    s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the gate passed for exactly this workspace")
     s.set_defaults(fn=cmd_gate)
 
     s = sub.add_parser("event", help="append one run-log event to events.jsonl (used by hooks)")
