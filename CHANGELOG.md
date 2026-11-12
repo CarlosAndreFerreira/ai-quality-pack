@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — evolution plan, third batch (docs/EVOLUTION.md: E0, E3, F5)
+- **`skill-eval judge`**: measures an evaluator on cases with a known answer. Each case has a label (`correct` or `wrong`), a prompt and an optional setup command. The judge must print `VERDICT: PASS`, `FAIL` or `UNKNOWN`. The report gives the rate of wrong work approved and of correct work rejected, each with a 95% interval, the share with no decision, and the MCC. The pack ships the tool; a case set comes from your own graded work.
+- **`memory.py evidence`**: a Markdown block for a pull request. It says what the checks recorded for exactly this code (gate, reproduction, acceptance criteria, warnings, size of the change) and lists what is not verified. `--strict` exits 1 when a gap or a warning exists.
+- The pack's CI runs on a manual trigger only. README has the checks to run before a push.
+- 4 tests.
+
 ## Unreleased — evolution plan, second batch (docs/EVOLUTION.md: E1, E6)
 - **The evaluator does not read the author's narrative.** It reads the requirement first and writes what must be true, reads the change with the new `memory.py diff-view` (the comments that the change added are hidden), and treats the recorded criteria as the implementer's reading. Its task is to find defects. The third verdict is `UNKNOWN`, and it does not let a feature pass. Not measured on the benchmark yet.
 - **New `criteria` subagent** (read-only tools): writes acceptance criteria from the requirement before the implementation, and asks when the requirement is ambiguous.

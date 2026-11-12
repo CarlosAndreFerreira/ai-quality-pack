@@ -142,6 +142,18 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `diff-view` shows the change without the comments that it added. The evaluator reads this view.
 - `install.py project . --with-ci` adds a GitHub Actions workflow. It runs the gate on each pull request with the `gate.json` of the base branch.
 - The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
+- `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
+- `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved.
+
+### Checks before a push
+
+The CI of this repository runs on a manual trigger. Run these three commands before a push:
+
+```bash
+python -m unittest discover -s tests
+python skills/skill-evolve/scripts/validate_skills.py skills --strict
+python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
+```
 
 ## Robustness
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).

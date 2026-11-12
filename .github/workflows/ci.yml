@@ -1,8 +1,9 @@
 name: pack-ci
+# Manual trigger only: the account has no Actions budget, so jobs started by a push did not run and showed as failed.
+# Before a push, run the same three steps locally (see CONTRIBUTING notes in README: "Checks before a push").
+# To run on each pull request again, add `pull_request:` under `on:`.
 on:
-  push:
-    branches: [main]  # a branch with an open pull request ran every job two times
-  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:

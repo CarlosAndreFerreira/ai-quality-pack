@@ -835,5 +835,117 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
             self.assertIn("⚑", text)  # a character that the Windows console code page does not have
 
 
+JUDGE = """
+import pathlib
+work = pathlib.Path('work.txt').read_text(encoding='utf-8')
+if 'unsure' not in work:  # a judge that cannot decide prints no verdict line
+    print('checked the change')
+    print('VERDICT: FAIL' if 'bug' in work else 'VERDICT: PASS')
+"""
+
+
+class JudgeAndEvidenceTests(unittest.TestCase):
+    """Evaluator calibration on cases with a known answer, and the evidence block."""
+
+    def _git(self, root, *args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, check=True, capture_output=True)
+
+    def _repo(self, t):
+        root = Path(t)
+        self._git(root, "init", "-q")
+        (root / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        (root / "judge.py").write_text(JUDGE, encoding="utf-8")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "init")
+        self.py = sys.executable.replace("\\", "/")
+        return root
+
+    def _case(self, cid, label, work):
+        setup = f'"{self.py}" -c "open(\'work.txt\', \'w\').write(\'{work}\')"'
+        return json.dumps({"id": cid, "label": label, "prompt": "Judge the change in work.txt.", "setup": setup})
+
+    def test_judge_reports_wrong_work_approved_and_correct_work_rejected(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            cases = root / "cases.jsonl"
+            cases.write_text("\n".join([
+                "# labels stay out of the prompt",
+                self._case("w1", "wrong", "bug"),        # caught
+                self._case("w2", "wrong", "looks fine"),  # approved: the failure that matters
+                self._case("c1", "correct", "fine"),
+                self._case("c2", "correct", "bug-like"),  # rejected without cause
+                self._case("c3", "correct", "unsure"),    # no verdict line
+            ]) + "\n", encoding="utf-8")
+            judge_cmd = f'"{self.py}" judge.py'
+            r = run([EVAL, "judge", "--cases", cases, "--judge-cmd", judge_cmd, "--max-runs", "2"], root)
+            self.assertEqual(r.returncode, 2)  # 5 runs planned: the budget guard stops it
+            r = run([EVAL, "judge", "--cases", cases, "--judge-cmd", judge_cmd], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("wrong work approved:    1/2 (50%", r.stdout)
+            self.assertIn("correct work rejected:  1/3 (33%", r.stdout)
+            self.assertIn("no decision (UNKNOWN):  1/5 (20%)", r.stdout)
+            self.assertIn("c3", r.stdout)
+            self.assertIn("(no verdict line)", r.stdout)
+            reports = list((root / ".agent-memory/evals/results").glob("*-judge.json"))
+            self.assertEqual(len(reports), 1)
+            summary = json.loads(reports[0].read_text(encoding="utf-8"))["summary"]
+            self.assertEqual((summary["wrong_approved"], summary["correct_rejected"], summary["unknown"]), (1, 1, 1))
+            self.assertEqual(summary["mcc_decided"], 0.0)  # 1 of each outcome: no better than chance
+            self.assertEqual(len(list((root / ".agent-memory/evals/results").glob("*-judge-transcripts/*.txt"))), 5)
+            worktrees = subprocess.run(["git", "worktree", "list"], cwd=root, capture_output=True, text=True).stdout
+            self.assertEqual(len(worktrees.strip().splitlines()), 1)
+
+    def test_judge_refuses_a_case_without_a_label(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            run([INST, "project", root, "--no-upstream", "--profile", "none"], root)
+            (root / "cases.jsonl").write_text(json.dumps({"id": "x", "prompt": "p"}) + "\n", encoding="utf-8")
+            r = run([EVAL, "judge", "--cases", "cases.jsonl", "--judge-cmd", "echo VERDICT: PASS"], root)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("label (correct|wrong)", r.stderr)
+
+    def test_evidence_lists_what_is_verified_and_what_is_not(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            r = run([MEM, "evidence", "--strict"], root)
+            self.assertEqual(r.returncode, 1)  # nothing is verified yet
+            for text in ("no completion gate", "Reproduction: none verified", "no acceptance criteria were recorded"):
+                self.assertIn(text, r.stdout)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+            test = f'"{self.py}" test_calc.py'
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
+            self.assertEqual(run([MEM, "repro", "--test", test, "--test-file", "test_calc.py"], root).returncode, 0)
+            self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
+            run([MEM, "feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4"], root)
+            run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "test_calc passes", "--verified-by", "evaluator"], root)
+            r = run([MEM, "evidence", "--strict"], root)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("Gate: PASSED for exactly this code (1 commands)", r.stdout)
+            self.assertIn("Reproduction: VERIFIED", r.stdout)
+            self.assertIn("1 of 1 features graded as passing (F-1 by evaluator)", r.stdout)
+            self.assertIn("1 file changed", r.stdout)
+            self.assertIn("- nothing: every check above has a record for this code", r.stdout)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b + 0\n", encoding="utf-8")  # a later edit
+            r = run([MEM, "evidence", "--strict"], root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("Gate: NOT passed for this code", r.stdout)
+            self.assertIn("Reproduction: none verified for this code", r.stdout)
+
+    def test_evidence_names_a_feature_that_was_not_graded_by_an_independent_verifier(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            run([MEM, "init"], root)
+            run([MEM, "feature", "add", "--id", "F-1", "--desc", "x", "--criterion", "c1"], root)
+            run([MEM, "feature", "add", "--id", "F-2", "--desc", "y", "--criterion", "c2"], root)
+            run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "human"], root)
+            out = run([MEM, "evidence"], root).stdout
+            self.assertIn("1 of 2 features graded as passing (F-1 by human)", out)
+            self.assertIn("features not graded as passing: F-2", out)
+            self.assertNotIn("without an independent verifier", out)
+
+
 if __name__ == "__main__":
     unittest.main()

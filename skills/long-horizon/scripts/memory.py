@@ -907,6 +907,63 @@ def cmd_diff_view(a: argparse.Namespace) -> None:
     print(f"[diff-view] base {a.base}; {removed} comment line(s) that the change added are not shown")
 
 
+# ---------------------------------------------------------------- evidence for a pull request
+def cmd_evidence(a: argparse.Namespace) -> None:
+    """What was verified for exactly this code, as Markdown for a pull request or a final report.
+
+    It states what is not verified as plainly as what is: a reviewer decides faster with the gaps in view.
+    Everything comes from records that the checks wrote; nothing here is the agent's own claim.
+    """
+    ensure()
+    ref = a.base
+    lines, gaps = ["## Verification evidence", ""], []
+    events = read_jsonl(EVENTS)
+    last_gate = next((e for e in reversed(events) if e.get("ev") == "gate" and e.get("result") in ("pass", "fail")), None)
+    fresh = gate_fresh()
+    if fresh is None:
+        lines.append("- Gate: this repository has no completion gate")
+        gaps.append("no completion gate is configured")
+    elif fresh:
+        n = (last_gate or {}).get("commands")
+        lines.append("- Gate: PASSED for exactly this code" + (f" ({n} commands)" if n else ""))
+    else:
+        failed = (last_gate or {}).get("failed") if (last_gate or {}).get("result") == "fail" else None
+        lines.append("- Gate: NOT passed for this code" + (f" (last run failed: `{clean(failed, 100)}`)" if failed else ""))
+        gaps.append("the completion gate did not pass for this code")
+    if repro_fresh():
+        rec = json.loads(REPRO.read_text(encoding="utf-8"))
+        lines.append(f"- Reproduction: VERIFIED, `{clean(rec.get('test', '?'), 100)}` fails on {str(rec.get('base', '?'))[:12]} and passes on this code")
+    else:
+        lines.append("- Reproduction: none verified for this code")
+        gaps.append("no test was shown to fail before the change and pass after it")
+    feats = load_features()
+    if feats:
+        graded = [f for f in feats if f.get("passes")]
+        lines.append(f"- Acceptance criteria: {len(graded)} of {len(feats)} features graded as passing"
+                     + (" (" + ", ".join(f"{f['id']} by {f.get('verified_by') or '?'}" for f in graded[:8]) + ")" if graded else ""))
+        open_ids = [f["id"] for f in feats if not f.get("passes")]
+        if open_ids:
+            gaps.append("features not graded as passing: " + ", ".join(open_ids[:8]))
+        selfgraded = [f["id"] for f in graded if (f.get("verified_by") or "") not in ("evaluator", "human", "ci")]
+        if selfgraded:
+            gaps.append("graded without an independent verifier: " + ", ".join(selfgraded[:8]))
+    else:
+        lines.append("- Acceptance criteria: none recorded")
+        gaps.append("no acceptance criteria were recorded")
+    warnings = test_changes(ref)
+    if GATE.exists():
+        note = gate_config(ref)[1]
+        warnings = ([note] if note else []) + warnings
+    for w in warnings[:10]:
+        lines.append(f"- Warning: {clean(w, 200)}")
+    stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
+    lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
+    lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])
+    print("\n".join(lines))
+    if a.strict and (gaps or warnings):
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------- doctor
 def cmd_doctor(a: argparse.Namespace) -> None:
     """Check that the pack can do its work in this repository. Exit 1 when something will not work."""
@@ -1113,6 +1170,10 @@ def main() -> None:
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
     s.set_defaults(fn=cmd_repro)
     sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("evidence", help="Markdown block for a pull request: what was verified for this code, and what was not")
+    s.add_argument("--base", default="HEAD", help="ref to compare with (in a pull request: the base branch)")
+    s.add_argument("--strict", action="store_true", help="exit 1 when something is not verified or a warning exists")
+    s.set_defaults(fn=cmd_evidence)
     s = sub.add_parser("diff-view", help="the change since a base, without the comments it added (for the evaluator)")
     s.add_argument("--base", default="HEAD")
     s.set_defaults(fn=cmd_diff_view)

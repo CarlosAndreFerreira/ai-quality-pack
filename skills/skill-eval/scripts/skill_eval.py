@@ -508,6 +508,109 @@ def cmd_history(a) -> None:
         print(f"{r['date']} {r.get('skill',''):<20} {r['verdict']:<26} Δ{r.get('delta',0):+.0%}  {r.get('decision','')}  — {r.get('hypothesis','')}")
 
 
+VERDICT_RE = re.compile(r"VERDICT:\s*(PASS|FAIL|UNKNOWN)\b", re.I)
+
+
+def mcc(tp: int, tn: int, fp: int, fn: int) -> Optional[float]:
+    """Matthews correlation: one number for a judge that must both catch wrong work and accept correct work."""
+    d = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    return round((tp * tn - fp * fn) / d, 2) if d else None
+
+
+def judge_summary(rows: List[dict]) -> dict:
+    """rows: {"label": "correct"|"wrong", "verdict": "PASS"|"FAIL"|"UNKNOWN"}. A wrong case is the positive."""
+    n = lambda label, verdict: sum(r["label"] == label and r["verdict"] == verdict for r in rows)
+    tp, fn, tn, fp = n("wrong", "FAIL"), n("wrong", "PASS"), n("correct", "PASS"), n("correct", "FAIL")
+    wrong, correct = [r for r in rows if r["label"] == "wrong"], [r for r in rows if r["label"] == "correct"]
+    unknown = sum(r["verdict"] == "UNKNOWN" for r in rows)
+    return {
+        "runs": len(rows), "wrong": len(wrong), "correct": len(correct),
+        # the number that matters most: wrong work that the judge let pass
+        "wrong_approved": fn, "wrong_approved_rate": round(fn / len(wrong), 3) if wrong else None,
+        "wrong_approved_ci95": wilson(fn, len(wrong)) if wrong else None,
+        "correct_rejected": fp, "correct_rejected_rate": round(fp / len(correct), 3) if correct else None,
+        "correct_rejected_ci95": wilson(fp, len(correct)) if correct else None,
+        "unknown": unknown, "unknown_rate": round(unknown / len(rows), 3) if rows else None,
+        "mcc_decided": mcc(tp, tn, fp, fn),
+    }
+
+
+def cmd_judge(a) -> None:
+    """Measure an evaluator (a judge) on cases with a known answer: how often does it approve wrong work?
+
+    Each case is a line of JSON: {"id", "label": "correct" | "wrong", "prompt", "setup"?}. `setup` is a shell
+    command that puts the work to judge into a fresh checkout (for example `git apply cases/x.diff`).
+    The judge command gets the prompt and must print `VERDICT: PASS`, `VERDICT: FAIL` or `VERDICT: UNKNOWN`.
+    Keep the labels out of the prompt and out of the repository that the judge can read.
+    """
+    repo = repo_root()
+    cmd_t = a.judge_cmd or os.environ.get("SKILL_EVAL_JUDGE_CMD")
+    if not cmd_t:
+        die("set --judge-cmd or SKILL_EVAL_JUDGE_CMD, e.g. 'claude -p {prompt}'")
+    skills = (repo / a.skills).resolve()
+    if not skills.is_dir():
+        die(f"skills dir {skills} not found")
+    cases = []
+    for i, line in enumerate(Path(a.cases).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            c = json.loads(line)
+        except ValueError:
+            die(f"{a.cases} line {i} is not JSON")
+        if not c.get("id") or c.get("label") not in ("correct", "wrong") or not c.get("prompt"):
+            die(f"{a.cases} line {i}: a case needs id, label (correct|wrong) and prompt")
+        cases.append(c)
+    if not cases:
+        die(f"{a.cases} has no cases")
+    runs = a.repeats * len(cases)
+    if runs > a.max_runs and not a.yes:
+        die(f"{runs} judge runs planned (> --max-runs {a.max_runs}); this costs tokens. Re-run with --yes to confirm.")
+    logdir = new_logdir("judge")
+    rows = []
+    for c in cases:
+        for rep in range(a.repeats):
+            wt = prepare_worktree(repo, skills, None)
+            t0 = time.time()
+            try:
+                if c.get("setup"):
+                    s = sh(c["setup"], wt, a.timeout)
+                    if s.returncode != 0:
+                        die(f"case {c['id']}: setup failed: {(s.stderr or s.stdout).strip()[-300:]}")
+                pfile = wt / ".skill-eval-prompt.txt"
+                pfile.write_text(c["prompt"], encoding="utf-8")
+                cmd = cmd_t.format(prompt=q(c["prompt"]), prompt_file=q(str(pfile)), workdir=q(str(wt)))
+                try:
+                    r = sh(cmd, wt, a.timeout)
+                    rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
+                except subprocess.TimeoutExpired as e:
+                    rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
+                found = VERDICT_RE.findall(stdout)
+                verdict = found[-1].upper() if found else "UNKNOWN"  # no verdict line: the judge did not decide
+                log = logdir / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', str(c['id']))}-{rep + 1}.txt"
+                try:
+                    log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
+                except OSError:
+                    pass
+                rows.append({"id": c["id"], "label": c["label"], "verdict": verdict, "stated": bool(found),
+                             "seconds": round(time.time() - t0, 1), **parse_usage(stdout)})
+                print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}" + ("" if found else " (no verdict line)"), flush=True)
+            finally:
+                cleanup(repo, wt)
+    s = judge_summary(rows)
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-judge.json"
+    out.write_text(json.dumps({"kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "judge_cmd": cmd_t,
+                               "repeats": a.repeats, "summary": s, "rows": rows}, indent=2), encoding="utf-8")
+    pct = lambda x: "n/a" if x is None else f"{x:.0%}"
+    print(f"\njudge on {s['runs']} runs ({s['wrong']} wrong, {s['correct']} correct)")
+    print(f"  wrong work approved:    {s['wrong_approved']}/{s['wrong']} ({pct(s['wrong_approved_rate'])}, 95% CI {s['wrong_approved_ci95']})")
+    print(f"  correct work rejected:  {s['correct_rejected']}/{s['correct']} ({pct(s['correct_rejected_rate'])}, 95% CI {s['correct_rejected_ci95']})")
+    print(f"  no decision (UNKNOWN):  {s['unknown']}/{s['runs']} ({pct(s['unknown_rate'])})")
+    print(f"  MCC on decided cases:   {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
+    print(f"report: {out.as_posix()}\ntranscripts: {logdir.as_posix()}")
+
+
 def cmd_power(a) -> None:
     """How many tasks a comparison needs. Normal approximation, one run per task and variant.
     Paired: the same tasks run under both variants (what `run` and `ablate` do); rho is the correlation
@@ -568,6 +671,15 @@ def main() -> None:
     h = sub.add_parser("history", help="show past measurements (avoid re-proposing falsified ideas)")
     h.add_argument("--skill")
     h.set_defaults(fn=cmd_history)
+    j = sub.add_parser("judge", help="measure an evaluator on cases with a known answer (how often it approves wrong work)")
+    j.add_argument("--cases", required=True, help="JSON lines: id, label (correct|wrong), prompt, optional setup")
+    j.add_argument("--judge-cmd", help="headless judge template, e.g. \"claude -p {prompt}\"; must print VERDICT: PASS|FAIL|UNKNOWN")
+    j.add_argument("--skills", default=".agents/skills", help="skills dir relative to the repo root")
+    j.add_argument("--repeats", type=int, default=1)
+    j.add_argument("--timeout", type=int, default=900)
+    j.add_argument("--max-runs", type=int, default=20)
+    j.add_argument("--yes", action="store_true", help="confirm runs above --max-runs")
+    j.set_defaults(fn=cmd_judge)
     w = sub.add_parser("power", help="how many tasks are needed to detect a given change (run nothing)")
     w.add_argument("--delta", type=float, required=True, help="change in pass rate to detect, e.g. 0.15")
     w.add_argument("--base", type=float, default=0.5, help="pass rate of the baseline (default 0.5, the worst case)")
