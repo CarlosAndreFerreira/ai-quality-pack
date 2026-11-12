@@ -1,5 +1,6 @@
 {
   "name": "ai-quality-pack",
+  "description": "The AI Quality Pack: quality control for AI coding agents.",
   "owner": {
     "name": "Carlos André Ferreira",
     "url": "https://github.com/CarlosAndreFerreira"
