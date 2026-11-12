@@ -863,6 +863,50 @@ def cmd_repro(a: argparse.Namespace) -> None:
     sys.exit(0 if result == "verified" else 1)
 
 
+# ---------------------------------------------------------------- evaluator view of the change
+HASH_COMMENT = {"py", "sh", "bash", "rb", "yml", "yaml", "toml", "pl", "r", "ps1", "mk", "tf", "cfg", "ini"}
+SLASH_COMMENT = {"js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt", "go", "rs", "c", "h", "cc", "cpp", "hpp",
+                 "cs", "swift", "php", "scala", "dart"}
+DASH_COMMENT = {"sql", "lua", "hs"}
+
+
+def is_comment_line(path: str, text: str) -> bool:
+    """A whole-line comment in the language of `path`. Docstrings and code with a trailing comment stay."""
+    ext, t = path.rsplit(".", 1)[-1].lower() if "." in path else "", text.strip()
+    if ext in HASH_COMMENT:
+        return t.startswith("#") and not t.startswith("#!")
+    if ext in SLASH_COMMENT:
+        return t.startswith(("//", "/*", "*/")) or (t.startswith("*") and not t.startswith("**"))
+    if ext in DASH_COMMENT:
+        return t.startswith("--")
+    return False
+
+
+def cmd_diff_view(a: argparse.Namespace) -> None:
+    """The change since `--base`, without the comment lines that the change added.
+
+    For the evaluator: a comment such as "thread-safe, the lock is held upstream" is a claim of the author.
+    A reviewer that reads it tends to accept it. This view leaves only what the code does.
+    """
+    r = subprocess.run(["git", "diff", "--no-color", a.base, "--", ".", f":(exclude){ROOT.as_posix()}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        die(f"git diff {a.base} failed: {clean(r.stderr.strip(), 200)}")
+    out, cur, removed = [], "", 0
+    for line in r.stdout.splitlines():
+        if line.startswith("+++ "):
+            cur = line[6:] if line.startswith("+++ b/") else ""
+        elif line.startswith("+") and cur and is_comment_line(cur, line[1:]):
+            removed += 1
+            continue
+        out.append(line)
+    untracked = [f for f in git("ls-files", "-o", "--exclude-standard").splitlines() if not f.startswith(ROOT.as_posix() + "/")]
+    print("\n".join(out))
+    for f in untracked[:50]:
+        print(f"new file that git does not track (read it directly): {f}")
+    print(f"[diff-view] base {a.base}; {removed} comment line(s) that the change added are not shown")
+
+
 # ---------------------------------------------------------------- doctor
 def cmd_doctor(a: argparse.Namespace) -> None:
     """Check that the pack can do its work in this repository. Exit 1 when something will not work."""
@@ -996,6 +1040,9 @@ def cmd_stats(a: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):  # a pipe (hook, agent) gets UTF-8; a console never fails on a character
+        with contextlib.suppress(Exception):
+            stream.reconfigure(errors="replace") if stream.isatty() else stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(description="File-based agent memory: progress, features (+criteria), tasks, playbook lessons.")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create .agent-memory/").set_defaults(fn=cmd_init)
@@ -1066,6 +1113,9 @@ def main() -> None:
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
     s.set_defaults(fn=cmd_repro)
     sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("diff-view", help="the change since a base, without the comments it added (for the evaluator)")
+    s.add_argument("--base", default="HEAD")
+    s.set_defaults(fn=cmd_diff_view)
 
     s = sub.add_parser("event", help="append one run-log event to events.jsonl (used by hooks)")
     s.add_argument("--ev", required=True)

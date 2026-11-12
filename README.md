@@ -139,6 +139,9 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `doctor` finds hooks that will not run and gate commands that are not installed.
 - Hooks do not run in `claude -p --bare`. In unattended runs and in CI, run `memory.py gate` as a separate step.
 - `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.
+- `diff-view` shows the change without the comments that it added. The evaluator reads this view.
+- `install.py project . --with-ci` adds a GitHub Actions workflow. It runs the gate on each pull request with the `gate.json` of the base branch.
+- The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
 
 ## Robustness
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).

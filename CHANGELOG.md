@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — evolution plan, second batch (docs/EVOLUTION.md: E1, E6)
+- **The evaluator does not read the author's narrative.** It reads the requirement first and writes what must be true, reads the change with the new `memory.py diff-view` (the comments that the change added are hidden), and treats the recorded criteria as the implementer's reading. Its task is to find defects. The third verdict is `UNKNOWN`, and it does not let a feature pass. Not measured on the benchmark yet.
+- **New `criteria` subagent** (read-only tools): writes acceptance criteria from the requirement before the implementation, and asks when the requirement is ambiguous.
+- **`install.py --with-ci`**: a GitHub Actions workflow that runs the gate on pull requests with the base branch's `gate.json`, and shows gate warnings as annotations. Actions are pinned by commit.
+- `--upgrade` also replaces the pack's subagents (old copy backed up).
+- The pack's own CI pins its actions by commit, and runs once per pull request (push runs only on `main`).
+- `memory.py` and `skill_eval.py` write UTF-8 to a pipe and never fail on a character that a console cannot show.
+- 5 tests.
+
 ## Unreleased — evolution plan, first features (docs/EVOLUTION.md: E2, E4, E5, F1)
 - **`memory.py repro`**: shows a fix with a test that fails on the base commit and passes on the current code. The base runs in a throw-away git worktree with the test files copied onto it. Results: `verified`, `not-reproduced` (the test passes on the base), `wrong-failure` (`--expect` text missing), `still-failing`, `base-timeout`. `repro --check` is true only for exactly the verified code. Limit: files that git does not track are not in the base checkout.
 - **The gate runs the committed `gate.json`.** An edit that is not committed does not count, and the gate reports it. `--ref` or `AGENT_GATE_REF` selects the ref (in CI, the base branch).
