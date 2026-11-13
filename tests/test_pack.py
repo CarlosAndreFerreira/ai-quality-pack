@@ -946,6 +946,28 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
                 self.assertIn(text, evaluator)
             self.assertTrue(list((agents / ".backup").rglob("evaluator.md")))
 
+    def test_evaluator_model_option_sets_the_model_of_the_subagent(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            base = [INST, "project", root, "--no-upstream", "--profile", "none"]
+            r = run([*base, "--evaluator-model", "opus"], root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("The effect on its verdicts was not measured", r.stdout)
+            evaluator = root / ".claude/agents/evaluator.md"
+            head = evaluator.read_text(encoding="utf-8").split("\n---\n")[0].splitlines()
+            self.assertEqual(head[0], "---")
+            self.assertEqual(head.index("model: opus") + 1, next(i for i, l in enumerate(head) if l.startswith("tools:")))
+            self.assertNotIn("model:", (root / ".claude/agents/criteria.md").read_text(encoding="utf-8").split("\n---\n")[0])
+            self.assertEqual(run([*base, "--evaluator-model", "claude-sonnet-5-5"], root).returncode, 0)  # a second run changes it
+            text = evaluator.read_text(encoding="utf-8")
+            self.assertEqual((text.count("model: claude-sonnet-5-5"), text.count("model: opus")), (1, 0))
+            template = (PACK / "templates/.claude/agents/evaluator.md").read_text(encoding="utf-8")
+            self.assertEqual(text.replace("model: claude-sonnet-5-5\n", ""), template)  # nothing else changed
+            self.assertEqual(run([*base, "--evaluator-model", "bad model; rm"], root).returncode, 1)
+            r = run([INST, "uninstall", root], root)  # the model line does not make the file "changed by the user"
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(evaluator.exists())
+
     def test_with_ci_adds_a_workflow_that_uses_the_base_branch_gate(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)

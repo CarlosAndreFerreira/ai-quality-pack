@@ -14,6 +14,7 @@ Options:
   --with-codex         Codex hooks in .codex/hooks.json: digest and formatter; the Stop gate and the guard with their options
   --with-opencode      OpenCode 2 plugin and subagents in .opencode/: digest and formatter; the gate and the guard with their options
   --with-ci            GitHub Actions workflow: the gate runs on each pull request, with the base branch's gate.json
+  --evaluator-model M  Claude Code: the evaluator subagent runs on model M (for example a stronger model than the author)
   --dry-run            print actions only
 Never overwrites your files: templates are added only if absent; settings.json is merged.
 """
@@ -273,6 +274,40 @@ def add_or_upgrade(src: Path, dst: Path, upgrade: bool) -> None:
         shutil.copy2(src, dst)
 
 
+MODEL_LINE = re.compile(rb"^model:[^\r\n]*\r?\n", re.M)
+
+
+def strip_agent_model(data: bytes) -> bytes:
+    """A subagent file without the `model:` line of its header. The rest of the file does not change."""
+    end = data.find(b"\n---", 4)
+    if not data.startswith(b"---") or end < 0:
+        return data
+    return MODEL_LINE.sub(b"", data[:end + 1]) + data[end + 1:]
+
+
+def set_agent_model(dst: Path, model: str) -> None:
+    """Put `model: M` in the header of an installed subagent. A judge on the model of the author tends to agree with
+    the author; a different model is an independent look. Without the line, the subagent uses the model of the session."""
+    if not dst.is_file():
+        return
+    old = dst.read_bytes()
+    data = strip_agent_model(old)
+    nl = b"\r\n" if b"\r\n" in data[:400] else b"\n"
+    line = b"model: " + model.encode("ascii") + nl
+    new, n = re.subn(rb"^tools:", line + b"tools:", data, count=1, flags=re.M)
+    if not n and data.startswith(b"---"):
+        new, n = re.subn(rb"^---\r?\n", b"---" + nl + line, data, count=1)
+    if not n:
+        log(f"WARN: {dst} has no header; the model was not set")
+        return
+    if new == old:
+        log(f"ok (model {model}): {dst}")
+        return
+    log(f"set model {model}: {dst}")
+    if not DRY:
+        dst.write_bytes(new)
+
+
 # ---------------------------------------------------------------- other agents: Codex and OpenCode
 # Codex has the hook events and the hook input of Claude Code, in `.codex/hooks.json`. It has no variable for the
 # project folder: the command asks git. The scripts are the ones in `.claude/hooks/`.
@@ -479,6 +514,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
     for agent in ("evaluator.md", "criteria.md", "triage.md"):
         add_or_upgrade(PACK / "templates" / ".claude" / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
+    if a.evaluator_model:
+        set_agent_model(root / ".claude" / "agents" / "evaluator.md", a.evaluator_model)
+        log("NOTE: the evaluator subagent of Claude Code now runs on this model. The effect on its verdicts was not measured: "
+            "measure it on cases with a known answer (`skill_eval.py judge`). OpenCode and the plugin are not changed.")
     if a.with_ci:
         add_if_absent(PACK / "templates" / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml")
         log("NOTE: the CI gate needs `.agent-memory/gate.json` committed, and your dependencies installed in the workflow. "
@@ -664,8 +703,8 @@ def remove_pack_file(src: Path, dst: Path, force: bool) -> None:
     """Removes a file that the pack wrote. A copy that differs from the pack's file is yours: it stays."""
     if not dst.is_file():
         return
-    if force or dst.read_bytes() == src.read_bytes():
-        remove(dst)
+    if force or dst.read_bytes() == src.read_bytes() or strip_agent_model(dst.read_bytes()) == src.read_bytes():
+        remove(dst)  # a `model:` line that --evaluator-model wrote does not make the file yours
     else:
         log(f"kept (differs from the pack's copy; --force removes it): {dst}")
 
@@ -797,6 +836,8 @@ def main() -> None:
     ap.add_argument("--with-opencode", action="store_true",
                     help="OpenCode 2 plugin and subagents in .opencode/ (digest, formatter; the gate and the guard with their options)")
     ap.add_argument("--with-ci", action="store_true", help="GitHub Actions workflow that runs the gate on pull requests")
+    ap.add_argument("--evaluator-model", metavar="MODEL",
+                    help="Claude Code: model of the evaluator subagent, for example `opus` (default: the model of the session)")
     ap.add_argument("--with-sandbox", action="store_true",
                     help="Claude Code settings: sandbox for shell commands (it must be available) and no read of .env and secrets/ files")
     ap.add_argument("--sandbox-allow-domain", action="append", default=[], metavar="HOST",
@@ -813,6 +854,8 @@ def main() -> None:
     ap.add_argument("--purge-memory", action="store_true", help="uninstall: also remove .agent-memory/")
     a = ap.parse_args()
     DRY = a.dry_run
+    if a.evaluator_model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}", a.evaluator_model):
+        sys.exit("--evaluator-model: a model name or alias, for example `opus` or `claude-opus-5-5`")
     if sys.version_info < (3, 9):
         sys.exit("Python 3.9+ required")
     if a.mode == "uninstall":

@@ -189,6 +189,7 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
 - `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
 - `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved. Add `--repeats 3` (`--rule asymmetric`) to approve a case only when all runs agree, and to report unanimous rate and pairwise kappa.
+- `install.py project . --evaluator-model opus` makes the evaluator subagent of Claude Code run on that model (a `model:` line in `.claude/agents/evaluator.md`). Use a model that is not the model of the author, and stronger if possible: a judge on the same model tends to agree with the author. Run the command again to change the model. OpenCode and the plugin are not changed. Not measured: the effect on wrong work approved and on correct work rejected. Measure it on cases with a known answer (`skill_eval.py judge`) before you rely on it.
 - Set `"evaluator_runs": 3` (or `"auto"`) in `.agent-memory/config.json` to require unanimous `feature vote` runs for `feature pass --verified-by evaluator`. Editing code makes old votes stale; disagreements appear as `UNKNOWN` in `evidence` until a fix or a human override.
 
 ### From an issue to a draft pull request

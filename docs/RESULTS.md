@@ -129,7 +129,8 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 ## 6. What is not measured
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
-- The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions), and an evaluator on a stronger model than the author.
+- The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
+- An evaluator on a stronger model than the author. `install.py --evaluator-model` sets it; the measurement on the 24 shipped cases and on the 42 patches is not done.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
