@@ -25,10 +25,17 @@ Setup of all agent runs: Claude Haiku, Claude Code in headless mode, each run in
 | A Stop gate with a mandatory evaluator, on the 2 tasks where agents fail | 0 false "done" in 40 runs, against 4 in 20 runs for the bare agent | The gate was an experimental overlay, not the shipped default; 4 to 6 times the cost of a bare run |
 | The same gate on 10 SWE-bench issues | 9 of 10 resolved at 2 times the cost; the evaluator approved one wrong fix | 1 run for each issue |
 | Bare agent against the gate on the 20 hard issues that the bare agent failed | Not finished: 4 of 80 runs | No result |
+| Bare agent against the core pack of version 0.6.0 on the same 20 hard issues, 2 runs for each issue and arm | Resolved: 4 of 40 with the pack, 2 of 40 without. False "done": 27 of 40 with the pack, 35 of 40 without | The gate had no commands, so it checked nothing. See below |
 
 - Release check of version 0.5.0 (the 2 tasks where agents fail, 3 runs for each arm and task): the core pack with the Stop gate ended correct in 5 of 6 runs, the bare agent in 4 of 6. The pack arm cost 3.5 times more (0.14 against 0.04 US dollars) and took 8 times longer. 6 runs for each arm show that the pack arm works; they do not show a gain.
 - A defect that the measurement found: the hooks had relative paths, so the Stop gate did not run after the agent changed directory. It is fixed.
-- The shipped pack with all the features of this version was not measured against the bare agent.
+- Core pack of version 0.6.0 (Stop gate, evaluator, plan before code, memory) against the bare agent, 20 hard SWE-bench issues, 80 runs, Claude Haiku:
+  - Resolved issues: 4 of 40 (10%, 95% interval 4% to 23%) with the pack, 2 of 40 (5%, 95% interval 1% to 17%) without. For each issue: the pack was better on 3, worse on 1, equal on 16 (sign test, p = 0.63). No difference that this sample can show.
+  - False "done": 27 of 40 (68%) with the pack, 35 of 40 (88%) without. For each issue: fewer on 8, more on 2, equal on 10 (sign test, p = 0.11). The agent with the pack said "not done" in 9 runs, the bare agent in 3, and each of these statements was correct.
+  - Cost for each run: 0.030 US dollars with the pack, 0.019 without (1.6 times). Median time: 140 seconds against 69 seconds.
+  - The gate checked nothing. These repositories have no `.agent-memory/gate.json`, and no agent wrote it. The gate printed "nothing to gate" in 30 runs and was not run in 10. The evaluator ran in 6 of 40 runs: this arm does not make it mandatory. Thus this comparison measures the instructions of the pack, not a gate.
+  - After this result, the gate fails when it has no commands, and `memory.py stats` shows in how many sessions each control ran.
+- The complete pack with all the features, and a gate that has commands, were not measured against the bare agent on hard issues.
 
 ## 3. The evaluator on patches with a known answer
 
@@ -69,6 +76,27 @@ The current evaluator on the 24 cases of `evals/judge-cases/` (two small tasks):
 - The 3 rejections are on one task. The evaluator found that the fix raises an error for an infinite price, where the old code returned it. This is true for the 3 patches, and for the reference solution also. The requirement does not cover this input: the rejection is too strict, not false.
 - The evaluator is much better on these small tasks (0 of 12 wrong patches approved) than on the SWE-bench issues (5 of 19). Do not use the small set to predict the result on large repositories.
 
+### More than one run of the evaluator (version 0.6.0)
+
+The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent runs for each patch (126 runs, Claude Haiku).
+
+| | Wrong patches approved (19) | Correct patches rejected (23) | No decision |
+|---|---|---|---|
+| Run 1 | 3 | 15 | 4 |
+| Run 2 | 4 | 16 | 5 |
+| Run 3 | 2 | 15 | 6 |
+| 3 runs, the rule of the pack (PASS only if each run is PASS; FAIL if 2 runs are FAIL) | 1 (5%, 95% interval 1% to 25%) | 17 (74%, 95% interval 54% to 87%) | 8 |
+| 3 runs, majority | 2 | 17 | 6 |
+
+- The rule with 3 runs approved fewer wrong patches (1 of 19, against 2 to 4 with one run), and approved only 2 of the 23 correct patches.
+- This evaluator does not separate wrong patches from correct patches on these issues. It gave FAIL in 41 of 57 runs on wrong patches (72%) and in 46 of 69 runs on correct patches (67%). The agreement with the official label is near zero (MCC from -0.01 to 0.16 for one run, 0.07 for 3 runs).
+- It rejects more correct patches than the evaluator of the day before on the same patches: 15 or 16 of 23, against 9 of 23. The difference between the two versions is the merge-readiness step and the gate command in step 4. We did not isolate the cause.
+- The official label is a weak reference for a rejection: in the first calibration, 6 of 9 rejected "correct" patches had a real defect that the reference patch does not have. We did not repeat that check for these runs.
+- One verdict is not stable: the 3 runs gave the same verdict for 25 of 42 patches. Two runs agreed on 29 to 32 of 42.
+- No decision: 15 of 126 runs; 10 of them ended at the time limit of 600 seconds without a verdict line.
+- Cost: 2.18 US dollars for 126 runs; one pass over the 42 patches took 141 to 168 minutes of agent time.
+- What this means for use: with 3 runs and this rule, a PASS is rare and is wrong less frequently, and a FAIL has no information. Do not block a merge on a FAIL of this evaluator on a large repository.
+
 ## 4. Deterministic checks
 
 | Check | Measured on | Result |
@@ -99,7 +127,8 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 ## 6. What is not measured
 
-- The effect of the complete pack on false "done", against the bare agent, on hard issues.
+- The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
+- The cause of the higher rejection rate of the evaluator of version 0.6.0, and an evaluator on a stronger model than the author.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
