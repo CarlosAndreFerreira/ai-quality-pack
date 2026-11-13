@@ -481,6 +481,37 @@ class ObservabilityTests(unittest.TestCase):
                 p.stdout.close()
                 p.stderr.close()
 
+    def test_stats_reports_which_controls_ran_in_each_session(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            py = sys.executable.replace("\\", "/")
+            m = lambda sid, *a: run([MEM, *a], root, stdin="", env={"AGENT_SESSION_ID": sid})
+            start = lambda sid: run([MEM, "start"], root, stdin=json.dumps({"session_id": sid, "source": "startup"}))
+            start("s-idle")                      # a session that only started: no control left a record
+            start("s-empty")
+            self.assertEqual(m("s-empty", "gate").returncode, 1)  # no gate file: the gate checked nothing
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "print(1)"']}), encoding="utf-8")
+            start("s-full")
+            m("s-full", "feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c")
+            self.assertEqual(m("s-full", "gate").returncode, 0)
+            m("s-full", "feature", "pass", "--id", "F-1", "--evidence", "e", "--verified-by", "evaluator")
+            c = json.loads(run([MEM, "stats", "--json"], root).stdout)["coverage"]
+            self.assertEqual((c["sessions"], c["gate_checked"], c["ended_green"], c["gate_without_commands"]), (3, 1, 1, 1))
+            self.assertEqual((c["criteria"], c["evaluator"], c["repro"], c["no_control"]), (1, 1, 0, 2))
+            self.assertEqual(c["sessions_without_control"], ["s-empty", "s-idle"])
+            r = run([MEM, "stats"], root)
+            self.assertIn("gate ran one command or more: 1 of 3", r.stdout)
+            self.assertIn("the gate ran and had no commands: 1 of 3", r.stdout)
+            self.assertIn("no control left a record: 2 of 3", r.stdout)
+            self.assertEqual(r.returncode, 0)
+            r = run([MEM, "stats", "--min-gate-coverage", "0.5"], root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("stats FAILED: the gate ran a command in 1 of 3 sessions", r.stdout)
+            self.assertEqual(run([MEM, "stats", "--min-gate-coverage", "0.3"], root).returncode, 0)
+            self.assertEqual(run([MEM, "stats", "--json", "--min-gate-coverage", "0.5"], root).returncode, 1)
+
     def test_gate_and_feature_events_and_stats(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t, gate_ok=False)

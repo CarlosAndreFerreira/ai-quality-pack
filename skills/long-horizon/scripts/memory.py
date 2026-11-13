@@ -2341,6 +2341,38 @@ def cmd_event(a: argparse.Namespace) -> None:
     log_event(a.ev, **fields)
 
 
+def control_coverage(evs: List[dict]) -> dict:
+    """For each session in the run log: which controls left a record. A session without a record of a control
+    is a gap, not a pass: the absence of a failure does not show that something was checked."""
+    by: Dict[str, List[dict]] = {}
+    for e in evs:
+        if e.get("session"):
+            by.setdefault(str(e["session"]), []).append(e)
+    names = ("gate_checked", "ended_green", "gate_without_commands", "criteria", "evaluator", "repro", "no_control")
+    rows = {}
+    for sid, es in by.items():
+        gates = [e for e in es if e.get("ev") == "gate"]
+        # a gate that ran one command or more. A pass with 0 commands (`allow_no_commands`) checked no behaviour
+        real = [g for g in gates if (g.get("result") == "pass" and int(g.get("commands") or 0) > 0)
+                or (g.get("result") == "fail" and g.get("failed") != "no commands")]
+        last = next((g for g in reversed(gates) if g.get("result") in ("pass", "fail")), None)
+        feats = [e for e in es if e.get("ev") == "feature"]
+        row = {
+            "gate_checked": bool(real),
+            "ended_green": bool(real) and bool(last) and last.get("result") == "pass",
+            "gate_without_commands": not real and any(g.get("failed") == "no commands" or g.get("result") == "pass" for g in gates),
+            "criteria": any(f.get("result") == "add" for f in feats),
+            "evaluator": any(f.get("verified_by") == "evaluator" or f.get("result") == "vote" for f in feats),
+            "repro": any(e.get("ev") == "repro" and e.get("result") == "verified" for e in es),
+        }
+        row["no_control"] = not (row["gate_checked"] or row["criteria"] or row["evaluator"] or row["repro"])
+        rows[sid] = row
+    out = {"sessions": len(rows)}
+    out.update({n: sum(1 for r in rows.values() if r[n]) for n in names})
+    out["sessions_without_control"] = sorted(s for s, r in rows.items() if r["no_control"])[:20]
+    return out
+
+
 def cmd_stats(a: argparse.Namespace) -> None:
     ensure()
     from collections import Counter
@@ -2377,9 +2409,13 @@ def cmd_stats(a: argparse.Namespace) -> None:
                      "passed_without_green_gate": sorted({g.get("id", "?") for g in passes if g.get("gate_fresh") is False})},
         "repro": {"verified": repros["verified"], "not_verified": sum(repros.values()) - repros["verified"]},
         "lessons": {"added": lessons["add"], "recurred": lessons["recur"], "helpful": votes["helpful"], "harmful": votes["harmful"]},
+        "coverage": control_coverage(evs),
     }
     if a.json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
+        cov = data["coverage"]
+        if a.min_gate_coverage is not None and cov["sessions"] and cov["gate_checked"] / cov["sessions"] < a.min_gate_coverage:
+            sys.exit(1)
         return
     if not evs:
         print(f"no events in the last {a.days} days ({EVENTS} is written by gate, feature, lesson and the hooks)")
@@ -2399,6 +2435,21 @@ def cmd_stats(a: argparse.Namespace) -> None:
     if sum(repros.values()):
         print(f"reproductions: {data['repro']['verified']} verified · {data['repro']['not_verified']} not verified")
     print(f"lessons: {l['added']} added · {l['recurred']} recurred · votes +{l['helpful']}/-{l['harmful']}")
+    c = data["coverage"]
+    if c["sessions"]:
+        n = c["sessions"]
+        print(f"control coverage: {n} sessions (a session without a record is a gap, not a pass)")
+        print(f"  gate ran one command or more: {c['gate_checked']} of {n} · last gate result was a pass: {c['ended_green']} of {n}")
+        if c["gate_without_commands"]:
+            print(f"  ⚠ the gate ran and had no commands: {c['gate_without_commands']} of {n}")
+        print(f"  acceptance criteria recorded: {c['criteria']} of {n} · graded by the evaluator: {c['evaluator']} of {n}"
+              f" · reproduction verified: {c['repro']} of {n}")
+        if c["no_control"]:
+            print(f"  ⚠ no control left a record: {c['no_control']} of {n}")
+    if a.min_gate_coverage is not None and c["sessions"] and c["gate_checked"] / c["sessions"] < a.min_gate_coverage:
+        print(f"stats FAILED: the gate ran a command in {c['gate_checked']} of {c['sessions']} sessions "
+              f"(less than {a.min_gate_coverage:.0%})")
+        sys.exit(1)
 
 
 def main() -> None:
@@ -2543,6 +2594,8 @@ def main() -> None:
     s = sub.add_parser("stats", help="run statistics from events.jsonl: gate failures, evaluator rounds, stop-hook releases")
     s.add_argument("--days", type=int, default=30)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--min-gate-coverage", type=float, metavar="RATE",
+                   help="exit code 1 when the gate ran a command in a smaller part of the sessions (0 to 1)")
     s.set_defaults(fn=cmd_stats)
     a = p.parse_args()
     enter_project_root()

@@ -134,6 +134,7 @@ The log has ids, outcomes and durations. It has no prompt text and no code. It s
 
 ```bash
 python3 .agents/skills/long-horizon/scripts/memory.py stats            # last 30 days; --days N, --json
+python3 .agents/skills/long-horizon/scripts/memory.py stats --min-gate-coverage 0.8   # exit code 1 below this rate
 ```
 ```
 # Run statistics: last 30 days (41 events, 6 sessions)
@@ -147,6 +148,7 @@ lessons: 3 added · 2 recurred · votes +4/-1
 
 Two cases that were silent before are now visible:
 - The Stop hook blocks one time only, so that it cannot loop. If the agent then stops without a gate pass for its final code, the log records `released-red` and the next session digest shows it under "Needs you".
+- `stats` shows the control coverage: in how many sessions the gate ran a command, the last gate result was a pass, criteria were recorded, the evaluator graded, and a reproduction was verified. A session without a record of a control is a gap, not a pass. In 40 benchmark runs with the pack installed, the gate had no commands in each run and the evaluator ran in 6 runs; only the artifacts showed it ([docs/RESULTS.md](docs/RESULTS.md)). The idea is from an eval runner that scores an agent harness from its event log and reports a missing event as a coverage gap.
 - `feature pass --verified-by evaluator` is a statement by the agent. The log records if the gate was green for that workspace at that moment, and `stats` lists the features where it was not.
 
 `skill-eval` keeps the output of each agent run in `.agent-memory/evals/results/<run>-transcripts/`. If the agent prints a JSON result (`claude -p {prompt} --output-format json`), each run also records tokens, cost and turns, and the cost ratio of a verdict uses money or tokens instead of wall-clock time.
