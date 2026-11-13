@@ -90,7 +90,8 @@ The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent run
 
 - The rule with 3 runs approved fewer wrong patches (1 of 19, against 2 to 4 with one run), and approved only 2 of the 23 correct patches.
 - This evaluator does not separate wrong patches from correct patches on these issues. It gave FAIL in 41 of 57 runs on wrong patches (72%) and in 46 of 69 runs on correct patches (67%). The agreement with the official label is near zero (MCC from -0.01 to 0.16 for one run, 0.07 for 3 runs).
-- It rejects more correct patches than the evaluator of the day before on the same patches: 15 or 16 of 23, against 9 of 23. The difference between the two versions is the merge-readiness step and the gate command in step 4. We did not isolate the cause.
+- It rejects more correct patches than the evaluator of the day before on the same patches: 15 or 16 of 23, against 9 of 23. The difference between the two versions is the merge-readiness step and the gate command in step 4.
+- One pass without the merge-readiness step (same version, same 42 patches) did not isolate the cause. It rejected 12 of 23 correct patches (52%, 95% interval 33% to 71%) and approved 5 of 19 wrong patches. The difference from the 3 runs with the step (46 of 69 rejected) is not significant (Fisher exact test, p = 0.22). Without the step, the evaluator approved more patches of the two types (10 correct against 5, 5 wrong against 2 to 4), and the agreement with the official label did not change (MCC 0.14). Thus the step makes the evaluator more strict, not more accurate. Cost: 0.74 US dollars.
 - The official label is a weak reference for a rejection: in the first calibration, 6 of 9 rejected "correct" patches had a real defect that the reference patch does not have. We did not repeat that check for these runs.
 - One verdict is not stable: the 3 runs gave the same verdict for 25 of 42 patches. Two runs agreed on 29 to 32 of 42.
 - No decision: 15 of 126 runs; 10 of them ended at the time limit of 600 seconds without a verdict line.
@@ -128,7 +129,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 ## 6. What is not measured
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
-- The cause of the higher rejection rate of the evaluator of version 0.6.0, and an evaluator on a stronger model than the author.
+- The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions), and an evaluator on a stronger model than the author.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
