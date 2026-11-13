@@ -244,6 +244,54 @@ def remove_skill(name: str) -> Callable[[Path], None]:
     return _m
 
 
+def skills_used(stdout: str, names: List[str]) -> Optional[List[str]]:
+    """Skills that the agent used in a run, from its transcript: a call of the Skill tool, or a tool call that names a
+    file of the skill (it read SKILL.md or ran a script). None when the output has no tool calls to look at
+    (an agent that prints only its answer): then the use of a skill is not observable."""
+    events = []
+    try:
+        d = json.loads(stdout)
+        events = d if isinstance(d, list) else [d]
+    except ValueError:
+        for line in stdout.splitlines():
+            if line.startswith("{"):
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    pass
+    calls = []
+    for e in events:
+        content = (e.get("message") or {}).get("content") if isinstance(e, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if isinstance(c, dict) and c.get("type") == "tool_use":
+                calls.append((str(c.get("name") or ""), c.get("input") or {}))
+    if not calls:
+        return None
+    used = set()
+    for tool, args in calls:
+        text = json.dumps(args, ensure_ascii=False).replace("\\\\", "/")
+        for n in names:
+            if (tool == "Skill" and str(args.get("skill") or "").split(":")[-1] == n) or re.search(rf"skills/{re.escape(n)}/", text):
+                used.add(n)
+    return sorted(used)
+
+
+def activation(per_task: Dict[str, dict], variant: str, skill: str) -> Optional[tuple]:
+    """(runs that used the skill, runs where the use is observable) for one variant; None when no run is observable."""
+    runs = [r for v in per_task.values() for r in v.get(variant, []) if r.get("skills_used") is not None]
+    return (sum(skill in r["skills_used"] for r in runs), len(runs)) if runs else None
+
+
+def activation_note(per_task: Dict[str, dict], variant: str, skill: str) -> tuple:
+    """(line for the report, True when the skill was never used). A result says nothing about a skill that did not run."""
+    act = activation(per_task, variant, skill)
+    if act is None:
+        return (f"activation of `{skill}`: not observable (the agent command prints no tool calls; "
+                "use an output format with the transcript, for example `--output-format stream-json --verbose`)"), False
+    used, n = act
+    return f"activation of `{skill}`: used in {used} of {n} runs ({variant})", used == 0
+
+
 def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeout: int,
              log: Optional[Path] = None) -> dict:
     wt = prepare_worktree(repo, skills, mutate)
@@ -260,6 +308,9 @@ def run_once(repo: Path, skills: Path, mutate, task: dict, agent_cmd: str, timeo
         except subprocess.TimeoutExpired as e:
             agent_rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
         usage = parse_usage(stdout)
+        seen = skills_used(stdout, sorted(p.name for p in skills.iterdir() if p.is_dir()))
+        if seen is not None:
+            usage["skills_used"] = seen
         if log:  # the transcript explains a verdict; results/ is git-ignored
             try:
                 log.write_text(f"$ {cmd}\nexit: {agent_rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n",
@@ -492,8 +543,16 @@ def cmd_run(a) -> None:
     per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("candidate", apply_diff(diff))], logdir)
     s = summarise(per_task, "baseline", "candidate")
     v, reasons = verdict(s, noise, "run")
-    out = report("proposal", str(proposal), s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix()})
     m = re.search(r"\.agents/skills/([\w-]+)/", diff)
+    extra = {"transcripts": logdir.as_posix()}
+    if m:  # a change of a skill that the agent did not use cannot be the cause of the result
+        note, never = activation_note(per_task, "candidate", m.group(1))
+        extra["activation"] = note
+        reasons.append(note)
+        if never and not v.startswith("REGRESSES"):
+            v = "INCONCLUSIVE"
+            reasons.append("the agent never used the skill in the candidate runs: the difference is not an effect of the change")
+    out = report("proposal", str(proposal), s, v, reasons, noise, per_task, a, agent_cmd, extra)
     hyp = re.search(r"^Change:\s*(.+)$", proposal.read_text(encoding="utf-8"), re.M)
     append_history({"date": dt.date.today().isoformat(), "skill": m.group(1) if m else "", "proposal": proposal.name,
                     "hypothesis": hyp.group(1).strip() if hyp else "", "verdict": v,
@@ -516,7 +575,13 @@ def cmd_ablate(a) -> None:
     per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("with", None), ("without", remove_skill(a.skill))], logdir)
     s = summarise(per_task, "with", "without")
     v, reasons = verdict(s, noise, "ablate")
-    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix()})
+    note, never = activation_note(per_task, "with", a.skill)
+    reasons.append(note)
+    if never:  # not "prunable because it has no effect": it never ran. The description may be the problem
+        v = "NOT-USED"
+        reasons.append("the agent never used the skill in the runs that had it: the comparison says nothing about what the skill "
+                       "does. The agent chooses a skill from its description: improve the description, or remove the skill")
+    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix(), "activation": note})
     append_history({"date": dt.date.today().isoformat(), "skill": a.skill, "proposal": "ablation", "hypothesis": "skill still adds value",
                     "verdict": v, "delta": (s.get("evolve") or s.get("holdout"))["delta"], "report": out.as_posix(),
                     "decision": "pending-user"})

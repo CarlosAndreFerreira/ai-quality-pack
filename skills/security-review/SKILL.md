@@ -14,7 +14,7 @@ List the entry points in scope: HTTP routes, CLI args, queue consumers, uploads,
 ## 2. OWASP Top 10:2025 — check what applies
 - **A01 Broken Access Control** (now includes SSRF): explicit authz on every route; object-level checks (does the query filter by owner/tenant?); server-side fetch of user URLs blocks private ranges and metadata endpoints.
 - **A02 Security Misconfiguration**: debug off, safe defaults, CORS, security headers, no default credentials.
-- **A03 Software Supply Chain Failures**: lockfile committed and used in CI (`uv sync --frozen`, `npm ci`); auditor run (`pip-audit` / `npm audit` / `govulncheck`); new deps justified; no `curl | sh`; pinned CI actions; typosquat check on new package names.
+- **A03 Software Supply Chain Failures**: lockfile committed and used in CI (`uv sync --frozen`, `npm ci`); auditor run (`pip-audit` / `npm audit` / `govulncheck`); new deps justified; no `curl | sh`; pinned CI actions; typosquat check on new package names. <!-- skill-scan: ok -->
 - **A04 Cryptographic Failures**: no homemade crypto; argon2/bcrypt for passwords; constant-time token compare; TLS verification never disabled.
 - **A05 Injection**: SQL params only; no `shell=True` or string-built commands; template/NoSQL/LDAP injection; output encoding.
 - **A06 Insecure Design**: abuse cases for the feature; rate limits; business-logic limits.

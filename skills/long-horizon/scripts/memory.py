@@ -266,7 +266,7 @@ def last_event_hash() -> str:
 
 
 @contextlib.contextmanager
-def events_lock(timeout: float = 3.0) -> Iterator[bool]:
+def events_lock(timeout: float = 10.0) -> Iterator[bool]:
     """A lock of its own for the run log: log_event runs inside commands that hold the memory lock.
     Yields False when it cannot get the lock; the caller then writes the line without a hash."""
     deadline, got = time.time() + timeout, False
@@ -284,14 +284,26 @@ def events_lock(timeout: float = 3.0) -> Iterator[bool]:
             if time.time() > deadline:
                 break
             time.sleep(0.02)
+        except PermissionError:
+            # Windows: the lock file of another writer is being deleted at this moment. That is contention, not a
+            # reason to give up: a line without a hash would break the chain.
+            if time.time() > deadline:
+                break
+            time.sleep(0.02)
         except OSError:
             break
     try:
         yield got
     finally:
         if got:
-            with contextlib.suppress(OSError):
-                EVENTS_LOCK.unlink()
+            for _ in range(50):  # Windows refuses the delete while another process looks at the file
+                try:
+                    EVENTS_LOCK.unlink()
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError:
+                    time.sleep(0.02)
 
 
 def log_event(ev: str, **fields) -> None:

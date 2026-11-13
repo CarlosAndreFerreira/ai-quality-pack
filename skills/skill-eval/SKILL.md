@@ -40,6 +40,7 @@ Runs = tasks × repeats × 2. Above 20 the script asks for `--yes`. **Ask the us
 | `IMPROVES (weak evidence)` | Gain above noise, sign test p > 0.1 | Present it with the numbers and the caveat |
 | `IMPROVES` | Gain above noise, p ≤ 0.1, no guard fired | Present it with the numbers |
 | `PRUNABLE` / `KEEP` (ablate) | Removing the skill changed nothing / hurt | Propose removal to the user / keep it |
+| `NOT-USED` (ablate) | The agent never used the skill in the runs that had it | The result says nothing about the skill. Improve its description, or propose removal |
 
 The leakage critic refuses a proposal whose added lines mention task ids, protected files or check paths (exit 6). Rewrite the rule in general terms.
 

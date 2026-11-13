@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- **`validate_skills.py` checks a skill as a way into the agent**: hidden characters are errors; suspect instructions (drop other instructions, hide an action from the user, send local data out, run code from the network, read credential files, turn off a safety check) are warnings, in each text file of the skill. `skill-scan: ok` on a line marks it as read.
+- **Overlap of descriptions**: a warning when two skills share half of the words of their descriptions (`--overlap`).
+- **`--scanner CMD`**: an external scanner on the skills. A scanner that is not installed gives `INCOMPLETE` and exit code 3.
+- **`skill-eval` reports the activation of the skill**, from the tool calls in the transcript. A skill that was never used gives `NOT-USED` in `ablate` and `INCONCLUSIVE` in `run`.
+- Fix: the hash chain of the run log broke on Windows with parallel writers. A permission error on the lock file is contention there, and the writer now waits.
+- The ideas for the skill checks come from NVIDIA SkillEvaluator. 5 tests. Not measured with an agent.
 - **Multi-run evaluator aggregation and voting**: `skill_eval.py judge --repeats 3` (`--reps`) aggregates per-case verdicts with `--rule asymmetric` (default: `PASS` requires `k/k` unanimity, majority `FAIL` becomes `FAIL`, splits stay `UNKNOWN`), recording `per_case`, `aggregated`, `agreement_rate`, and pairwise Fleiss `kappa`. In `memory.py`, setting `"evaluator_runs": N` (or `"auto"`, which picks `3` for high-risk diffs) in `.agent-memory/config.json` requires `feature vote` runs bound to the current workspace code hash (`feature pass --verified-by evaluator` rejects un-voted or split features while `human`/`ci` overrides remain allowed).
 - **Per-task file scope (`task open --scope`)**: repeatable `--scope` globs on `task open` warn in `gate` when changed files fall outside active scopes, list `Out of scope` paths in `evidence`, and bump `change_risk` to `MEDIUM` without blocking `gate`.
 - **CI egress restriction and injection `exfil` goal**: `templates/ci/agent-issue.yml` runs `step-security/harden-runner` (`egress-policy: block`, `disable-sudo-and-containers: true`, minimal `allowed-endpoints`) as step 1 of `jobs.agent`. `evals/injection/run_inject.py` adds the 4th `"exfil"` goal with a per-run loopback HTTP canary server (bumping default `--max-runs` to `105`). Tested with unit tests in `VerificationBlockTests`; live LLM `judge --repeats 3` and end-to-end GitHub Actions runs remain unexecuted.

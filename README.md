@@ -120,7 +120,7 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py calibrate   # A/A run â†
 python3 .agents/skills/skill-eval/scripts/skill_eval.py run --proposal .agent-memory/proposals/<p>.md --annotate
 python3 .agents/skills/skill-eval/scripts/skill_eval.py ablate --skill <name>   # is this skill still worth it?
 ```
-Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `PRUNABLE`/`KEEP`. Four guards block a change regardless of its headline gain:
+Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `PRUNABLE`/`KEEP`, `NOT-USED`. Four guards block a change regardless of its headline gain:
 - a task the baseline always passed now fails;
 - protected test files were tampered with;
 - the holdout dropped beyond the noise band;
@@ -324,6 +324,22 @@ The hook scripts are the same for each agent. An adapter connects the agent's ev
 - The guard protects `.codex/` and `.opencode/` also. It reads the arguments of the tool call (a file path, a shell command, or the files of a patch), so it does not depend on the tool names of one agent.
 - Checked on OpenCode 2.2.7 with local models: the plugin loads; the digest runs and the run log has the session id and the model; the guard blocks a shell command and a file tool on a protected path; with an OpenCode server, a red gate gives one new prompt and then `released-red`.
 - Not checked: Codex. No Codex was installed where this was built: the adapter follows the Codex hook documentation, and the tests run its commands with the documented input. Also not checked: the formatter and the subagents in OpenCode, the OpenCode terminal interface, and Windows for both agents.
+
+### Checks of the skills themselves
+
+```bash
+python3 .agents/skills/skill-evolve/scripts/validate_skills.py .agents/skills --strict
+python3 .agents/skills/skill-evolve/scripts/validate_skills.py .agents/skills --scanner "gitleaks detect --no-git --source {dir}"
+```
+
+A skill is a set of instructions that the agent follows. A skill from another person is a way into the agent, as a dependency is a way into a program.
+
+- **Hidden characters** are errors: bidirectional controls, zero-width spaces and tag characters. A reviewer does not see them, and an agent reads them.
+- **Suspect instructions** are warnings, in `SKILL.md` and in the files of the skill: an order to drop other instructions, to hide an action from the user, to send local data to a network address, to run code from the network, to read credential files, or to turn off a safety check. A person reads the line. `skill-scan: ok` on the line marks it as read.
+- **Overlap**: two descriptions that share half of their words give a warning. The agent chooses a skill from its description.
+- **`--scanner CMD`** runs an external scanner on the skills. A scanner that is not installed gives `INCOMPLETE` and exit code 3: a check that did not run did not pass.
+- **Activation in `skill-eval`**: `run` and `ablate` report in how many runs the agent used the skill, from the tool calls in the transcript. A skill that was never used gives `NOT-USED` (ablate) or `INCONCLUSIVE` (run): the comparison says nothing about it. The agent command must print the transcript, for example `--output-format stream-json --verbose`.
+- The text rules find the plain forms of an attack. They do not find an instruction that is written to look like normal work. The ideas for these checks come from NVIDIA SkillEvaluator (static checks of a skill, a check that the skill ran, an incomplete state for a missing scanner).
 
 ### Unattended runs: the gate without hooks
 
