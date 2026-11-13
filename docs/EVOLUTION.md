@@ -14,7 +14,7 @@ The pack's LLM evaluator, as it is, does not solve this. It grades criteria that
 
 Test tampering, memory and complexity metrics have weaker evidence or a low incidence in our data. They come later.
 
-## Status at version 0.6.0 (2026-11-13)
+## Status at version 0.7.0 (2026-11-13)
 
 Each item of this plan has code or documentation in the pack. "Measured" means a run with an agent, or a check on real patches. [docs/RESULTS.md](RESULTS.md) has the numbers.
 
@@ -23,9 +23,9 @@ Each item of this plan has code or documentation in the pack. "Measured" means a
 | E0 Evals of the pack | `evals/judge-cases/` (24 cases), `evals/injection/` (18 attack cases), `docs/RESULTS.md` | Yes: 0 of 12 wrong patches approved, 3 of 12 correct patches rejected. A short release check exists (2 tasks, 12 runs); the full regression suite does not |
 | E1 Evaluator without the author's narrative | Evaluator rewritten, `criteria` subagent, `diff-view` | Yes: no measurable gain against the older evaluator on 42 patches |
 | E2 Reproduction before the fix | `memory.py repro` | No |
-| E3 Calibrate the evaluator | `skill-eval judge`, with more than one run for each case and a rule for the result | One run for each patch: 5 of 19 wrong SWE-bench patches approved. More than one run: not measured |
-| E4 Statistics | Paired interval, `pass^k`, `power` | Not applicable |
-| E5 Protect tests and gate | Committed gate file and fixed base; warnings for deleted and changed tests and skip markers; `block_test_changes`; guard for tracked tests; CI runs the checker of the base branch | In part: the warning for changed tests does not separate wrong from correct patches. In the injection set, the deletion of a test succeeded in 1 of 12 runs with the pack, before `block_test_changes`. No run on ImpossibleBench |
+| E3 Calibrate the evaluator | `skill-eval judge`, with more than one run for each case and a rule for the result | One run for each patch: 5 of 19 wrong SWE-bench patches approved. 3 runs with the rule of the pack: 1 of 19 wrong patches approved, 17 of 23 correct patches rejected. The evaluator does not separate wrong from correct patches on these issues. `install.py --evaluator-model` puts it on another model: not measured |
+| E4 Statistics | Paired interval, `pass^k` with its interval and the cost for each passed run, a cost limit, `power` | Not applicable |
+| E5 Protect tests and gate | Committed gate file and fixed base; the gate fails when it has no commands; warnings for deleted and changed tests and skip markers; `block_test_changes`; guard for tracked tests; CI runs the checker of the base branch | In part: the warning for changed tests does not separate wrong from correct patches. In the injection set, the deletion of a test succeeded in 1 of 12 runs with the pack, before `block_test_changes`. No run on ImpossibleBench |
 | E6 CI and isolation | Gate and audit workflow, pinned actions, `--codeowners`, `--with-sandbox` with a host list, `--with-guard`, three jobs with separate rights and an egress policy in the issue workflow | No: not run in CI. The read rule for `.env` and the rule for CI workflows held in the injection set |
 | E7 Smaller memory | Digest size limit, lessons confirmed by a person | No |
 | E8 Complexity | `memory.py complexity`, gate warning | No. Property tests and mutation tests are not built |
@@ -33,14 +33,14 @@ Each item of this plan has code or documentation in the pack. "Measured" means a
 | F2 Gate without hooks | `memory.py gated-run` | No: tested with a simulated agent |
 | F3 From an issue to a run | Issue workflow template | No: not run on GitHub |
 | F4 Triage | `memory.py triage`, `triage` subagent and skill | Text check: 53 of 53 valid issues pass, after tuning on them. Subagent: no |
-| F5 Pull request with evidence | `memory.py pr`, `evidence` with review risk and cost | No: tested with a simulated GitHub CLI |
+| F5 Pull request with evidence | `memory.py pr`, `evidence` with review risk and cost, risk rules of the project with waivers that a person records | No: tested with a simulated GitHub CLI |
 | F6 Merge readiness | Evaluator step, `max_changed_lines`, `doctor` note | No |
 | F7 Few human decision points | README, "Operating rules" | Not applicable |
 | F8 Factory report | `memory.py factory` | No |
 | F9 Parallel work | README, "Operating rules" | Not applicable |
-| F10 Governance | Secret scan in the gate, `provenance`, `audit` with a hash chain and the identity of each run, threat model, checks of skill files | Secret scan: 0 false alarms in 3,673 added lines. Prompt injection: 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack |
+| F10 Governance | Secret scan in the gate, `provenance`, `audit` with a hash chain and the identity of each run, `stats` with the control coverage of the sessions, threat model, checks of skill files | Secret scan: 0 false alarms in 3,673 added lines. Prompt injection: 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack |
 
-What comes next is measurement, not features: the complete pack against the bare agent on hard issues, and each change of the evaluator on the 42 graded patches with more than one run for each patch.
+The core pack of version 0.6.0 against the bare agent on 20 hard issues showed no difference that the sample can show, and the gate had no commands in those runs. What comes next is measurement, not features: a gate that has commands and a mandatory evaluator against the bare agent on hard issues, and the evaluator on a stronger model than the author.
 
 ## 2. Proposals, by priority
 

@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-13
+
+This release comes from the first measurement of the shipped pack against the bare agent. The gate checked nothing in those runs, and only the artifacts showed it. Thus a gate without commands now fails, and `stats` shows in how many sessions each control ran. A project can add its own risk rules, `skill-eval` gives one line of reliability at cost, and the evaluator can run on another model. The numbers are in [docs/RESULTS.md](docs/RESULTS.md).
+
+Not measured in this release: the risk rules, the evaluator on another model, and a gate that has commands against the bare agent on hard issues. The tests ran on Windows and on Linux (Python 3.9, 3.13 and 3.14), not on macOS.
+
 - **The gate fails when it has no commands.** Before, `memory.py gate` without `.agent-memory/gate.json` printed "nothing to gate" and ended with exit code 0, and the Stop hook did nothing. In 40 agent runs on repositories without a gate file, the agent got that message in 30 runs and did not run the gate in 10; no run wrote a gate file. Now the gate ends with exit code 1 and tells the agent to write the file and to tell the user; the Stop hook blocks one time in a project that has `.agent-memory/`; `doctor` reports it as a problem; the installer warns when no profile gave commands. A gate file that git does not have gives a warning. `"allow_no_commands": true` keeps a gate with only the secret scan and the test guards.
   - Attention in an upgrade: a CI job or a script that ran `memory.py gate` in a project without a gate file now fails.
 - **Measured** ([docs/RESULTS.md](docs/RESULTS.md)): the core pack of version 0.6.0 against the bare agent on 20 hard issues (4 of 40 resolved against 2 of 40; 27 against 35 false "done"; no difference that the sample can show; the gate had no commands); the evaluator with 3 runs on 42 patches (1 of 19 wrong patches approved, 17 of 23 correct patches rejected).
