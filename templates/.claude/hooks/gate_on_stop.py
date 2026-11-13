@@ -89,8 +89,11 @@ def main() -> int:
     if not MEM.exists() and PLUGIN_MEM.is_file():
         MEM = PLUGIN_MEM
     gate_file = Path(".agent-memory/gate.json")
-    if not MEM.exists() or not gate_file.exists():
+    if not MEM.exists():
         return 0
+    if not gate_file.exists() and not Path(".agent-memory").is_dir():
+        return 0  # the pack's memory was never started in this project: nothing to enforce
+    # a project with the pack's memory and no gate file: the gate fails, because nothing would be checked
     env = dict(os.environ)
     if data.get("session_id"):
         env["AGENT_SESSION_ID"] = str(data["session_id"])  # the gate and stop events carry the session id

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **The gate fails when it has no commands.** Before, `memory.py gate` without `.agent-memory/gate.json` printed "nothing to gate" and ended with exit code 0, and the Stop hook did nothing. In 40 agent runs on repositories without a gate file, the agent got that message in 30 runs and did not run the gate in 10; no run wrote a gate file. Now the gate ends with exit code 1 and tells the agent to write the file and to tell the user; the Stop hook blocks one time in a project that has `.agent-memory/`; `doctor` reports it as a problem; the installer warns when no profile gave commands. A gate file that git does not have gives a warning. `"allow_no_commands": true` keeps a gate with only the secret scan and the test guards.
+  - Attention in an upgrade: a CI job or a script that ran `memory.py gate` in a project without a gate file now fails.
+
 ## 0.6.0 — 2026-11-13
 
 This release is about what a misled or careless agent can do, and how to see it. The issue workflow has separate rights, CI runs the checker of the base branch, the agent cannot change its checks or its tests without a trace, and a prompt-injection test set measures the result ([docs/RESULTS.md](docs/RESULTS.md), [SECURITY.md](SECURITY.md)).

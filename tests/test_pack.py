@@ -657,6 +657,50 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("repro WRONG-FAILURE", r.stdout)
             self.assertEqual(run([MEM, "repro", "--check"], root).returncode, 1)
 
+    def test_gate_fails_when_no_check_is_configured(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            gate = root / ".agent-memory/gate.json"
+            if gate.exists():
+                gate.unlink()
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout)  # before: "nothing to gate" and exit code 0
+            self.assertIn("gate FAILED: no .agent-memory/gate.json", r.stdout)
+            self.assertIn("Nothing was checked", r.stdout)
+            self.assertEqual(run([MEM, "gate", "--check"], root, stdin="").returncode, 1)
+            events = [json.loads(x) for x in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertEqual((events[-1]["ev"], events[-1]["result"], events[-1]["failed"]), ("gate", "fail", "no commands"))
+            self.assertEqual(run([MEM, "doctor"], root).returncode, 1)
+            gate.write_text(json.dumps({"commands": []}), encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("gate.json has no commands", r.stdout)
+            gate.write_text(json.dumps({"commands": [], "allow_no_commands": True}), encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="")  # a person wants only the secret scan and the test guards
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate WARNING: .agent-memory/gate.json is not committed", r.stdout)
+            self._git(root, "add", ".agent-memory/gate.json")
+            self._git(root, "commit", "-q", "-m", "gate")
+            r = run([MEM, "gate", "--force"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertNotIn("is not committed", r.stdout)
+
+    def test_stop_hook_blocks_when_the_memory_has_no_gate_file(self):
+        hook = PACK / "templates/.claude/hooks/gate_on_stop.py"
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            env = {"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_ROOT": str(PACK)}
+            r = run([hook], root, stdin="{}", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)  # the pack's memory was never started here: nothing to enforce
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            r = run([hook], root, stdin="{}", env=env)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("no .agent-memory/gate.json", r.stderr)
+            r = run([hook], root, stdin=json.dumps({"stop_hook_active": True}), env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)  # blocks one time, then the release is in the run log
+            self.assertIn("released-red", (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8"))
+
     def test_gate_runs_the_committed_gate_json_and_reports_the_edit(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
@@ -966,6 +1010,8 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
             test = f'"{self.py}" test_calc.py'
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
+            self._git(root, "add", ".agent-memory/gate.json")  # a gate file that git does not have gives a warning
+            self._git(root, "commit", "-q", "-m", "gate")
             self.assertEqual(run([MEM, "repro", "--test", test, "--test-file", "test_calc.py"], root).returncode, 0)
             self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
             run([MEM, "feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4"], root)
@@ -1173,7 +1219,9 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("# Session start digest", r.stdout)
             self.assertIn("run `aqp-memory` in its place", r.stdout)
-            self.assertEqual(sh(PACK / "bin/aqp-hook", "stop").returncode, 0)  # no gate file: nothing to enforce
+            r = sh(PACK / "bin/aqp-hook", "stop")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # memory without a gate file: nothing would be checked
+            self.assertIn("no .agent-memory/gate.json", r.stderr)
             py = sys.executable
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
             r = sh(PACK / "bin/aqp-hook", "stop")
@@ -1959,6 +2007,7 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(run(base + ["--with-guard"], root).returncode, 0)       # a second run adds no second hook
             settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
             self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": ["git --version"]}), encoding="utf-8")
             self.assertEqual(run([MEM, "doctor"], root).returncode, 0)               # the hook script is found
             self.assertEqual(run([INST, "uninstall", root], root).returncode, 0)
             self.assertFalse((root / ".claude/hooks/guard_pack_files.py").exists())
@@ -2343,7 +2392,7 @@ class AuditChainTests(unittest.TestCase):
             self.assertRegex(gate["policy"], r"^[0-9a-f]{12}$")
             self.assertNotIn("policy", first)
             # other rules, other policy hash; the environment names the actor and the model of a CI run
-            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [], "max_changed_lines": 5}), encoding="utf-8")
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": ["git --version"], "max_changed_lines": 5}), encoding="utf-8")
             run([MEM, "gate"], root, stdin="", env={"GITHUB_ACTOR": "ci-bot", "AGENT_MODEL": "model-y"})
             last = self._lines(root)[-1]
             self.assertEqual((last["actor"], last["model"]), ("ci-bot", "model-y"))

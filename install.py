@@ -521,7 +521,10 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
             if "python" in profiles:
                 cfg["max_complexity"] = 10  # same limit as the ruff C90 rule of the Python profile
             gate.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-            log(f"added: {gate} (edit to match this repo)")
+            log(f"added: {gate} (edit to match this repo, then commit it)")
+        elif not gate.exists():
+            log(f"WARNING: no profile gave commands for the completion gate, so {gate} was not written. "
+                "`memory.py gate` fails until you create it with {\"commands\": [...]} and commit it.")
     else:
         log("memory: init .agent-memory/ (+ gate.json from profile)")
 

@@ -42,7 +42,7 @@ claude plugin install ai-quality-pack@ai-quality-pack
 ```
 
 - The plugin gives Claude Code the skills, the `evaluator` and `criteria` subagents and the three hooks. It writes nothing in your repository.
-- Run `aqp-memory init` in a repository to start the memory. Add `.agent-memory/gate.json` with `{"commands": [...]}` to turn on the completion gate. Without this file, the Stop hook does nothing.
+- Run `aqp-memory init` in a repository to start the memory. Add `.agent-memory/gate.json` with `{"commands": [...]}` to turn on the completion gate. Without this file, or with no commands in it, the gate fails and the Stop hook blocks one time: a gate that checks nothing is not a pass.
 - `aqp-memory` is `memory.py`. Use it where the instructions name `python3 .agents/skills/long-horizon/scripts/memory.py`.
 - The plugin does not add `AGENTS.md`, `CLAUDE.md`, the CI workflow or the language profiles. Use `install.py` for these. In a project that has the `install.py` hooks, the plugin's hooks do nothing.
 - This repository is private: `git` must have a stored credential for it (`gh auth login`, then `gh auth setup-git`).
@@ -171,6 +171,7 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `repro` runs the test on the base commit and on the current code. The result is `verified` only if the test fails on the base and passes now. A fix without a verified reproduction is not proved: say so in the report.
 - The base runs in a temporary git worktree. Files that git does not track are not there. Use `--expect` to name text that the failure must print.
 - The gate uses the committed `gate.json`. It ignores an edit that is not committed, and it reports the edit.
+- The gate fails when `gate.json` does not exist or has no commands. In 40 agent runs on repositories without a gate file, the old message ("nothing to gate", exit code 0) let the agent continue in each run, and no agent wrote the file ([docs/RESULTS.md](docs/RESULTS.md)). `"allow_no_commands": true` is for a project that wants only the secret scan and the test guards. A gate file that git does not have gives a warning: a person reviews and commits it.
 - The gate reports deleted test files and new skip markers. It does not block them. The next session digest shows them.
 - `task open` saves the base commit in `tasks.jsonl` and `events.jsonl`. `gate` and `evidence` compare with the earliest valid open task base by default, then the remote default merge-base, then `HEAD`. They verify the saved base against `events.jsonl` and git ancestry, and report if `.agent-memory/gate.json` changed after that base.
 - `task open --scope <glob>` records allowed file patterns for a task. `gate` shows a warning for changed files outside that scope, and `evidence` lists them and sets review risk to at least `MEDIUM`.

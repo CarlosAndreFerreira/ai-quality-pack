@@ -1150,7 +1150,13 @@ def gate_config(ref: str) -> tuple:
                            encoding="utf-8", errors="replace", timeout=10)
     except Exception:
         return json.loads(text), ""
-    if r.returncode != 0 or r.stdout.replace("\r\n", "\n").strip() == text.replace("\r\n", "\n").strip():
+    if r.returncode != 0:  # git does not have the file at `ref`: no person reviewed these commands in a commit
+        note = ""
+        if git("rev-parse", "--is-inside-work-tree").strip() == "true":
+            note = (f"{GATE.as_posix()} is not committed: the commands of the gate were not reviewed. "
+                    "A person reviews and commits the gate file")
+        return json.loads(text), note
+    if r.stdout.replace("\r\n", "\n").strip() == text.replace("\r\n", "\n").strip():
         return json.loads(text), ""
     try:
         committed = json.loads(r.stdout)
@@ -1377,6 +1383,25 @@ def out_of_scope_files(ref: str) -> List[str]:
     return [p for p in changed_repo_files(ref) if not match_scope(p, scopes)]
 
 
+NO_CHECK_HELP = ("Nothing was checked, so this is not a pass. Put the test and lint commands of this project in "
+                 "{gate}, for example {{\"commands\": [\"pytest -q\", \"ruff check .\"]}}, run the gate again, and tell the "
+                 "user that the gate file is new: a person reviews and commits it. If you cannot write the file, "
+                 "tell the user that this project has no completion gate.")
+
+
+def gate_no_check(reason: str, check: bool) -> None:
+    """A gate without commands checks nothing. That is a failure, not a pass: an agent reads `exit 0` as done."""
+    if check:
+        print("gate: no pass for this workspace")
+        sys.exit(1)
+    print(f"gate FAILED: {reason}\n" + NO_CHECK_HELP.format(gate=GATE.as_posix()))
+    if ROOT.is_dir():
+        with contextlib.suppress(FileNotFoundError):
+            GATE_PASS.unlink()
+        log_event("gate", result="fail", failed="no commands")
+    sys.exit(1)
+
+
 def cmd_gate(a: argparse.Namespace) -> None:
     restored_warnings = restore_replay_backup()
     if ROOT.is_dir():
@@ -1384,10 +1409,12 @@ def cmd_gate(a: argparse.Namespace) -> None:
     if not GATE.exists():
         for w in restored_warnings:
             print(f"gate WARNING: {w}")
-        print(f"no {GATE} — nothing to gate (create it with {{\"commands\": [...]}})")
-        return
+        gate_no_check(f"no {GATE.as_posix()}", a.check)
     ref, ref_note, ref_warnings = resolve_gate_ref(a.ref)
     cfg, note = gate_config(ref)
+    if not cfg.get("commands") and not cfg.get("allow_no_commands"):
+        # `"allow_no_commands": true` is for a project that wants only the secret scan and the test guards
+        gate_no_check(f"{GATE.as_posix()} has no commands", a.check)
     import hashlib
     global _POLICY  # in each gate line of the run log: which version of the rules gave this result
     _POLICY = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode("utf-8")).hexdigest()[:12]
@@ -2271,7 +2298,8 @@ def cmd_doctor(a: argparse.Namespace) -> None:
         else:
             notes.append("the Stop gate is not installed (`install.py project . --with-stop-gate`): the gate runs only when the agent runs it")
     if not GATE.exists():
-        notes.append(f"no {GATE.as_posix()}: there is no completion gate")
+        problems.append(f"no {GATE.as_posix()}: there is no completion gate, and `memory.py gate` fails. "
+                        "Create it with {\"commands\": [...]} and commit it")
     else:
         try:
             cmds = json.loads(GATE.read_text(encoding="utf-8")).get("commands", [])

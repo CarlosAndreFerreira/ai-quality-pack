@@ -7,7 +7,7 @@
 
 ## Long-Horizon Memory (when `.agent-memory/` exists in the workspace)
 - Session start: run `python3 ~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py start`. Handle `⚑ needs-human` items first and resume unfinished tasks.
-- Before declaring done: run `python3 ~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py gate` if `.agent-memory/gate.json` is configured.
+- Before declaring done: run `python3 ~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py gate`. It fails when `.agent-memory/gate.json` has no commands: then write the file and tell the user.
 - When a mistake is caught or a non-obvious fix works, record it via the `learn-from-mistakes` skill. `SKILL.md` changes happen only via `skill-evolve` with explicit user approval.
 
 ## Core Guardrails
