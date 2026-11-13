@@ -567,7 +567,8 @@ def remove_codeowners(root: Path) -> None:
 
 
 GUARD_DENY = ["Edit(./.claude/**)", "Edit(./.agents/**)", "Edit(./.github/workflows/**)", "Edit(./.github/CODEOWNERS)",
-              "Edit(./.agent-memory/gate.json)", "Edit(./.agent-memory/config.json)"]
+              "Edit(./.agent-memory/gate.json)", "Edit(./.agent-memory/config.json)",
+              "Edit(./.agent-memory/risk-waivers.jsonl)"]
 
 
 def add_guard(path: Path) -> None:

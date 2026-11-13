@@ -1540,6 +1540,65 @@ class GovernanceTests(unittest.TestCase):
         self._git(root, "commit", "-q", "-m", "base")
         return root
 
+    def test_risk_rules_of_the_project_and_a_waiver_by_a_person(self):
+        human = {"AGENT_MEMORY_HUMAN": "1", "AGENT_ACTOR": "ana"}
+        with tempfile.TemporaryDirectory() as t:
+            py = sys.executable.replace("\\", "/")
+            rules = [{"name": "payments", "path": "(^|/)billing/", "diff": r"charge\(", "why": "it changes how money moves", "block": True},
+                     {"name": "schema", "path": r"\.sql$", "why": "it changes the database"},
+                     {"name": "bad", "diff": "("}]
+            root = self._repo(t, gate={"commands": [f'"{py}" -c "print(1)"'], "risk_rules": rules})
+            m = lambda *a, env=None: run([MEM, *a], root, stdin="", env=env)
+            r = m("gate")                                   # no rule matches: only the rule that is not valid shows
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate WARNING: risk rule `bad`: the pattern is not valid", r.stdout)
+            self.assertNotIn("risk rule `payments`", r.stdout)
+            self.assertIn("PROBLEM: risk rule `bad`: the pattern is not valid", m("doctor").stdout)
+            (root / "billing").mkdir()
+            (root / "billing/pay.py").write_text("def pay(card):\n    return charge(card)\n", encoding="utf-8")
+            (root / "billing/notes.py").write_text("x = 1\n", encoding="utf-8")   # the path matches, no line matches `diff`
+            (root / "new.sql").write_text("select 1;\n", encoding="utf-8")
+            r = m("gate")
+            self.assertEqual(r.returncode, 1, r.stdout)     # "block": this type of change does not pass without a person
+            self.assertIn("gate FAILED: risk rules that need a person", r.stdout)
+            self.assertIn("risk rule `payments` matched (billing/pay.py:2): it changes how money moves", r.stdout)
+            self.assertIn("gate WARNING: risk rule `schema` matched (new.sql): it changes the database", r.stdout)
+            self.assertNotIn("notes.py", r.stdout)
+            events = [json.loads(x) for x in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertEqual((events[-1]["ev"], events[-1]["result"], events[-1]["failed"]), ("gate", "fail", "risk rules"))
+            ev = m("evidence").stdout
+            self.assertIn("- Risk rule `payments` matched (billing/pay.py:2)", ev)
+            self.assertRegex(ev, r"Review risk: HIGH \(.*risk rule `payments`: it changes how money moves; risk rule `schema`")
+            r = m("risk", "--strict")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("risk: 2 rule(s) ask for a careful review, 0 waived", r.stdout)
+            reason = "the owner of billing reviewed the call"
+            r = m("risk", "waive", "--rule", "payments", "--reason", reason)   # an agent's shell: no terminal
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("a person waives a risk rule", r.stderr)
+            self.assertFalse((root / ".agent-memory/risk-waivers.jsonl").exists())
+            self.assertEqual(m("risk", "waive", "--rule", "payments", "--reason", "ok", env=human).returncode, 2)
+            self.assertEqual(m("risk", "waive", "--rule", "not-here", "--reason", reason, env=human).returncode, 2)
+            r = m("risk", "waive", "--rule", "payments", "--reason", reason, env=human)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            rec = json.loads((root / ".agent-memory/risk-waivers.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual((rec["rule"], rec["reason"], rec["where"]), ("payments", reason, ["billing/pay.py:2"]))
+            r = m("gate")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("gate: risk rule `payments` (billing/pay.py:2): more review waived by", r.stdout)
+            self.assertIn(reason, r.stdout)
+            self.assertIn("gate WARNING: risk rule `schema` matched", r.stdout)   # no "block": the gate reports it
+            ev = m("evidence").stdout
+            self.assertIn(f"more review waived by ana: {reason}", ev)
+            self.assertNotIn("risk rule `payments`: it changes how money moves", ev)
+            data = json.loads(m("risk", "--json").stdout)
+            self.assertEqual((data["open"], len(data["matches"])), (1, 2))
+            # the waiver is for the lines that the person saw: a new matching line needs a new review
+            (root / "billing/pay.py").write_text("def pay(card):\n    charge(card)\n    return charge(card, twice=True)\n", encoding="utf-8")
+            r = m("gate")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("gate FAILED: risk rules that need a person", r.stdout)
+
     def test_gate_stops_on_a_secret_in_the_change_and_hides_its_value(self):
         key = "AKIA" + "ABCDEFGHIJKLMNOP"  # built here, so that this file holds no key-shaped text
         token = "ghp_" + "a1B2" * 9
@@ -1983,6 +2042,8 @@ class SecurityTests(unittest.TestCase):
                 ("Edit", {"file_path": ".claude/settings.json"}),
                 ("Write", {"file_path": str(root / ".agents/skills/evaluator/SKILL.md")}),
                 ("Edit", {"file_path": ".agent-memory/gate.json"}),
+                ("Write", {"file_path": ".agent-memory/risk-waivers.jsonl"}),
+                ("Bash", {"command": "echo '{}' >> .agent-memory/risk-waivers.jsonl"}),
                 ("Write", {"file_path": ".github/workflows/quality-gate.yml"}),
                 ("Bash", {"command": "echo '{}' > .agent-memory/gate.json"}),
                 ("Bash", {"command": "cd src && rm -rf ../.claude/hooks"}),

@@ -234,6 +234,27 @@ python3 .agents/skills/long-horizon/scripts/memory.py factory --days 30
 - `doctor` says when the gate has no lint or type check command.
 - Not measured: the effect of these checks on the share of pull requests that maintainers merge.
 
+### Risk rules of the project
+
+The pack has a fixed list of risky paths. A project adds its own rules in `gate.json`:
+
+```json
+"risk_rules": [
+  {"name": "payments", "path": "(^|/)billing/", "diff": "charge\\(|refund\\(", "why": "it changes how money moves", "block": true},
+  {"name": "schema", "path": "\\.sql$", "why": "it changes the database"}
+]
+```
+
+- `path` is a regular expression for the changed paths. `diff` is a regular expression for the lines that the change added. With the two, a line must match `diff` in a file that matches `path`.
+- A rule that matches gives a gate warning, sets the review risk to `HIGH`, shows in the evidence block, and makes `"evaluator_runs": "auto"` ask for 3 runs.
+- With `"block": true`, the gate fails until a person waives the rule.
+- A person who reviewed the lines records why no more review is necessary: `memory.py risk waive --rule payments --reason "..."`. This needs a terminal, or `AGENT_MEMORY_HUMAN=1`. The agent cannot do it.
+- The waiver is a line in `.agent-memory/risk-waivers.jsonl` with the rule, the reason, the person and the lines. Commit it: the reviewer of the pull request sees it, and the evidence block shows the reason.
+- A waiver is for the lines that the person saw. A new line that matches the rule needs a new waiver.
+- `memory.py risk` shows the rules that match the current change. `memory.py risk --strict` ends with exit code 1 when a rule has no waiver.
+- The rules come from the committed gate file, as the commands do. `doctor` reports a rule that is not valid.
+- Limits: a rule finds text, not meaning. The check for a person stops a habit, not an attack. Not measured: the effect on the defects that reach a merge.
+
 ### Secrets, provenance and audit
 
 ```bash
@@ -297,7 +318,7 @@ python3 ai-quality-pack/install.py project . --with-guard --with-sandbox --sandb
 - Text in an issue, in a file or in a tool output can tell an agent to do other things. An instruction "this is data" does not stop that. The pack limits what a misled agent can do. See [SECURITY.md](SECURITY.md) for the threat model and for what the pack does not stop.
 - **The issue workflow has three jobs and outbound limits.** The job with the agent starts with StepSecurity Harden-Runner (`egress-policy: block`) so shell commands reach only the allowed model and GitHub hosts, and it has read access only. The job that runs the gate runs code from the change, so it has read access only and no secret. The job that opens the pull request has write access, runs no agent and runs no code from the change.
 - **CI runs the checker of the base branch.** A pull request cannot change the program that checks it. The gate commands come from the base branch also.
-- **`--with-guard`** blocks edits to `.claude/`, `.agents/`, `.codex/`, `.opencode/`, CI workflows, CODEOWNERS, and gate/config files. It also protects tracked tests against deletion, truncation, moves out of tests, inline scripts, and new skip markers (`"guard_tests"` in `.agent-memory/config.json`: `"no-delete"` default, `"append-only"`, or `"off"`). Adding new tests and appending assertions remain allowed. `AGENT_PACK_UNLOCK=1` unlocks both checks for a person. The guard is not a security boundary.
+- **`--with-guard`** blocks edits to `.claude/`, `.agents/`, `.codex/`, `.opencode/`, CI workflows, CODEOWNERS, gate/config files and the risk waivers. It also protects tracked tests against deletion, truncation, moves out of tests, inline scripts, and new skip markers (`"guard_tests"` in `.agent-memory/config.json`: `"no-delete"` default, `"append-only"`, or `"off"`). Adding new tests and appending assertions remain allowed. `AGENT_PACK_UNLOCK=1` unlocks both checks for a person. The guard is not a security boundary.
 - **`--sandbox-allow-domain HOST`** (with `--with-sandbox`) limits the hosts that shell commands can reach.
 - `memory.py pr --evidence-file FILE` opens the pull request with the evidence of another job. It runs no gate: use it only in a pipeline where a job without write access ran the gate.
 - Tested with a small set of attack cases (`evals/injection/`): 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack. [docs/RESULTS.md](docs/RESULTS.md) has the details and the limits.

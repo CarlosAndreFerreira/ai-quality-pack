@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hook (opt-in): the agent may not change the files that check its work.
 
-Protected: `.claude/`, `.agents/`, `.codex/`, `.opencode/`, `.github/workflows/`, `.github/CODEOWNERS`, `.agent-memory/gate.json` and
-`.agent-memory/config.json`. A file tool on one of these paths is blocked. A shell command is blocked when one of
+Protected: `.claude/`, `.agents/`, `.codex/`, `.opencode/`, `.github/workflows/`, `.github/CODEOWNERS`, `.agent-memory/gate.json`,
+`.agent-memory/config.json` and `.agent-memory/risk-waivers.jsonl`. A file tool on one of these paths is blocked. A shell command is blocked when one of
 its parts names a protected path and writes (redirection, rm, mv, cp, sed -i, tee, git checkout, an inline script).
 Reading these files and running the pack's scripts is allowed.
 
@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 PROTECTED = (".claude/", ".agents/", ".codex/", ".opencode/", ".github/workflows/", ".github/CODEOWNERS",
-             ".agent-memory/gate.json", ".agent-memory/config.json")
-NAMES = re.compile(r"(\.claude/|\.agents/|\.codex/|\.opencode/|\.github/workflows/|\.github/CODEOWNERS|\.agent-memory/(gate|config)\.json)")
+             ".agent-memory/gate.json", ".agent-memory/config.json", ".agent-memory/risk-waivers.jsonl")
+NAMES = re.compile(r"(\.claude/|\.agents/|\.codex/|\.opencode/|\.github/workflows/|\.github/CODEOWNERS|\.agent-memory/(gate\.json|config\.json|risk-waivers\.jsonl))")
 # tools that change nothing: no check (OpenCode sends each tool call to the guard)
 READ_ONLY = {"read", "grep", "glob", "list", "ls", "notebookread", "webfetch", "websearch", "skill", "task", "subagent",
              "agent", "todowrite", "todoread", "update_plan", "lsp", "question"}

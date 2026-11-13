@@ -79,6 +79,7 @@ PROPOSALS = ROOT / "proposals"
 LOCK = ROOT / ".lock"
 GATE = ROOT / "gate.json"
 GATE_PASS = ROOT / ".gate-pass"
+RISK_WAIVERS = ROOT / "risk-waivers.jsonl"  # a person reviewed a risk-rule match and wrote why; committed with the change
 EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
 EVENTS_OLD = ROOT / "events.1.jsonl"
 EVENTS_LOCK = ROOT / ".events.lock"
@@ -788,6 +789,8 @@ def _diff_has_high_risk_changes(ref: str) -> bool:
         return True
     if GATE.exists() and gate_config(ref)[1]:
         return True
+    if any(not m["waived"] for m in risk_matches(ref)[0]):
+        return True
     return False
 
 
@@ -1437,8 +1440,22 @@ def cmd_gate(a: argparse.Namespace) -> None:
             warnings.append(f"the change has {changed} lines in {files} files (limit {int(cfg['max_changed_lines'])}): split it")
     if cfg.get("max_complexity"):  # reported, not blocked: a person decides if the function must be split
         warnings += complexity_findings(ref, int(cfg["max_complexity"]))[:10]
+    risk, risk_problems = risk_matches(ref, cfg)
+    warnings += risk_problems + [risk_line(m) + ". A person reviews this change" for m in risk if not m["waived"]]
     for w in warnings:
         print(f"gate WARNING: {w}")
+    for m in risk:
+        if m["waived"]:
+            print(f"gate: {risk_line(m)}")
+    risk_blocked = [m for m in risk if m["block"] and not m["waived"]]
+    if risk_blocked:  # the project decided that this type of change does not pass without a person
+        print("gate FAILED: risk rules that need a person\n" + "\n".join(risk_line(m) for m in risk_blocked)
+              + "\nTell the user. A person reviews these lines and then runs: memory.py risk waive --rule "
+              + risk_blocked[0]["name"] + " --reason \"...\"")
+        with contextlib.suppress(FileNotFoundError):
+            GATE_PASS.unlink()
+        log_event("gate", result="fail", failed="risk rules", blocked=len(risk_blocked), warnings=warnings or None)
+        sys.exit(1)
     blocked = blocked_test_changes(ref, cfg)
     if blocked:  # before the commands, and before the "unchanged" shortcut: no pass exists with these changes
         print("gate FAILED: test changes that need a person\n" + "\n".join(blocked[:20])
@@ -1690,10 +1707,12 @@ def change_size(ref: str) -> tuple:
     return files, lines, paths
 
 
-def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Optional[List[str]] = None) -> tuple:
+def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Optional[List[str]] = None,
+                rules: Optional[List[dict]] = None) -> tuple:
     """(LOW|MEDIUM|HIGH, reasons). HIGH: where a wrong merge costs most. MEDIUM: large, out of scope, or a check has no record."""
     files, lines, paths = change_size(ref)
     high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
+    high += [f"risk rule `{m['name']}`: {m['why']}" for m in (risk_matches(ref)[0] if rules is None else rules) if not m["waived"]]
     if warnings:
         high.append("tests or the gate file changed (see the warnings)")
     if any("gate did not pass" in g for g in gaps):
@@ -1780,7 +1799,10 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
-    risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos)
+    rules = risk_matches(ref)[0]
+    for m in rules:
+        lines.append("- R" + risk_line(m)[1:])
+    risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos, rules=rules)
     lines.append(f"- Review risk: {risk} ({'; '.join(reasons)})")
     lines.append(f"- Cost: ${cost:.2f} (given by the caller)" if cost is not None else "- Cost: not recorded")
     lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])
@@ -2155,9 +2177,8 @@ def secret_in(line: str) -> str:
     return ""
 
 
-def scan_secrets(ref: str) -> List[str]:
-    """Lines that the change added and that look like a secret: `path:line: rule`. Tracked changes since ref, and new files."""
-    out: List[str] = []
+def added_lines(ref: str) -> Iterator[tuple]:
+    """(path, line number, text) of each line that the change added: tracked changes since ref, and new files."""
     cur, n = "", 0
     for line in git("diff", "-U0", "--no-renames", ref, "--", ".", f":(exclude){ROOT.as_posix()}").splitlines():
         if line.startswith("+++ "):
@@ -2166,9 +2187,7 @@ def scan_secrets(ref: str) -> List[str]:
             m = re.search(r"\+(\d+)", line)
             n = int(m.group(1)) if m else 0
         elif line.startswith("+") and cur:
-            rule = secret_in(line[1:])
-            if rule:
-                out.append(f"{cur}:{n}: {rule}")
+            yield cur, n, line[1:]
             n += 1
     for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
         p = Path(f)
@@ -2179,10 +2198,134 @@ def scan_secrets(ref: str) -> List[str]:
         except (OSError, UnicodeDecodeError):
             continue
         for i, line in enumerate(text.splitlines(), 1):
-            rule = secret_in(line)
-            if rule:
-                out.append(f"{f}:{i}: {rule}")
+            yield f, i, line
+
+
+def scan_secrets(ref: str) -> List[str]:
+    """Lines that the change added and that look like a secret: `path:line: rule`. Tracked changes since ref, and new files."""
+    out: List[str] = []
+    for path, n, text in added_lines(ref):
+        rule = secret_in(text)
+        if rule:
+            out.append(f"{path}:{n}: {rule}")
     return out
+
+
+# ---------------------------------------------------------------- risk rules of the project
+def risk_rules(cfg: dict) -> tuple:
+    """(rules, problems) from "risk_rules" in the gate file. A rule: {"name", "path" and/or "diff" (regular expressions),
+    "why", "block"}. `path` is for the changed paths, `diff` for the lines that the change added."""
+    raw = cfg.get("risk_rules") or []
+    if not isinstance(raw, list):
+        return [], ['"risk_rules" in the gate file must be a list']
+    rules, problems, seen = [], [], set()
+    for i, r in enumerate(raw, 1):
+        name = str(r.get("name") or "") if isinstance(r, dict) else ""
+        if not re.fullmatch(r"[\w.-]{1,60}", name):
+            problems.append(f'risk rule {i} needs a "name" (letters, digits, `.`, `_`, `-`)')
+            continue
+        if name in seen:
+            problems.append(f"risk rule `{name}` is in the gate file two times")
+            continue
+        seen.add(name)
+        if not (r.get("path") or r.get("diff")):
+            problems.append(f'risk rule `{name}` needs a "path" or a "diff" pattern')
+            continue
+        try:
+            path = re.compile(str(r["path"])) if r.get("path") else None
+            diff = re.compile(str(r["diff"])) if r.get("diff") else None
+        except re.error as e:
+            problems.append(f"risk rule `{name}`: the pattern is not valid ({e})")
+            continue
+        rules.append({"name": name, "path": path, "diff": diff, "block": r.get("block") is True,
+                      "why": clean(str(r.get("why") or "a rule of this project"), 200)})
+    return rules, problems
+
+
+def risk_matches(ref: str, cfg: Optional[dict] = None) -> tuple:
+    """(matches, problems): the risk rules of the project that the change against ref matches.
+
+    The rules come from the gate file of `ref`, as the commands do: the agent cannot remove a rule in its own change.
+    A match has `waived`: the record of a person who reviewed exactly these lines and wrote why no more review is necessary.
+    """
+    import hashlib
+    if cfg is None:
+        if not GATE.exists():
+            return [], []
+        try:
+            cfg = gate_config(ref)[0]
+        except (OSError, ValueError):
+            return [], []
+    rules, problems = risk_rules(cfg if isinstance(cfg, dict) else {})
+    if not rules:
+        return [], problems
+    paths = sorted(set(change_size(ref)[2]) | set(changed_repo_files(ref)))
+    added = [(p.replace("\\", "/"), n, t) for p, n, t in added_lines(ref)]
+    waivers = {(w.get("rule"), w.get("key")): w for w in read_jsonl(RISK_WAIVERS)}
+    out = []
+    for r in rules:
+        if r["diff"]:
+            hits = [(p, n, t) for p, n, t in added if (not r["path"] or r["path"].search(p)) and r["diff"].search(t[:2000])]
+            where = [f"{p}:{n}" for p, n, _ in hits]
+            basis = [f"{p}\0{t.strip()}" for p, _, t in hits]
+        else:
+            where = [p for p in paths if r["path"].search(p)]
+            basis = where + [f"{p}\0{t.strip()}" for p, _, t in added if p in set(where)]
+        if not where:
+            continue
+        # the waiver is for these lines: a new matching line needs a new review
+        key = hashlib.sha256("\n".join([r["name"]] + sorted(set(basis))).encode("utf-8")).hexdigest()[:16]
+        out.append({"name": r["name"], "why": r["why"], "block": r["block"], "where": where, "key": key,
+                    "waived": waivers.get((r["name"], key))})
+    return out, problems
+
+
+def risk_line(m: dict) -> str:
+    where = ", ".join(clean(w, 80) for w in m["where"][:5]) + (f" and {len(m['where']) - 5} more" if len(m["where"]) > 5 else "")
+    if m["waived"]:
+        w = m["waived"]
+        return (f"risk rule `{m['name']}` ({where}): more review waived by {clean(str(w.get('by') or '?'), 80)}: "
+                f"{clean(str(w.get('reason') or ''), 200)}")
+    return f"risk rule `{m['name']}` matched ({where}): {m['why']}"
+
+
+def cmd_risk(a: argparse.Namespace) -> None:
+    """The risk rules of the project against the current change; `waive` records why a person needs no more review."""
+    ensure()
+    ref = resolve_gate_ref(a.base)[0]
+    matches, problems = risk_matches(ref)
+    if a.action == "waive":
+        if not a.rule or not a.reason or len(a.reason.strip()) < 10:
+            die("risk waive needs --rule and --reason (the reason in 10 characters or more)")
+        if not is_human():
+            die("a person waives a risk rule, in a terminal, after the review. Tell the user to run: "
+                f"memory.py risk waive --rule {a.rule} --reason \"...\"")
+        guard_secrets(a.reason)
+        m = next((x for x in matches if x["name"] == a.rule), None)
+        if m is None:
+            die(f"risk rule `{a.rule}` does not match the current change: there is nothing to waive")
+        if m["waived"]:
+            print(f"risk: {risk_line(m)}")
+            return
+        rec = {"rule": m["name"], "key": m["key"], "reason": clean(a.reason.strip(), 300), "at": now(),
+               "by": identity().get("actor") or "?", "where": m["where"][:10]}
+        with locked():
+            append_line(RISK_WAIVERS, rec)
+        log_event("risk", action="waive", rule=m["name"], key=m["key"])
+        print(f"risk: `{m['name']}` waived for these lines. Commit {RISK_WAIVERS.as_posix()}: "
+              "the reviewer of the pull request sees the reason.")
+        return
+    open_ = [m for m in matches if not m["waived"]]
+    if a.json:
+        print(json.dumps({"base": ref, "matches": matches, "problems": problems, "open": len(open_)}, indent=2))
+    else:
+        for p in problems:
+            print(f"risk WARNING: {p}")
+        for m in matches:
+            print(f"risk: {risk_line(m)}")
+        print(f"risk: {len(open_)} rule(s) ask for a careful review, {len(matches) - len(open_)} waived, against {ref[:12]}")
+    if a.strict and (open_ or problems):
+        sys.exit(1)
 
 
 def cmd_secrets(a: argparse.Namespace) -> None:
@@ -2302,8 +2445,10 @@ def cmd_doctor(a: argparse.Namespace) -> None:
                         "Create it with {\"commands\": [...]} and commit it")
     else:
         try:
-            cmds = json.loads(GATE.read_text(encoding="utf-8")).get("commands", [])
-        except ValueError:
+            gate_cfg = json.loads(GATE.read_text(encoding="utf-8"))
+            cmds = gate_cfg.get("commands", [])
+            problems += risk_rules(gate_cfg)[1]
+        except (ValueError, AttributeError):
             cmds = None
             problems.append(f"{GATE.as_posix()} is not valid JSON")
         if cmds == []:
@@ -2565,6 +2710,14 @@ def main() -> None:
     s.add_argument("--no-github", action="store_true", help="only the local run log")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_factory)
+    s = sub.add_parser("risk", help="risk rules of the project (\"risk_rules\" in gate.json) against the change: check | waive")
+    s.add_argument("action", nargs="?", default="check", choices=["check", "waive"])
+    s.add_argument("--rule", help="waive: the name of the rule")
+    s.add_argument("--reason", help="waive: why no more review is necessary for these lines")
+    s.add_argument("--base", help="ref to compare with (default: the ref of the gate)")
+    s.add_argument("--strict", action="store_true", help="check: exit 1 when a rule matches without a waiver")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_risk)
     s = sub.add_parser("secrets", help="lines of the change that look like a secret (the gate runs this check)")
     s.add_argument("--base", default="HEAD", help="ref to compare with (in a pull request: the base branch)")
     s.set_defaults(fn=cmd_secrets)
