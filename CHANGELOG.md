@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-13
+
+This release is about what a misled or careless agent can do, and how to see it. The issue workflow has separate rights, CI runs the checker of the base branch, the agent cannot change its checks or its tests without a trace, and a prompt-injection test set measures the result ([docs/RESULTS.md](docs/RESULTS.md), [SECURITY.md](SECURITY.md)).
+
+- **Rights**: the issue workflow has three jobs (agent with read access; gate with read access and no secret; pull request with write access and no agent), with an egress policy for the agent job.
+- **Checks that the agent cannot weaken**: CI runs `memory.py` of the base branch; `--with-guard` protects the pack's files and the tracked tests; `block_test_changes` makes the gate fail for a deleted test or a new skip marker; a fixed base for the gate.
+- **Audit**: each run log line has the actor, the model and the pack version, and a hash chain that `audit --verify` checks.
+- **Skills as a way in**: `validate_skills.py` finds hidden characters, suspect instructions and overlap, and runs external scanners with an incomplete state.
+- **Evaluator**: more than one run for each case with a rule for the result (`judge --repeats`, `feature vote`); `skill-eval` reports if the agent used the skill.
+- **Other agents**: adapters for Codex and OpenCode 2.
+- **Measured**: 9 of 72 injection attacks succeeded without the pack and 1 of 36 with the pack (Claude Haiku, one small task). The short release check of 0.5.0 ended correct in 5 of 6 runs with the pack and 4 of 6 without.
+- **Not measured**: the complete pack against the bare agent on hard issues; the evaluator with more than one run; the issue workflow on GitHub; the Codex adapter with Codex; the egress policy; the checks of skills against real hostile skills.
+
+Changes that need attention in an upgrade:
+- Each new run log line has a hash. A tool that writes lines into `events.jsonl` by itself breaks the chain: use `memory.py event`.
+- With `--with-guard`, the agent cannot delete or cut a tracked test file (`"guard_tests"` in `.agent-memory/config.json`).
+- `gate` and `evidence` compare with the base of the open task, when a task is open.
+- `validate_skills.py --strict` fails for a suspect instruction in a skill. Put `skill-scan: ok` on a line that a person read.
+
+### Skill checks, test guards, audit chain, other agents
 - **`validate_skills.py` checks a skill as a way into the agent**: hidden characters are errors; suspect instructions (drop other instructions, hide an action from the user, send local data out, run code from the network, read credential files, turn off a safety check) are warnings, in each text file of the skill. `skill-scan: ok` on a line marks it as read.
 - **Overlap of descriptions**: a warning when two skills share half of the words of their descriptions (`--overlap`).
 - **`--scanner CMD`**: an external scanner on the skills. A scanner that is not installed gives `INCOMPLETE` and exit code 3.
@@ -27,7 +46,7 @@
 - The run log records these failures as `failed: "test changes"` with the number of blocked changes.
 - Not measured with an agent. 1 test.
 
-## Unreleased — security: rights, trusted checker, guard, threat model
+### Security: rights, trusted checker, guard, threat model
 - **The issue workflow has three jobs with different rights**: the agent (read access), the gate (read access, no secret), and the pull request (write access, no agent, no code from the change). The agent job has no `id-token` right and a fixed tool list.
 - **CI runs `memory.py` of the base branch**, in `quality-gate` and in the issue workflow.
 - **`install.py --with-guard`**: permission rules and a `PreToolUse` hook that stop the agent from a change of `.claude/`, `.agents/`, the CI workflows, CODEOWNERS and the gate file. `AGENT_PACK_UNLOCK=1` opens it for a person.
