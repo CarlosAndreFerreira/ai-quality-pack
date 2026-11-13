@@ -153,6 +153,8 @@ Two cases that were silent before are now visible:
 
 `skill-eval` keeps the output of each agent run in `.agent-memory/evals/results/<run>-transcripts/`. If the agent prints a JSON result (`claude -p {prompt} --output-format json`), each run also records tokens, cost and turns, and the cost ratio of a verdict uses money or tokens instead of wall-clock time.
 
+Each measurement prints one line for each variant that you can quote: `reliability at cost, candidate: each of 3 runs passed on 75% of the tasks (95% CI 30% to 95%); $0.0412 for each passed run`. The first number is pass^k: a task counts only when each of its runs passed. The cost is the total spend divided by the runs that passed, in money, else tokens, else seconds. `skill_eval.py run --max-cost-per-pass 0.05` gives no `IMPROVES` verdict when the candidate costs more than that, or when the agent command reports no cost.
+
 For tokens, cost and tool calls of your normal sessions, use the telemetry that Claude Code already has. The pack does not copy it. The `session.id` attribute there is the `session` field of the run log, so you can join the two.
 
 ```bash

@@ -629,6 +629,17 @@ class ObservabilityTests(unittest.TestCase):
             log = Path(rec["transcripts"]) if Path(rec["transcripts"]).is_absolute() else root / rec["transcripts"]
             self.assertEqual(len(list(log.glob("*.log"))), 4)
             self.assertIn("total_cost_usd", (log / run1["transcript"]).read_text(encoding="utf-8"))
+            # reliability at cost: one line to quote for each variant, and a limit that a person can set
+            self.assertIn("reliability at cost, candidate: the run passed on 100% of the tasks (95% CI 34% to 100%); "
+                          "$0.3000 for each passed run", r.stdout)
+            self.assertIn("reliability at cost, baseline: the run passed on 0% of the tasks", r.stdout)
+            self.assertEqual(rec["summary"]["evolve"]["candidate"]["per_pass"], 0.3)
+            cmd = [EVAL, "run", "--proposal", p, "--repeats", "1", "--agent-cmd", f'"{py}" json_agent.py']
+            r = run([*cmd, "--max-cost-per-pass", "0.25"], root)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("VERDICT: INCONCLUSIVE", r.stdout)
+            self.assertIn("the candidate costs $0.3000 for each passed run, above the limit of $0.2500", r.stdout)
+            self.assertIn("VERDICT: IMPROVES", run([*cmd, "--max-cost-per-pass", "0.35"], root).stdout)
 
 
 class EvolutionTests(unittest.TestCase):
@@ -854,6 +865,16 @@ class EvolutionTests(unittest.TestCase):
         s = mod.summarise(per_task, "base", "cand")["evolve"]
         self.assertEqual((s["base"]["pass_all"], s["cand"]["pass_all"]), (0.0, 0.75))
         self.assertEqual(s["tasks"], 4)
+        # reliability at cost: the interval of pass^k has the task as its unit; the cost is for each passed run
+        self.assertEqual(s["cand"]["pass_all_ci95"], mod.wilson(3, 4))
+        self.assertEqual((s["cost_basis"], s["base"]["per_pass"], s["cand"]["per_pass"]), ("seconds", 1.5, 1.3333))
+        line = mod.reliability_line("cand", s["cand"], s["cost_basis"], 3)
+        self.assertEqual(line, "cand: each of 3 runs passed on 75% of the tasks (95% CI 30% to 95%); 1 s for each passed run")
+        paid = lambda *passed: [{"passed": p, "tampered": False, "seconds": 1.0, "cost_usd": 0.02} for p in passed]
+        s2 = mod.summarise({"T": {"split": "evolve", "base": paid(False, False), "cand": paid(True, False)}}, "base", "cand")["evolve"]
+        self.assertEqual((s2["cost_basis"], s2["base"]["per_pass"], s2["cand"]["per_pass"]), ("cost_usd", None, 0.04))
+        self.assertIn("$0.0400 for each passed run", mod.reliability_line("cand", s2["cand"], "cost_usd", 2))
+        self.assertIn("no run passed", mod.reliability_line("base", s2["base"], "cost_usd", 2))
         low, high = s["delta_ci95"]
         self.assertLess(low, 0)  # 4 tasks: the interval of the difference includes zero
         self.assertGreater(high, s["delta"])

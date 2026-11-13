@@ -36,11 +36,13 @@ Runs = tasks × repeats × 2. Above 20 the script asks for `--yes`. **Ask the us
 | Verdict | Rule | Action |
 |---|---|---|
 | `REGRESSES` | Any guard fired: a task the baseline always passed now fails, protected files were tampered with, or the holdout dropped beyond noise | Do not propose it |
-| `INCONCLUSIVE` | Gain within the noise band, or a small gain that costs >25% more (money, tokens or runtime) | Present it as "no measurable effect"; prefer the smaller skill |
+| `INCONCLUSIVE` | Gain within the noise band, or a small gain that costs >25% more (money, tokens or runtime), or a cost above `--max-cost-per-pass` | Present it as "no measurable effect"; prefer the smaller skill |
 | `IMPROVES (weak evidence)` | Gain above noise, sign test p > 0.1 | Present it with the numbers and the caveat |
 | `IMPROVES` | Gain above noise, p ≤ 0.1, no guard fired | Present it with the numbers |
 | `PRUNABLE` / `KEEP` (ablate) | Removing the skill changed nothing / hurt | Propose removal to the user / keep it |
 | `NOT-USED` (ablate) | The agent never used the skill in the runs that had it | The result says nothing about the skill. Improve its description, or propose removal |
+
+When you present a measurement, quote the `reliability at cost` line of each variant: the share of tasks where each run passed, with its interval, and the cost for each passed run.
 
 The leakage critic refuses a proposal whose added lines mention task ids, protected files or check paths (exit 6). Rewrite the rule in general terms.
 

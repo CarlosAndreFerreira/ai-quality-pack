@@ -392,6 +392,16 @@ def pass_all(rows: Dict[str, dict], name: str) -> float:
     return round(sum(all(r["passed"] for r in v[name]) for v in rows.values()) / len(rows), 3)
 
 
+def reliability_line(name: str, x: dict, basis: str, repeats: int) -> str:
+    """One line to quote: how reliable, with its interval, and what one passed run costs."""
+    per = x.get("per_pass")
+    unit = {"cost_usd": f"${per:.4f}", "tokens": f"{per:,.0f} tokens", "seconds": f"{per:.0f} s"}[basis] if per is not None else ""
+    low, high = x["pass_all_ci95"]
+    runs = "the run" if repeats == 1 else f"each of {repeats} runs"
+    return (f"{name}: {runs} passed on {x['pass_all']:.0%} of the tasks (95% CI {low:.0%} to {high:.0%}); "
+            + (f"{unit} for each passed run" if unit else "no run passed, thus no cost for each passed run"))
+
+
 def rate(runs: List[dict]) -> float:
     return sum(r["passed"] for r in runs) / len(runs) if runs else 0.0
 
@@ -417,9 +427,16 @@ def summarise(per_task: Dict[str, dict], a: str, b: str) -> dict:
         # cost basis: money, else tokens, when every run of both variants reported it; else wall-clock time
         basis = next((k for k in ("cost_usd", "tokens") if total(k, a) and total(k, b) is not None), "seconds")
         spent = {name: {k: round(total(k, name), 4) for k in ("cost_usd", "tokens") if total(k, name) is not None} for name in (a, b)}
+
+        def reliability(name: str, passed: int) -> dict:
+            """pass^k with its interval (the unit is the task), and the total spend divided by the runs that passed."""
+            solid = sum(all(r["passed"] for r in v[name]) for v in rows.values())
+            return {"pass_all": pass_all(rows, name), "pass_all_ci95": wilson(solid, len(rows)),
+                    "per_pass": round(total(basis, name) / passed, 4) if passed else None}
+
         out[split] = {
-            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n), "pass_all": pass_all(rows, a), **spent[a]},
-            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n), "pass_all": pass_all(rows, b), **spent[b]},
+            a: {"passed": ap, "runs": n, "rate": round(ap / n, 3), "ci95": wilson(ap, n), **reliability(a, ap), **spent[a]},
+            b: {"passed": bp, "runs": n, "rate": round(bp / n, 3), "ci95": wilson(bp, n), **reliability(b, bp), **spent[b]},
             "delta": round((bp - ap) / n, 3), "tasks": len(rows),
             "delta_ci95": paired_ci([rate(v[b]) - rate(v[a]) for v in rows.values()]), "tasks_better": wins, "tasks_worse": losses,
             "sign_test_p": round(sign_test(wins, losses), 3), "hard_losses": hard_losses,
@@ -499,6 +516,8 @@ def report(kind, label, s, v, reasons, noise, per_task, a, agent_cmd, extra=None
               + (f" (95% CI {x['delta_ci95'][0]:+.0%} to {x['delta_ci95'][1]:+.0%}, {x['tasks']} tasks, paired)" if x.get("delta_ci95") else "")
               + f"; every run passed: {b['pass_all']:.0%} → {c['pass_all']:.0%} of tasks; "
               f"tasks +{x['tasks_better']}/-{x['tasks_worse']}; p={x['sign_test_p']}; cost ×{x['cost_ratio']} ({x['cost_basis']})")
+        for name in names[:2]:
+            print(f"  reliability at cost, {reliability_line(name, x[name], x['cost_basis'], a.repeats)}")
     print(f"\nVERDICT: {v}\n  - " + "\n  - ".join(reasons) + f"\nreport: {out.as_posix()}"
           + (f"\ntranscripts: {extra['transcripts']}" if extra and extra.get("transcripts") else ""))
     return out
@@ -545,6 +564,15 @@ def cmd_run(a) -> None:
     v, reasons = verdict(s, noise, "run")
     m = re.search(r"\.agents/skills/([\w-]+)/", diff)
     extra = {"transcripts": logdir.as_posix()}
+    if a.max_cost_per_pass is not None and v.startswith("IMPROVES"):  # a limit that a person set: a gain above it is not a gain
+        ev = s.get("evolve") or s.get("holdout")
+        per = ev["candidate"]["per_pass"]
+        if ev["cost_basis"] != "cost_usd":
+            v = "INCONCLUSIVE"
+            reasons.append("--max-cost-per-pass could not be checked: the agent command did not report a cost for each run")
+        elif per is None or per > a.max_cost_per_pass:
+            v = "INCONCLUSIVE"
+            reasons.append(f"the candidate costs ${per:.4f} for each passed run, above the limit of ${a.max_cost_per_pass:.4f}")
     if m:  # a change of a skill that the agent did not use cannot be the cause of the result
         note, never = activation_note(per_task, "candidate", m.group(1))
         extra["activation"] = note
@@ -871,6 +899,8 @@ def main() -> None:
     r.add_argument("--proposal", required=True, help="proposal .md with a ```diff block")
     r.add_argument("--annotate", action="store_true", help="append the verdict to the proposal file")
     r.add_argument("--allow-leak", action="store_true", help="skip the leakage critic")
+    r.add_argument("--max-cost-per-pass", type=float, metavar="USD",
+                   help="no IMPROVES verdict when the candidate costs more than this for each passed run")
     r.set_defaults(fn=cmd_run)
     b = sub.add_parser("ablate", help="measure the value of an existing skill by removing it")
     common(b)
