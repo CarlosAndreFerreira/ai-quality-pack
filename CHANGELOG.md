@@ -6,6 +6,7 @@ From the review of a real pull request made with an older version of the pack. T
 - **The evidence block shows the feature coverage of the change**: the changed files in the scope of a task of a graded feature, and the files outside each scope in "Not verified". Without a scope, the block says that the changed files are not linked to a feature. Attention in an upgrade: `evidence --strict` now fails for a graded feature without a task scope.
 - **`feature add` gives a warning for a criterion that names code**, and the evidence block repeats it for a graded feature.
 - **Fix**: a new file below a directory with a name that starts with a dot (`.github/`, the memory directory) lost the dot in the list of changed files. New files of the memory directory were counted as changes of the project, and a path rule for `.github/` did not match a new file.
+- **Fix (Windows)**: `memory.py` read the output of git and of the gate commands in the ANSI code page. One byte outside it (UTF-8 text in a test output or in a diff) stopped the gate with a Python error and no result. The output is now read as UTF-8, and a byte that is not valid shows as a replacement character. Found when the new evidence block ran on that pull request.
 - Not measured: the effect of these three checks.
 
 ## 0.7.0 — 2026-11-13

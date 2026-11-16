@@ -1703,6 +1703,22 @@ class GovernanceTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("gate FAILED: risk rules that need a person", r.stdout)
 
+    def test_gate_reads_command_output_and_diffs_that_are_not_in_the_ansi_code_page(self):
+        with tempfile.TemporaryDirectory() as t:
+            py = sys.executable.replace("\\", "/")
+            # 0x81 and 0x8d have no character in cp1252: before, the reader thread stopped and the output was lost
+            cmd = f'"{py}" -c "import sys; sys.stdout.buffer.write(bytes([0x81, 0x8d, 0xc3, 0xa9, 10])); sys.exit(1)"'
+            root = self._repo(t, gate={"commands": [cmd]})
+            (root / "app.py").write_bytes(b"x = 1\nname = '\xc3\x81\xc2\x81rvore'\n")
+            r = run([MEM, "gate"], root, stdin="")
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("gate FAILED:", r.stdout)
+            self.assertNotIn("Traceback", r.stdout + r.stderr)
+            r = run([MEM, "evidence"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("Traceback", r.stdout + r.stderr)
+            self.assertIn("1 file changed", r.stdout)
+
     def test_gate_stops_on_a_secret_in_the_change_and_hides_its_value(self):
         key = "AKIA" + "ABCDEFGHIJKLMNOP"  # built here, so that this file holds no key-shaped text
         token = "ghp_" + "a1B2" * 9

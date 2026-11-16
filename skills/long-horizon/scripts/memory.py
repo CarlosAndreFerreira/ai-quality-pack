@@ -454,14 +454,14 @@ def clean(text: str, limit: int = 400) -> str:
 
 def git(*args: str) -> str:
     try:
-        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout.strip()
     except Exception:
         return ""
 
 
 def git_ok(*args: str) -> bool:
     try:
-        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10).returncode == 0
+        return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).returncode == 0
     except Exception:
         return False
 
@@ -1053,7 +1053,7 @@ def cmd_task(a: argparse.Namespace) -> None:
                 die("not a git repository")
             path = str(Path(top).parent / f"{Path(top).name}-{a.id}")
             branch = f"agent/{a.id.lower()}"
-            r = subprocess.run(["git", "worktree", "add", "-b", branch, path], capture_output=True, text=True)
+            r = subprocess.run(["git", "worktree", "add", "-b", branch, path], capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 die(r.stderr.strip() or "git worktree add failed")
             base = None if t.get("base") else (git("rev-parse", "--verify", "HEAD") or None)
@@ -1379,7 +1379,7 @@ def run_replay_base_tests(ref: str, cfg: dict, limit: int, timeout: int) -> Tupl
             p.write_bytes(data)
         _clear_pycache_for(list(base_bytes.keys()))
         try:
-            r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
             ok = r.returncode == 0
             out = (r.stdout + r.stderr)[-limit:]
         except subprocess.TimeoutExpired:
@@ -1555,7 +1555,7 @@ def cmd_gate(a: argparse.Namespace) -> None:
     for c in cmds:
         timed_out = None
         try:
-            r = subprocess.run(c, shell=True, capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
             ok, out = r.returncode == 0, (r.stdout + r.stderr)
         except subprocess.TimeoutExpired:
             ok, out, timed_out = False, f"timeout after {timeout}s", True
@@ -1667,7 +1667,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
     tmp = Path(tempfile.mkdtemp(prefix="repro-"))
     wt = tmp / "base"
     try:
-        r = subprocess.run(["git", "worktree", "add", "--detach", str(wt), sha], capture_output=True, text=True)
+        r = subprocess.run(["git", "worktree", "add", "--detach", str(wt), sha], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             die(f"could not check out {a.base}: {clean(r.stderr.strip(), 200)}")
         for f in a.test_file:
@@ -1988,7 +1988,7 @@ def cmd_pr(a: argparse.Namespace) -> None:
     if a.dry_run:
         print(f"pr (dry run): would push `{branch}` and open a draft pull request into `{base_name}` with this text:\n\n{body}")
         return
-    push = subprocess.run(["git", "push", "-u", "origin", branch], capture_output=True, text=True)
+    push = subprocess.run(["git", "push", "-u", "origin", branch], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if push.returncode != 0:
         die(f"`git push` failed: {clean(push.stderr, 300)}", 1)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
