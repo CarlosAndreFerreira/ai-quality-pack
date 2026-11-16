@@ -1218,7 +1218,18 @@ def feature_coverage(ref: str, feats: List[dict]) -> Optional[dict]:
     scopes = [pat for t in tasks.values() if (t.get("feature") in graded or not t.get("feature")) and t.get("status") != "dropped"
               for pat in (t.get("scope") or [])]
     outside = [p for p in files if not match_scope(p, scopes)] if scopes else list(files)
-    return {"files": len(files), "outside": outside, "scoped": bool(scopes)}
+    # a file in the scope of a feature that waits for its grade is linked to a feature: say which, not "not linked"
+    known = {f["id"] for f in feats}
+    waiting: Dict[str, List[str]] = {}
+    for t in tasks.values():
+        fid = t.get("feature")
+        if fid in known and fid not in graded and t.get("status") != "dropped" and t.get("scope"):
+            waiting.setdefault(fid, [])
+            waiting[fid] += [p for p in outside if match_scope(p, t["scope"]) and p not in waiting[fid]]
+    waiting = {k: v for k, v in waiting.items() if v}
+    pending = sorted({p for v in waiting.values() for p in v})
+    return {"files": len(files), "outside": [p for p in outside if p not in pending], "scoped": bool(scopes),
+            "pending": pending, "pending_features": sorted(waiting)}
 
 
 def gate_config(ref: str) -> tuple:
@@ -1643,11 +1654,31 @@ def repro_fresh() -> bool:
         return False
 
 
-def run_check(test: str, cwd: Path, timeout: int) -> tuple:
+# Options of `repro` and `counterexample` for the run on the base: test patches to apply there, and variables that
+# only that run gets (a build directory of its own, for a project with a shared build cache).
+_BASE_OPTS: Dict[str, object] = {"patches": [], "env": {}}
+
+
+def set_base_options(a: argparse.Namespace) -> None:
+    patches = []
+    for f in getattr(a, "test_patch", None) or []:
+        if not Path(f).is_file():
+            die(f"--test-patch {f} is not a file")
+        patches.append(str(Path(f).resolve()))
+    env = {}
+    for item in getattr(a, "base_env", None) or []:
+        key, sep, value = item.partition("=")
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            die(f"--base-env needs NAME=VALUE (got {clean(item, 60)})")
+        env[key] = value
+    _BASE_OPTS.update(patches=patches, env=env)
+
+
+def run_check(test: str, cwd: Path, timeout: int, env: Optional[Dict[str, str]] = None) -> tuple:
     """(exit code or None for a timeout, output) of one check command."""
     try:
         r = subprocess.run(test, shell=True, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout)
+                           errors="replace", timeout=timeout, env=dict(os.environ, **env) if env else None)
         return r.returncode, r.stdout + r.stderr
     except subprocess.TimeoutExpired:
         return None, f"timeout after {timeout}s"
@@ -1656,6 +1687,8 @@ def run_check(test: str, cwd: Path, timeout: int) -> tuple:
 def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str,
                       poison: Optional[List[str]] = None, marker: str = "", poisoned: Optional[List[str]] = None) -> tuple:
     """Run a check on the base commit: a throw-away git worktree of `sha`, with the test files of the workspace on top.
+    A `--test-patch` is applied there: it is for a test that is in a file that the fix changes also (the usual
+    place of a unit test in Rust or Go), where a copy of the file brings the fix with it.
     `poison`: paths from the top of the repository whose content becomes `marker` (see `base_seen`)."""
     import shutil
     import tempfile
@@ -1671,13 +1704,19 @@ def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, tim
             dst = wt / rel / f
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dst)
+        for patch in _BASE_OPTS["patches"]:
+            ap = subprocess.run(["git", "apply", "--whitespace=nowarn", patch], cwd=wt, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+            if ap.returncode != 0:
+                die(f"--test-patch {Path(patch).name} does not apply on {label}: {clean(ap.stderr.strip(), 200)}. "
+                    "The patch must have the test only, with paths from the top of the repository (`git diff` gives them)")
         for name in poison or []:
             target = wt / name
             if target.is_file():
                 target.write_text(marker + "\n", encoding="utf-8")
                 if poisoned is not None:
                     poisoned.append(name)
-        return run_check(test, wt / rel, timeout)
+        return run_check(test, wt / rel, timeout, _BASE_OPTS["env"] or None)
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(wt)], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1734,6 +1773,7 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
     if not sha or not top:
         die(f"counterexample needs a git repository and a known --base (got {a.base})")
     rel = Path.cwd().resolve().relative_to(Path(top).resolve())
+    set_base_options(a)
     after, after_out = run_check(a.test, Path("."), a.timeout)
     before = before_out = None
     if after == 0:
@@ -1901,6 +1941,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
     if not sha or not top:
         die(f"repro needs a git repository and a known --base (got {a.base})")
     rel = Path.cwd().resolve().relative_to(Path(top).resolve())
+    set_base_options(a)
 
     before, before_out = run_check_on_base(a.test, a.test_file, sha, rel, a.timeout, a.base)
     after, after_out = run_check(a.test, Path("."), a.timeout)
@@ -1916,6 +1957,12 @@ def cmd_repro(a: argparse.Namespace) -> None:
         result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
     elif after != 0:
         result, why = "still-failing", "the test still fails on the current code"
+        tail = lambda out: [l.strip() for l in out.strip().splitlines() if l.strip()][-4:]
+        if after is not None and tail(before_out) and tail(before_out) == tail(after_out) and not _BASE_OPTS["env"]:
+            why += (". The last lines of the two outputs are the same. If the project keeps compiled files outside the "
+                    "repository (for example CARGO_TARGET_DIR, or a build directory that the two checkouts use), the run on the "
+                    "current code can have used the files that the base compiled. Give the base its own directory, "
+                    "for example --base-env CARGO_TARGET_DIR=<directory>, or make the command compile again")
     else:
         result, why = "verified", "the test fails on the base and passes on the current code"
     with contextlib.suppress(OSError):
@@ -2107,14 +2154,25 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
                 gaps.append(f"{n} of {len(f['criteria'])} criteria of {f['id']} name code: its PASS shows that the code is "
                             "as described, not that the behaviour is correct")
         cov = feature_coverage(ref, feats)
-        if cov and not cov["scoped"]:
+        if cov and cov["pending"]:
+            ids = ", ".join(cov["pending_features"][:6])
+            gaps.append(f"{len(cov['pending'])} changed file(s) are in the scope of {ids}, not graded yet: they wait for that grade")
+        if cov and not cov["scoped"] and cov["pending"]:
+            lines.append(f"- Feature coverage: 0 of {cov['files']} changed file(s) are in the scope of a graded feature; "
+                         f"{len(cov['pending'])} are in the scope of a feature that is not graded yet")
+            if cov["outside"]:
+                gaps.append(f"{len(cov['outside'])} changed file(s) are not linked to a feature (`task open --title T --feature F --scope GLOB`): "
+                            + ", ".join(clean(p, 80) for p in cov["outside"][:10]))
+        elif cov and not cov["scoped"]:
             lines.append(f"- Feature coverage: not recorded. No task of a graded feature has a scope, thus the {cov['files']} "
                          "changed file(s) are not linked to a feature that passed")
             gaps.append(f"the {cov['files']} changed file(s) are not linked to a graded feature (`task open --title T --feature F --scope GLOB`): "
                         "a PASS of a feature is not a PASS of the change")
         elif cov:
             out = cov["outside"]
-            lines.append(f"- Feature coverage: {cov['files'] - len(out)} of {cov['files']} changed file(s) are in the scope of a graded feature")
+            covered = cov["files"] - len(out) - len(cov["pending"])
+            lines.append(f"- Feature coverage: {covered} of {cov['files']} changed file(s) are in the scope of a graded feature"
+                         + (f"; {len(cov['pending'])} are in the scope of a feature that is not graded yet" if cov["pending"] else ""))
             if out:
                 gaps.append(f"{len(out)} changed file(s) are outside the scope of each graded feature, with no criteria and no evaluator: "
                             + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
@@ -3022,6 +3080,10 @@ def main() -> None:
     s.add_argument("--test-file", action="append", default=[], help="test file to copy onto the base (repeatable)")
     s.add_argument("--base", default="HEAD", help="commit without the fix (default HEAD: the fix is not committed)")
     s.add_argument("--expect", help="text that the failure on the base must print")
+    s.add_argument("--test-patch", action="append", default=[], metavar="FILE",
+                   help="patch with the test only, applied on the base (for a test inside a file that the fix changes)")
+    s.add_argument("--base-env", action="append", default=[], metavar="NAME=VALUE",
+                   help="variable for the run on the base only (for example a build directory of its own)")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
     s.set_defaults(fn=cmd_repro)
@@ -3031,6 +3093,10 @@ def main() -> None:
     s.add_argument("--base", default="HEAD", help="commit without the change (default HEAD: the change is not committed)")
     s.add_argument("--id", help="the feature that the counterexample is for")
     s.add_argument("--expect", help="text that the failure on the current code must print")
+    s.add_argument("--test-patch", action="append", default=[], metavar="FILE",
+                   help="patch with the test only, applied on the base (for a test inside a file that the change touches)")
+    s.add_argument("--base-env", action="append", default=[], metavar="NAME=VALUE",
+                   help="variable for the run on the base only (for example a build directory of its own)")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a counterexample was shown for this workspace")
     s.set_defaults(fn=cmd_counterexample)

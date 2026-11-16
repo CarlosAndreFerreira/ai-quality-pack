@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- **From the first use on a real project** (a Rust workspace; a security fix with a gate, a reproduction and an independent evaluator, which found a defect that the tests of the author did not find):
+  - `repro --test-patch FILE` and `counterexample --test-patch FILE` apply a patch with the test on the base. Before, a test inside the file that the fix changes could not be used: a copy of the file took the fix to the base.
+  - `--base-env NAME=VALUE` sets a variable for the run on the base only. With a build cache that two checkouts use (`CARGO_TARGET_DIR`), the run on the current code used the files of the base, and `repro` said `STILL-FAILING` for a correct fix. `repro` now names this cause when the two outputs end with the same lines.
+  - The evidence block says "in the scope of a feature that is not graded yet" for a changed file that waits for a grade. Before, it said that the file was not linked to a feature.
 - **`memory.py verdict`**: what the records support for the current code (`SUPPORTED`, `FAIL`, `UNKNOWN`), without the text of an agent. `FAIL` needs a `regression` counterexample: in our measurement, each of the 3 such counterexamples was on a wrong patch, and the verdicts of the evaluator did not separate wrong from correct patches.
 - **`counterexample` and `repro` find a check that does not load the code of the base** (it imports the code from an absolute path or from an installed package). The counterexample then has the type `base-not-seen`. In the measurement, such checks made the type `not-fixed` useless.
 - **Fix**: `AGENT_MEMORY_LOCK_TIMEOUT` (seconds, default 10) sets how long a writer waits for the memory lock. With many writers on a machine under load, the last writers ended with exit code 4. The test with 16 writers failed for this reason in one complete run on Windows, while another test run and containers used the machine; it now uses a longer wait. One earlier failure on Windows was not identified and can be the same.

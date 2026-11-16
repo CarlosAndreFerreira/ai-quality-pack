@@ -827,6 +827,57 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("records for this code: gate pass, reproduction verified, counterexample none, mutation not run", r.stdout)
             self.assertEqual(self._events(root, "verdict")[-1]["result"], "SUPPORTED")
 
+    def test_repro_takes_a_test_that_is_inside_the_file_that_the_fix_changes(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)                                    # calc.add is `a - b` on the base
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+            selftest = ("\n\ndef selftest():\n    if add(2, 2) != 4:\n        raise SystemExit('selftest failed: add')\n")
+            base = "def add(a, b):\n    return a - b\n"
+            # the test is in calc.py, as a unit test of Rust or Go is in the file of the code
+            (root / "calc.py").write_text(base + selftest, encoding="utf-8")
+            patch = Path(t) / "test-only.patch"
+            patch.write_text(subprocess.run(["git", "diff", "--", "calc.py"], cwd=root, capture_output=True, text=True).stdout,
+                             encoding="utf-8", newline="\n")
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n" + selftest, encoding="utf-8")   # the fix
+            test = f'"{self.py}" -c "import calc; calc.selftest()"'
+            # a copy of calc.py takes the fix to the base: the test passes there and shows nothing
+            r = m("repro", "--test", test, "--test-file", "calc.py")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro NOT-REPRODUCED", r.stdout)
+            # without the test on the base, the failure there is for another reason: --expect finds it
+            r = m("repro", "--test", test, "--expect", "selftest failed")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro WRONG-FAILURE", r.stdout)
+            r = m("repro", "--test", test, "--test-patch", str(patch), "--expect", "selftest failed")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("repro VERIFIED", r.stdout)
+            (Path(t) / "bad.patch").write_text("--- a/none.py\n+++ b/none.py\n@@ -1 +1 @@\n-x\n+y\n", encoding="utf-8")
+            r = m("repro", "--test", test, "--test-patch", str(Path(t) / "bad.patch"))
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("does not apply on HEAD", r.stderr)
+            self.assertEqual(m("repro", "--test", test, "--test-patch", str(Path(t) / "no-such.patch")).returncode, 2)
+
+    def test_repro_gives_the_base_its_own_variables_and_names_a_shared_build_cache(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            # the command fails only where the variable is set: the variable goes to the run on the base and to no other
+            where = f'"{self.py}" -c "import os, sys; sys.exit(1 if os.environ.get(\'AQP_WHERE\') == \'base\' else 0)"'
+            r = m("repro", "--test", where, "--base-env", "AQP_WHERE=base")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("repro VERIFIED", r.stdout)
+            self.assertEqual(m("repro", "--test", where, "--base-env", "no equals sign").returncode, 2)
+            # the same failure text in the two runs: the reason can be compiled files that the two checkouts use
+            same = f'"{self.py}" -c "print(1); print(\'error: test failed\'); raise SystemExit(1)"'
+            r = m("repro", "--test", same)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro STILL-FAILING", r.stdout)
+            self.assertIn("The last lines of the two outputs are the same", r.stdout)
+            self.assertIn("--base-env CARGO_TARGET_DIR=", r.stdout)
+            r = self._repro(root)                                   # two different failures do not give the hint
+            self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
@@ -1291,6 +1342,17 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertNotIn("are not linked to a graded feature", ev)
             self.assertEqual(m("task", "open", "--title", "Report", "--feature", "F-9", "--scope", "report.py").returncode, 0)
             self.assertIn("1 of 2 changed file(s)", m("evidence").stdout)  # a task of a feature that did not pass covers nothing
+            # a file in the scope of a feature that waits for its grade is linked to it: the block says so
+            m("feature", "add", "--id", "F-2", "--desc", "report", "--criterion", "The report has one line for each sale")
+            self.assertEqual(m("task", "open", "--title", "Report 2", "--feature", "F-2", "--scope", "report.py").returncode, 0)
+            ev = m("evidence").stdout
+            self.assertIn("1 of 2 changed file(s) are in the scope of a graded feature; 1 are in the scope of a feature that is not graded yet", ev)
+            self.assertIn("1 changed file(s) are in the scope of F-2, not graded yet: they wait for that grade", ev)
+            self.assertNotIn("outside the scope of each graded feature", ev)
+            m("feature", "pass", "--id", "F-2", "--evidence", "e", "--verified-by", "human")
+            ev = m("evidence").stdout
+            self.assertIn("- Feature coverage: 2 of 2 changed file(s) are in the scope of a graded feature", ev)
+            self.assertNotIn("not graded yet", ev)
 
     def test_evidence_names_a_feature_that_was_not_graded_by_an_independent_verifier(self):
         with tempfile.TemporaryDirectory() as t:
