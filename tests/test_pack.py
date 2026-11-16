@@ -783,8 +783,9 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("counterexample SHOWN (not-fixed)", r.stdout)
             self.assertIn("the check loads the code of the base", r.stdout)
             # the same check with the code from an absolute path: the run on the base uses the current code
+            # (the path is first in sys.path, before the folder of the script; no `-I`: it ignores PYTHONDONTWRITEBYTECODE)
             (root / "probe_abs.py").write_text(f"import sys\nsys.path.insert(0, r'{root.as_posix()}')\n" + check, encoding="utf-8")
-            r = m("counterexample", "--test", f'"{self.py}" -I probe_abs.py', "--test-file", "probe_abs.py")
+            r = m("counterexample", "--test", f'"{self.py}" probe_abs.py', "--test-file", "probe_abs.py")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("counterexample SHOWN (base-not-seen)", r.stdout)
             self.assertIn("says nothing about the base", r.stdout)
@@ -792,7 +793,7 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("the check did not load the code of the base", m("evidence").stdout)
             # a reproduction with the same fault: the test passes in the two runs, and the reason is given
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
-            r = m("repro", "--test", f'"{self.py}" -I probe_abs.py', "--test-file", "probe_abs.py")
+            r = m("repro", "--test", f'"{self.py}" probe_abs.py', "--test-file", "probe_abs.py")
             self.assertEqual(r.returncode, 1)
             self.assertIn("repro NOT-REPRODUCED", r.stdout)
             self.assertIn("did not load the source files that the change touched", r.stdout)
