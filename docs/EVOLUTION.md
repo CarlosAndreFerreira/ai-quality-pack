@@ -14,7 +14,7 @@ The pack's LLM evaluator, as it is, does not solve this. It grades criteria that
 
 Test tampering, memory and complexity metrics have weaker evidence or a low incidence in our data. They come later.
 
-## Status at version 0.7.0 (2026-11-13)
+## Status at version 0.7.1 (2026-11-16)
 
 Each item of this plan has code or documentation in the pack. "Measured" means a run with an agent, or a check on real patches. [docs/RESULTS.md](RESULTS.md) has the numbers.
 
@@ -33,7 +33,7 @@ Each item of this plan has code or documentation in the pack. "Measured" means a
 | F2 Gate without hooks | `memory.py gated-run` | No: tested with a simulated agent |
 | F3 From an issue to a run | Issue workflow template | No: not run on GitHub |
 | F4 Triage | `memory.py triage`, `triage` subagent and skill | Text check: 53 of 53 valid issues pass, after tuning on them. Subagent: no |
-| F5 Pull request with evidence | `memory.py pr`, `evidence` with review risk and cost, risk rules of the project with waivers that a person records | No: tested with a simulated GitHub CLI |
+| F5 Pull request with evidence | `memory.py pr`, `evidence` with review risk and cost, risk rules of the project with waivers that a person records; the evidence says when the branch is behind the default branch, which changed files the graded features cover, and which criteria name code | No: tested with a simulated GitHub CLI |
 | F6 Merge readiness | Evaluator step, `max_changed_lines`, `doctor` note | No |
 | F7 Few human decision points | README, "Operating rules" | Not applicable |
 | F8 Factory report | `memory.py factory` | No |
