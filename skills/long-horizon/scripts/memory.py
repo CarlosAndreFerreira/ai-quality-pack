@@ -1654,9 +1654,9 @@ def run_check(test: str, cwd: Path, timeout: int) -> tuple:
 
 
 def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str,
-                      poison: Optional[List[str]] = None, token: str = "", poisoned: Optional[List[str]] = None) -> tuple:
+                      poison: Optional[List[str]] = None, marker: str = "", poisoned: Optional[List[str]] = None) -> tuple:
     """Run a check on the base commit: a throw-away git worktree of `sha`, with the test files of the workspace on top.
-    `poison`: paths from the top of the repository whose content becomes `token` (see `base_seen`)."""
+    `poison`: paths from the top of the repository whose content becomes `marker` (see `base_seen`)."""
     import shutil
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="repro-"))
@@ -1674,7 +1674,7 @@ def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, tim
         for name in poison or []:
             target = wt / name
             if target.is_file():
-                target.write_text(token + "\n", encoding="utf-8")
+                target.write_text(marker + "\n", encoding="utf-8")
                 if poisoned is not None:
                     poisoned.append(name)
         return run_check(test, wt / rel, timeout)
@@ -1697,12 +1697,12 @@ def base_seen(test: str, test_files: List[str], sha: str, rel: Path, timeout: in
             and n not in tests and not TEST_PATH_RE.search(n)]
     if not code:
         return None
-    token = "AQP_BASE_PROBE_" + os.urandom(6).hex()
+    marker = "AQP_BASE_PROBE_" + os.urandom(6).hex()
     done: List[str] = []
-    rc, out = run_check_on_base(test, test_files, sha, rel, timeout, label, poison=code, token=token, poisoned=done)
+    rc, out = run_check_on_base(test, test_files, sha, rel, timeout, label, poison=code, marker=marker, poisoned=done)
     if not done or rc is None:
         return None
-    return token in out
+    return marker in out
 
 
 def counterexample_fresh() -> Optional[dict]:

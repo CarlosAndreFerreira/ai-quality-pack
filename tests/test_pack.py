@@ -668,13 +668,14 @@ class EvolutionTests(unittest.TestCase):
         return [e for e in map(json.loads, lines) if e["ev"] == ev]
 
     def _repro(self, root, *extra):
-        return run([MEM, "repro", "--test", f'"{self.py}" test_calc.py', "--test-file", "test_calc.py", *extra], root)
+        return run([MEM, "repro", "--test", f'"{self.py}" test_calc.py', "--test-file", "test_calc.py", *extra], root,
+                   env={"PYTHONDONTWRITEBYTECODE": "1"})
 
     def test_counterexample_shows_a_defect_and_says_if_the_change_broke_it(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)                                    # calc.add is `a - b` on the base
             test = f'"{self.py}" test_calc.py'                      # add(2, 2) == 4: fails on the base
-            m = lambda *a: run([MEM, *a], root, stdin="")
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})  # calc.py changes with the same size in one second
             r = m("counterexample", "--test", test, "--test-file", "test_calc.py")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # the code has the defect: nothing fixed it
             self.assertIn("counterexample SHOWN (not-fixed)", r.stdout)
@@ -704,7 +705,7 @@ class EvolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
             test = f'"{self.py}" test_calc.py'
-            m = lambda *a: run([MEM, *a], root, stdin="")
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})  # calc.py changes with the same size in one second
             m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4")
             vote = lambda v: m("feature", "vote", "--id", "F-1", "--verdict", v, "--evidence", "read the code")
             self.assertEqual(vote("FAIL").returncode, 0)            # the option is off: as before
@@ -773,7 +774,7 @@ class EvolutionTests(unittest.TestCase):
     def test_counterexample_says_when_the_check_does_not_load_the_code_of_the_base(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)                                    # calc.add is `a - b` on the base
-            m = lambda *a: run([MEM, *a], root, stdin="")
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})  # calc.py changes with the same size in one second
             (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # the change
             check = "import calc, sys\nsys.exit(0 if calc.add(2, 3) == 5 else 1)\n"                    # fails before and after
             (root / "probe_rel.py").write_text(check, encoding="utf-8")
@@ -801,7 +802,7 @@ class EvolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
             test = f'"{self.py}" test_calc.py'                      # add(2, 2) == 4
-            m = lambda *a: run([MEM, *a], root, stdin="")
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})  # calc.py changes with the same size in one second
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
             r = m("verdict")
             self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # nothing is recorded
@@ -1876,6 +1877,28 @@ class GovernanceTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn("Traceback", r.stdout + r.stderr)
             self.assertIn("1 file changed", r.stdout)
+
+    def test_the_files_that_the_pack_installs_pass_its_own_secret_scan(self):
+        # The installer copies these files into a project. A line that the scan takes for a secret stops the gate of
+        # that project until the files are committed (it happened with `token = "..."` in memory.py).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("memory_under_scan", MEM)
+        mod = importlib.util.module_from_spec(spec)
+        argv, sys.argv = sys.argv, ["memory.py"]
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.argv = argv
+        flagged = []
+        for folder in ("skills", "templates", "hooks", "bin"):
+            for path in sorted((PACK / folder).rglob("*")):
+                if path.is_file() and path.suffix in (".py", ".sh", ".js", ".json", ".md", ".yml", ""):
+                    try:
+                        lines = path.read_text(encoding="utf-8").splitlines()
+                    except UnicodeDecodeError:
+                        continue
+                    flagged += [f"{path.relative_to(PACK).as_posix()}:{i}: {mod.secret_in(l)}" for i, l in enumerate(lines, 1) if mod.secret_in(l)]
+        self.assertEqual(flagged, [])
 
     def test_gate_stops_on_a_secret_in_the_change_and_hides_its_value(self):
         key = "AKIA" + "ABCDEFGHIJKLMNOP"  # built here, so that this file holds no key-shaped text
