@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- **Measured** ([docs/RESULTS.md](docs/RESULTS.md)): the evaluator on another model, on the 24 shipped cases. On Claude Sonnet it approved 7 of 12 wrong patches and rejected 0 of 12 correct patches; on Claude Haiku, the model of the author, 0 of 12 and 3 of 12. The 7 approvals are one type of defect. The text of `--evaluator-model` in the installer and in the README now says that a stronger model is not better by default.
+- **Measured** ([docs/RESULTS.md](docs/RESULTS.md)): the evaluator on another model, on the 24 shipped cases. On Claude Sonnet it approved 7 of 12 wrong patches and rejected 0 of 12 correct patches; on Claude Haiku, the model of the author, 0 of 12 and 3 of 12. The 7 approvals are one type of defect. On the 42 SWE-bench patches, Sonnet approved 13 of 19 wrong patches and rejected 4 of 23 correct patches (Haiku: 2 to 4, and 15 to 16); the agreement with the official label is near zero for the two models. The text of `--evaluator-model` in the installer and in the README now says that a stronger model is not better by default.
 
 ## 0.7.1 — 2026-11-16
 

@@ -89,7 +89,21 @@ The same 24 cases, one run for each case, the evaluator of version 0.7.1. The se
 - The 7 approvals are one defect. In 9 of the 12 wrong patches, `available()` returns an integer when the bucket is full, and the requirement says that it returns a float. Haiku found this defect in 9 of 9 patches, and Sonnet in 2 of 9. The two models rejected the 3 wrong patches of the other task. Thus the 12 wrong patches are not 12 independent cases: this result shows one type of defect that Sonnet missed, not a general rate.
 - The evaluator on Sonnet ran its own checks in each case (the transcripts show it, and the model in the usage record). It reported that `available()` returns a float; it did not test a full bucket.
 - What this means for use: a stronger model for the evaluator is not better by default. On this set it was less strict in the two directions, at 3.6 times the cost. Measure the evaluator on your cases before you change its model.
-- Limits: one run for each case, two small tasks, and the patches are from Haiku. Not measured: the 42 SWE-bench patches, where the evaluator on Haiku does not separate wrong from correct patches, and a model of another supplier.
+- Limits: one run for each case, two small tasks, and the patches are from Haiku.
+
+The same comparison on the 42 SWE-bench patches (19 wrong, 23 correct). The evaluator is that of version 0.6.0 in the two rows, and its text did not change after that version. One line is different: the model of the evaluator subagent.
+
+| Model of the evaluator | Wrong patches approved (19) | Correct patches rejected (23) | No decision | MCC | Cost for one pass |
+|---|---|---|---|---|---|
+| Claude Haiku, 3 passes | 3, 4, 2 (9 of 57, 16%) | 15, 16, 15 (46 of 69, 67%) | 4, 5, 6 | 0.10, -0.01, 0.16 | 0.70 to 0.74 US dollars |
+| Claude Sonnet, 1 pass | 13 (68%, 95% interval 46% to 85%) | 4 (17%, 95% interval 7% to 37%) | 1 | 0.12 | 2.38 US dollars |
+
+- The model changes the direction of the error, not the quality of the judgement. Haiku rejects most patches (FAIL for 67% of the correct patches and for 72% of the wrong patches). Sonnet approves most patches (PASS for 83% of the correct patches and for 68% of the wrong patches). The agreement with the official label is near zero for the two models (MCC 0.12 against -0.01 to 0.16).
+- The two differences are large (Fisher exact test against the 3 passes of Haiku together: p < 0.001 for the wrong patches approved, p < 0.001 for the correct patches rejected). Sonnet gave the same verdict as a pass of Haiku for 16 or 17 of the 42 patches.
+- Of the 13 wrong patches that Sonnet approved, Haiku rejected 6 in each of its 3 passes.
+- Sonnet was faster: 60 minutes of agent time for the pass, against 141 to 168 minutes, and no run at the time limit. It cost 3.2 times more.
+- What this means for use: do not change the model of the evaluator to get a better evaluator. On hard issues, a PASS of the evaluator on Sonnet has as little information as a FAIL of the evaluator on Haiku. The weak part is what the evaluator can check, not the model: on these issues the hidden tests of the maintainers decide, and the evaluator does not have them.
+- Limits: one pass for Sonnet, and one verdict is not stable on this set. The official label is a weak reference for a rejection (see above). Not measured: a model of another supplier, and Sonnet as the author of the patches.
 
 ### More than one run of the evaluator (version 0.6.0)
 
@@ -145,7 +159,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
-- An evaluator on a stronger model than the author, on the 42 SWE-bench patches. On the 24 shipped cases it approved more wrong patches (see above).
+- An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
