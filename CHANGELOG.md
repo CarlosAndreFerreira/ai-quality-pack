@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-16
+
+This release ties a verdict to a command that ran. We measured the evaluator on 42 patches for hard issues with two models: one model rejected most patches, the other approved most patches, and the two did not separate wrong patches from correct patches. An instruction to bring evidence did not change the verdicts. The records of the commands did separate in one case: each of the 3 counterexamples of type `regression` was on a wrong patch. The numbers are small, and they are in [docs/RESULTS.md](docs/RESULTS.md). The release also has the corrections from the first use on a real project.
+
+Not measured: `memory.py verdict` on the 42 patches, `mutants` with a real mutation tool, `--test-patch` and `--base-env` on a real compiled project. The tests ran on Windows and on Linux (Python 3.9 and 3.14). On the Python 3.13 image, the tests passed before the last change, which is in one test only; the run after that change was not complete at the time of the release. Not run on macOS.
+
 - **From the first use on a real project** (a Rust workspace; a security fix with a gate, a reproduction and an independent evaluator, which found a defect that the tests of the author did not find):
   - `repro --test-patch FILE` and `counterexample --test-patch FILE` apply a patch with the test on the base. Before, a test inside the file that the fix changes could not be used: a copy of the file took the fix to the base.
   - `--base-env NAME=VALUE` sets a variable for the run on the base only. With a build cache that two checkouts use (`CARGO_TARGET_DIR`), the run on the current code used the files of the base, and `repro` said `STILL-FAILING` for a correct fix. `repro` now names this cause when the two outputs end with the same lines.

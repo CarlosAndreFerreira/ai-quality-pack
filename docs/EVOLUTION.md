@@ -14,7 +14,7 @@ The pack's LLM evaluator, as it is, does not solve this. It grades criteria that
 
 Test tampering, memory and complexity metrics have weaker evidence or a low incidence in our data. They come later.
 
-## Status at version 0.7.1 (2026-11-16)
+## Status at version 0.8.0 (2026-11-16)
 
 Each item of this plan has code or documentation in the pack. "Measured" means a run with an agent, or a check on real patches. [docs/RESULTS.md](RESULTS.md) has the numbers.
 
@@ -40,7 +40,7 @@ Each item of this plan has code or documentation in the pack. "Measured" means a
 | F9 Parallel work | README, "Operating rules" | Not applicable |
 | F10 Governance | Secret scan in the gate, `provenance`, `audit` with a hash chain and the identity of each run, `stats` with the control coverage of the sessions, threat model, checks of skill files | Secret scan: 0 false alarms in 3,673 added lines. Prompt injection: 9 of 72 attacks succeeded without the pack, 1 of 36 with the pack |
 
-The core pack of version 0.6.0 against the bare agent on 20 hard issues showed no difference that the sample can show, and the gate had no commands in those runs. What comes next is measurement, not features: a gate that has commands and a mandatory evaluator against the bare agent on hard issues, and what the evaluator can check on a hard issue (a stronger model for the evaluator was not better on the 24 cases and on the 42 patches).
+The core pack of version 0.6.0 against the bare agent on 20 hard issues showed no difference that the sample can show, and the gate had no commands in those runs. What comes next is measurement, not features: a gate that has commands and a mandatory evaluator against the bare agent on hard issues, and what the evaluator can check on a hard issue (a stronger model for the evaluator was not better on the 24 cases and on the 42 patches). Version 0.8.0 adds verdicts from records that a command wrote (`counterexample`, `verdict`, `verdict_evidence`, `mutants`): on the 42 patches the 3 counterexamples of type `regression` were on wrong patches, and `memory.py verdict` itself is not measured. On one real project, a gate, a reproduction and an independent evaluator found a defect that the tests of the author did not find: one case, not a rate.
 
 ## 2. Proposals, by priority
 
