@@ -952,7 +952,7 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
             base = [INST, "project", root, "--no-upstream", "--profile", "none"]
             r = run([*base, "--evaluator-model", "opus"], root)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("The effect on its verdicts was not measured", r.stdout)
+            self.assertIn("A stronger model is not better by default", r.stdout)
             evaluator = root / ".claude/agents/evaluator.md"
             head = evaluator.read_text(encoding="utf-8").split("\n---\n")[0].splitlines()
             self.assertEqual(head[0], "---")

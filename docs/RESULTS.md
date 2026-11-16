@@ -76,6 +76,21 @@ The current evaluator on the 24 cases of `evals/judge-cases/` (two small tasks):
 - The 3 rejections are on one task. The evaluator found that the fix raises an error for an infinite price, where the old code returned it. This is true for the 3 patches, and for the reference solution also. The requirement does not cover this input: the rejection is too strict, not false.
 - The evaluator is much better on these small tasks (0 of 12 wrong patches approved) than on the SWE-bench issues (5 of 19). Do not use the small set to predict the result on large repositories.
 
+### The evaluator on another model (version 0.7.1)
+
+The same 24 cases, one run for each case, the evaluator of version 0.7.1. The session that calls the evaluator is on Claude Haiku in the two rows. Only the model of the evaluator subagent changes (`install.py --evaluator-model`).
+
+| Model of the evaluator | Wrong patches approved (12) | Correct patches rejected (12) | Cost | Time |
+|---|---|---|---|---|
+| Claude Haiku (the model of the author of the patches) | 0 (0%, 95% interval 0% to 24%) | 3 (25%, 95% interval 9% to 53%) | 0.22 US dollars | 14 minutes |
+| Claude Sonnet | 7 (58%, 95% interval 32% to 81%) | 0 (0%, 95% interval 0% to 24%) | 0.80 US dollars | 8 minutes |
+
+- The stronger model approved more wrong patches: 7 of 12 against 0 of 12 (Fisher exact test, p = 0.005). It rejected no correct patch (3 for Haiku, p = 0.22).
+- The 7 approvals are one defect. In 9 of the 12 wrong patches, `available()` returns an integer when the bucket is full, and the requirement says that it returns a float. Haiku found this defect in 9 of 9 patches, and Sonnet in 2 of 9. The two models rejected the 3 wrong patches of the other task. Thus the 12 wrong patches are not 12 independent cases: this result shows one type of defect that Sonnet missed, not a general rate.
+- The evaluator on Sonnet ran its own checks in each case (the transcripts show it, and the model in the usage record). It reported that `available()` returns a float; it did not test a full bucket.
+- What this means for use: a stronger model for the evaluator is not better by default. On this set it was less strict in the two directions, at 3.6 times the cost. Measure the evaluator on your cases before you change its model.
+- Limits: one run for each case, two small tasks, and the patches are from Haiku. Not measured: the 42 SWE-bench patches, where the evaluator on Haiku does not separate wrong from correct patches, and a model of another supplier.
+
 ### More than one run of the evaluator (version 0.6.0)
 
 The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent runs for each patch (126 runs, Claude Haiku).
@@ -130,7 +145,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
-- An evaluator on a stronger model than the author. `install.py --evaluator-model` sets it; the measurement on the 24 shipped cases and on the 42 patches is not done.
+- An evaluator on a stronger model than the author, on the 42 SWE-bench patches. On the 24 shipped cases it approved more wrong patches (see above).
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.

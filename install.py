@@ -14,7 +14,7 @@ Options:
   --with-codex         Codex hooks in .codex/hooks.json: digest and formatter; the Stop gate and the guard with their options
   --with-opencode      OpenCode 2 plugin and subagents in .opencode/: digest and formatter; the gate and the guard with their options
   --with-ci            GitHub Actions workflow: the gate runs on each pull request, with the base branch's gate.json
-  --evaluator-model M  Claude Code: the evaluator subagent runs on model M (for example a stronger model than the author)
+  --evaluator-model M  Claude Code: the evaluator subagent runs on model M (measure it first: see docs/RESULTS.md)
   --dry-run            print actions only
 Never overwrites your files: templates are added only if absent; settings.json is merged.
 """
@@ -516,7 +516,8 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
         add_or_upgrade(PACK / "templates" / ".claude" / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
     if a.evaluator_model:
         set_agent_model(root / ".claude" / "agents" / "evaluator.md", a.evaluator_model)
-        log("NOTE: the evaluator subagent of Claude Code now runs on this model. The effect on its verdicts was not measured: "
+        log("NOTE: the evaluator subagent of Claude Code now runs on this model. A stronger model is not better by default "
+            "(docs/RESULTS.md: on 24 cases it approved more wrong patches): "
             "measure it on cases with a known answer (`skill_eval.py judge`). OpenCode and the plugin are not changed.")
     if a.with_ci:
         add_if_absent(PACK / "templates" / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml")

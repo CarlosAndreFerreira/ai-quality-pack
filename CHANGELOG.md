@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- **Measured** ([docs/RESULTS.md](docs/RESULTS.md)): the evaluator on another model, on the 24 shipped cases. On Claude Sonnet it approved 7 of 12 wrong patches and rejected 0 of 12 correct patches; on Claude Haiku, the model of the author, 0 of 12 and 3 of 12. The 7 approvals are one type of defect. The text of `--evaluator-model` in the installer and in the README now says that a stronger model is not better by default.
+
 ## 0.7.1 — 2026-11-16
 
 From the review of a real pull request made with an older version of the pack. The evaluator gave a PASS to one feature; the pull request had 16,000 added lines, most of them from commits before the pack was used, on a branch 77 commits behind the default branch. A person read the PASS as an approval of the complete change, and an independent review found 6 defects. One of the 6 was in the graded feature: its criterion named a function ("the replace is atomic") and not the behaviour.
