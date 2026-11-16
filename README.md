@@ -205,6 +205,11 @@ python3 .agents/skills/long-horizon/scripts/memory.py pr --title "Fix add" --iss
 - It stops without a pull request if the gate is red (exit code 1), if an open pull request has the same branch or closes the same issue (exit code 3), or if work is not committed (exit code 2). The workflow then writes a comment on the issue.
 - The evidence block has a review risk: `HIGH` for changes to CI, hooks, the gate, dependencies, migrations, infrastructure or security code, for changed tests and for more than 400 lines. `MEDIUM` for more than 100 lines or 5 files, or for a check without a record. `LOW` for the rest. The label is a guide for the reviewer, not a proof.
 - `--cost-usd` puts the cost of the run in the block.
+- The block says what the PASS of a feature does not cover. These three lines come from the review of a real pull request, where a PASS for one feature was read as an approval of 16,000 changed lines:
+  - **Base branch.** The gate gives a warning, and the block has a line, when the branch is behind the default branch of `origin` (as of the last `git fetch`). The block says if a merge has conflicts, and the review risk is then `HIGH`. A green gate on an old branch says nothing about the code that a merge gives.
+  - **Feature coverage.** The block counts the changed files that are in the scope of a task of a graded feature (`task open --title T --feature F-1 --scope "src/billing/**"`). The files outside each scope are in "Not verified": they had no criteria and no evaluator. When no task has a scope, the block says that the changed files are not linked to a feature.
+  - **Criteria that name code.** `feature add` gives a warning for a criterion that names a source file or a function, and the block repeats it for a graded feature. Such a criterion describes the implementation: its PASS shows that the code is as written. Write what a user or a test can observe, or let the `criteria` subagent write the criteria from the requirement.
+  - Limits: the scope is what the agent or a person wrote in the task. The check for names of code finds text (file extensions, `snake_case`, `a::b`); it does not know if a criterion is correct. Not measured.
 - Limit: the workflow template was not run on GitHub. Run it on a test issue first, and read the comments at the top of the file.
 
 ### Triage: is the issue ready for work?

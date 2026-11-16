@@ -849,8 +849,15 @@ def cmd_feature(a: argparse.Namespace) -> None:
                    "evidence": "", "verified_by": "", "votes": [], "updated": now()}
             fs.append(rec)
             save_features(fs, dict(rec, ev="add"))
-            log_event("feature", id=a.id, result="add", criteria=len(a.criterion))
+            named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
+            log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
             print(f"added {a.id} with {len(a.criterion)} criteria")
+            for i, terms in named:
+                print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
+                      "Write what a user or a test can observe, not how the code does it: "
+                      "a PASS of this criterion shows only that the code is as written.")
+            if named:
+                print("The `criteria` subagent writes criteria from the requirement, without the implementation.")
         elif a.action in ("pass", "fail"):
             if a.id not in by_id:
                 die(f"unknown feature {a.id}")
@@ -1131,17 +1138,77 @@ def resolve_gate_ref(explicit_ref: Optional[str]) -> Tuple[str, str, List[str]]:
                     if mb:
                         best_tid, best_sha = tid, mb
             return best_sha, f"changes compared with {best_sha[:12]} (task {best_tid})", warnings
-    remote_ref = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
-    if not remote_ref:
-        for cand in ("origin/main", "origin/master"):
-            if _commit_sha(cand):
-                remote_ref = cand
-                break
+    remote_ref = default_remote_ref()
     if remote_ref:
         mb = git("merge-base", "HEAD", remote_ref)
         if mb:
             return mb, f"changes compared with {mb[:12]} ({remote_ref})", warnings
     return "HEAD", "", warnings
+
+
+def default_remote_ref() -> str:
+    """The default branch of origin as a local ref (`origin/main`), or "" when the repository has no such ref."""
+    ref = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
+    if ref:
+        return ref
+    return next((c for c in ("origin/main", "origin/master") if _commit_sha(c)), "")
+
+
+def base_drift() -> Optional[dict]:
+    """How far HEAD is behind the default branch of origin, as of the last fetch: {"ref", "behind", "conflicts"}.
+    `conflicts` is None when git cannot tell (git before 2.38). None when there is no default branch to compare with.
+    A green gate on a branch that is behind says nothing about the code that a merge gives."""
+    ref = default_remote_ref()
+    if not ref or not git_ok("rev-parse", "--verify", "-q", "HEAD"):
+        return None
+    try:
+        behind = int(git("rev-list", "--count", f"HEAD..{ref}") or "0")
+    except ValueError:
+        return None
+    conflicts = None
+    if behind:
+        try:  # a merge in memory: it changes no file and no branch
+            rc = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", "HEAD", ref],
+                                capture_output=True, text=True, timeout=30).returncode
+            conflicts = {0: False, 1: True}.get(rc)
+        except Exception:
+            conflicts = None
+    return {"ref": ref, "behind": behind, "conflicts": conflicts}
+
+
+def drift_line(d: dict) -> str:
+    return (f"the branch is {d['behind']} commit(s) behind {d['ref']} (as of the last fetch)"
+            + (", and a merge has conflicts" if d["conflicts"] else "")
+            + ": the checks saw code that is not the code of a merge. Update the branch and run the checks again")
+
+
+# A criterion that names a source file, a function or a path in the code describes how the code is written.
+IMPL_TERM = re.compile(r"\b[\w/-]+\.(?:rs|py|js|jsx|ts|tsx|go|java|kt|c|h|cc|cpp|rb|php|cs|swift|html|css|sql|sh)\b"
+                       r"|\b\w+::\w+|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|\b[a-z][a-z0-9]*[A-Z]\w*\(\)")
+
+
+def impl_terms(criterion: str) -> List[str]:
+    """Names of code in a criterion (files, functions, identifiers). A criterion says what a user or a test can observe."""
+    seen: List[str] = []
+    for m in IMPL_TERM.finditer(criterion):
+        if m.group(0) not in seen:
+            seen.append(m.group(0))
+    return seen
+
+
+def feature_coverage(ref: str, feats: List[dict]) -> Optional[dict]:
+    """Which changed files are in the scope of a task of a graded feature (or of a task that names no feature).
+    None when no feature passed or nothing changed.
+    A PASS of a feature is not a PASS of the change: the files outside each scope had no criteria and no evaluator."""
+    graded = {f["id"] for f in feats if f.get("passes")}
+    files = changed_repo_files(ref)
+    if not graded or not files:
+        return None
+    tasks = load_tasks() if TASKS.exists() else {}
+    scopes = [pat for t in tasks.values() if (t.get("feature") in graded or not t.get("feature")) and t.get("status") != "dropped"
+              for pat in (t.get("scope") or [])]
+    outside = [p for p in files if not match_scope(p, scopes)] if scopes else list(files)
+    return {"files": len(files), "outside": outside, "scoped": bool(scopes)}
 
 
 def gate_config(ref: str) -> tuple:
@@ -1372,7 +1439,9 @@ def changed_repo_files(ref: str) -> List[str]:
         diff_lines = (git("diff", "--name-only", "--cached", "--", ".", f":(exclude){root_name}").splitlines()
                       + git("diff", "--name-only", "--", ".", f":(exclude){root_name}").splitlines())
     for p in diff_lines + git("ls-files", "-o", "--exclude-standard").splitlines():
-        norm = p.strip().replace("\\", "/").lstrip("./")
+        norm = p.strip().replace("\\", "/")
+        while norm.startswith("./"):  # not lstrip("./"): that removes the dot of `.github/` and of the memory directory
+            norm = norm[2:]
         if not norm or norm == root_name or norm.startswith(root_name + "/") or norm == ".git" or norm.startswith(".git/"):
             continue
         paths.add(norm)
@@ -1434,6 +1503,9 @@ def cmd_gate(a: argparse.Namespace) -> None:
     oos = out_of_scope_files(ref)
     if oos:
         warnings.append(f"{len(oos)} file(s) changed outside the task scope: {', '.join(oos[:10])}")
+    drift = base_drift()
+    if drift and drift["behind"]:
+        warnings.append(drift_line(drift))
     if cfg.get("max_changed_lines"):  # a change that is too large to review well: reported, a person decides
         files, changed, _ = change_size(ref)
         if changed > int(cfg["max_changed_lines"]):
@@ -1708,7 +1780,7 @@ def change_size(ref: str) -> tuple:
 
 
 def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Optional[List[str]] = None,
-                rules: Optional[List[dict]] = None) -> tuple:
+                rules: Optional[List[dict]] = None, drift: Optional[dict] = None) -> tuple:
     """(LOW|MEDIUM|HIGH, reasons). HIGH: where a wrong merge costs most. MEDIUM: large, out of scope, or a check has no record."""
     files, lines, paths = change_size(ref)
     high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
@@ -1719,6 +1791,8 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
         high.append("the gate did not pass")
     if lines > RISK_LINES_HIGH:
         high.append(f"{lines} changed lines (more than {RISK_LINES_HIGH})")
+    if drift and drift.get("conflicts"):
+        high.append(f"a merge with {drift['ref']} has conflicts")
     medium = []
     if lines > RISK_LINES_MEDIUM or files > RISK_FILES_MEDIUM:
         medium.append(f"{lines} changed lines in {files} files")
@@ -1785,6 +1859,23 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         selfgraded = [f["id"] for f in graded if (f.get("verified_by") or "") not in ("evaluator", "human", "ci")]
         if selfgraded:
             gaps.append("graded without an independent verifier: " + ", ".join(selfgraded[:8]))
+        for f in graded[:8]:
+            n = sum(1 for c in f.get("criteria") or [] if impl_terms(str(c)))
+            if n:
+                gaps.append(f"{n} of {len(f['criteria'])} criteria of {f['id']} name code: its PASS shows that the code is "
+                            "as described, not that the behaviour is correct")
+        cov = feature_coverage(ref, feats)
+        if cov and not cov["scoped"]:
+            lines.append(f"- Feature coverage: not recorded. No task of a graded feature has a scope, thus the {cov['files']} "
+                         "changed file(s) are not linked to a feature that passed")
+            gaps.append(f"the {cov['files']} changed file(s) are not linked to a graded feature (`task open --title T --feature F --scope GLOB`): "
+                        "a PASS of a feature is not a PASS of the change")
+        elif cov:
+            out = cov["outside"]
+            lines.append(f"- Feature coverage: {cov['files'] - len(out)} of {cov['files']} changed file(s) are in the scope of a graded feature")
+            if out:
+                gaps.append(f"{len(out)} changed file(s) are outside the scope of each graded feature, with no criteria and no evaluator: "
+                            + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
     else:
         lines.append("- Acceptance criteria: none recorded")
         gaps.append("no acceptance criteria were recorded")
@@ -1799,10 +1890,17 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
+    drift = base_drift()
+    if drift and drift["behind"]:
+        lines.append("- Base branch: " + drift_line(drift))
+        gaps.append(f"the checks did not run on a merge with {drift['ref']} ({drift['behind']} commit(s) behind"
+                    + (", with conflicts)" if drift["conflicts"] else ")"))
+    elif drift:
+        lines.append(f"- Base branch: up to date with {drift['ref']} (as of the last fetch)")
     rules = risk_matches(ref)[0]
     for m in rules:
         lines.append("- R" + risk_line(m)[1:])
-    risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos, rules=rules)
+    risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos, rules=rules, drift=drift)
     lines.append(f"- Review risk: {risk} ({'; '.join(reasons)})")
     lines.append(f"- Cost: ${cost:.2f} (given by the caller)" if cost is not None else "- Cost: not recorded")
     lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])

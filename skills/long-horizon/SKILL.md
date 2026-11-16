@@ -30,6 +30,8 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 1. `memory.py task open --title "..." --source "user chat|issue #12" [--feature F-003] [--scope "src/billing/**"]` → prints `T-000N`. When `--scope` is set, the gate warns on changes outside the allowed globs.
 2. If it is a feature, it must have acceptance criteria agreed **before** coding (the "sprint contract"):
    `memory.py feature add --id F-003 --desc "..." --criterion "POST /refresh returns 401 for reused token" --criterion "..."`
+   A criterion says what a user or a test can observe. Do not name files or functions: "the write is atomic in `db.rs`" passes with a write that loses data. If `feature add` gives the warning "names code", write the criterion again.
+   Open the task with the files of the feature: `memory.py task open --title "..." --feature F-003 --scope "src/auth/**"`. The evidence then shows which changed files the feature covers. Do not present the PASS of one feature as an approval of the complete change.
    Criteria state *what* must be true, not *how* to build it.
 3. `memory.py task status --id T-000N --status in-progress`.
 4. Optional, for parallel or risky work: `memory.py task worktree --id T-000N` creates an isolated branch and directory. Work there, with `AGENT_MEMORY_DIR` set to the main checkout's `.agent-memory` (the command prints it) so all workers share one memory.

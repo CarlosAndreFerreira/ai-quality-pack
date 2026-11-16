@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+From the review of a real pull request made with an older version of the pack. The evaluator gave a PASS to one feature; the pull request had 16,000 added lines, most of them from commits before the pack was used, on a branch 77 commits behind the default branch. A person read the PASS as an approval of the complete change, and an independent review found 6 defects. One of the 6 was in the graded feature: its criterion named a function ("the replace is atomic") and not the behaviour.
+- **The gate and the evidence block say when the branch is behind the default branch** of `origin`, as of the last fetch, and if a merge has conflicts (review risk `HIGH`). The gate does not block.
+- **The evidence block shows the feature coverage of the change**: the changed files in the scope of a task of a graded feature, and the files outside each scope in "Not verified". Without a scope, the block says that the changed files are not linked to a feature. Attention in an upgrade: `evidence --strict` now fails for a graded feature without a task scope.
+- **`feature add` gives a warning for a criterion that names code**, and the evidence block repeats it for a graded feature.
+- **Fix**: a new file below a directory with a name that starts with a dot (`.github/`, the memory directory) lost the dot in the list of changed files. New files of the memory directory were counted as changes of the project, and a path rule for `.github/` did not match a new file.
+- Not measured: the effect of these three checks.
+
 ## 0.7.0 — 2026-11-13
 
 This release comes from the first measurement of the shipped pack against the bare agent. The gate checked nothing in those runs, and only the artifacts showed it. Thus a gate without commands now fails, and `stats` shows in how many sessions each control ran. A project can add its own risk rules, `skill-eval` gives one line of reliability at cost, and the evaluator can run on another model. The numbers are in [docs/RESULTS.md](docs/RESULTS.md).

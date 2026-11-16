@@ -1090,8 +1090,10 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
             run([MEM, "feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4"], root)
             run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "test_calc passes", "--verified-by", "evaluator"], root)
+            run([MEM, "task", "open", "--title", "add sums", "--feature", "F-1", "--scope", "*.py"], root)  # what the feature covers
             r = run([MEM, "evidence", "--strict"], root)
             self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("Feature coverage: 2 of 2 changed file(s) are in the scope of a graded feature", r.stdout)
             self.assertIn("Gate: PASSED for exactly this code (1 commands)", r.stdout)
             self.assertIn("Reproduction: VERIFIED", r.stdout)
             self.assertIn("1 of 1 features graded as passing (F-1 by evaluator)", r.stdout)
@@ -1102,6 +1104,33 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
             self.assertIn("Gate: NOT passed for this code", r.stdout)
             self.assertIn("Reproduction: none verified for this code", r.stdout)
+
+    def test_evidence_says_which_part_of_the_change_the_graded_features_cover(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            run([MEM, "init"], root)
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (root / "report.py").write_text("x = 1\n", encoding="utf-8")
+            r = m("feature", "add", "--id", "F-1", "--desc", "sync", "--criterion", "A sync that fails in one part keeps the old invoices",
+                  "--criterion", "replace_invoices_of_year in db.rs is atomic")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("WARNING: criterion 2 names code (replace_invoices_of_year, db.rs)", r.stdout)
+            self.assertNotIn("criterion 1 names code", r.stdout)
+            self.assertIn("The `criteria` subagent writes criteria from the requirement", r.stdout)
+            self.assertNotIn("name code", m("evidence").stdout)  # not graded yet: no PASS to qualify
+            m("feature", "pass", "--id", "F-1", "--evidence", "e", "--verified-by", "evaluator")
+            ev = m("evidence").stdout
+            self.assertIn("1 of 2 criteria of F-1 name code: its PASS shows that the code is as described", ev)
+            self.assertIn("- Feature coverage: not recorded. No task of a graded feature has a scope", ev)
+            self.assertIn("the 2 changed file(s) are not linked to a graded feature", ev)  # 2: the memory directory does not count
+            self.assertEqual(m("task", "open", "--title", "Sync", "--feature", "F-1", "--scope", "calc.py").returncode, 0)
+            ev = m("evidence").stdout
+            self.assertIn("- Feature coverage: 1 of 2 changed file(s) are in the scope of a graded feature", ev)
+            self.assertIn("1 changed file(s) are outside the scope of each graded feature, with no criteria and no evaluator: report.py", ev)
+            self.assertNotIn("are not linked to a graded feature", ev)
+            self.assertEqual(m("task", "open", "--title", "Report", "--feature", "F-9", "--scope", "report.py").returncode, 0)
+            self.assertIn("1 of 2 changed file(s)", m("evidence").stdout)  # a task of a feature that did not pass covers nothing
 
     def test_evidence_names_a_feature_that_was_not_graded_by_an_independent_verifier(self):
         with tempfile.TemporaryDirectory() as t:
@@ -1418,6 +1447,38 @@ class PullRequestTests(unittest.TestCase):
             r = run([MEM, "pr", "--title", "Fix add", "--base", "origin/main"], root, env=self.env)
             self.assertEqual(r.returncode, 2)
             self.assertIn("its own branch", r.stderr)
+
+    def test_gate_and_evidence_say_when_the_branch_is_behind_the_default_branch(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            m = lambda *a: run([MEM, *a], root, stdin="", env=self.env)
+            ev = m("evidence", "--base", "origin/main").stdout
+            self.assertIn("- Base branch: up to date with origin/main (as of the last fetch)", ev)
+            self.assertNotIn("behind origin/main", m("gate", "--force").stdout)
+            other = Path(t) / "other"                       # another person merges a commit to main
+            self._git(Path(t), "clone", "-q", "-b", "main", "remote.git", "other")
+            (other / "notes.md").write_text("one\n", encoding="utf-8")
+            self._git(other, "add", "-A")
+            self._git(other, "commit", "-q", "-m", "notes")
+            self._git(other, "push", "-q", "origin", "main")
+            self._git(root, "fetch", "-q", "origin")
+            g = m("gate", "--force")
+            self.assertEqual(g.returncode, 0, g.stdout)         # a warning: the gate does not block
+            self.assertIn("gate WARNING: the branch is 1 commit(s) behind origin/main (as of the last fetch): "
+                          "the checks saw code that is not the code of a merge", g.stdout)
+            self.assertNotIn("a merge has conflicts", g.stdout)
+            ev = m("evidence", "--base", "origin/main").stdout
+            self.assertIn("the checks did not run on a merge with origin/main (1 commit(s) behind)", ev)
+            self.assertNotIn("has conflicts", ev)
+            (other / "calc.py").write_text("def add(a, b):\n    return sum([a, b])\n", encoding="utf-8")  # the same line as the branch
+            self._git(other, "commit", "-q", "-am", "other fix")
+            self._git(other, "push", "-q", "origin", "main")
+            self._git(root, "fetch", "-q", "origin")
+            g = m("gate", "--force")
+            self.assertIn("2 commit(s) behind origin/main (as of the last fetch), and a merge has conflicts", g.stdout)
+            ev = m("evidence", "--base", "origin/main").stdout
+            self.assertRegex(ev, r"Review risk: HIGH \(.*a merge with origin/main has conflicts")
+            self.assertEqual(self._git(root, "status", "--porcelain", "--untracked-files=no").strip(), "")  # the check changed no file
 
     def test_evidence_gives_a_high_review_risk_for_a_change_to_ci_or_dependencies(self):
         with tempfile.TemporaryDirectory() as t:
