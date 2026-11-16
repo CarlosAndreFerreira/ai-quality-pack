@@ -105,6 +105,27 @@ The same comparison on the 42 SWE-bench patches (19 wrong, 23 correct). The eval
 - What this means for use: do not change the model of the evaluator to get a better evaluator. On hard issues, a PASS of the evaluator on Sonnet has as little information as a FAIL of the evaluator on Haiku. The weak part is what the evaluator can check, not the model: on these issues the hidden tests of the maintainers decide, and the evaluator does not have them.
 - Limits: one pass for Sonnet, and one verdict is not stable on this set. The official label is a weak reference for a rejection (see above). Not measured: a model of another supplier, and Sonnet as the author of the patches.
 
+### Verdicts with evidence that a command produced (`verdict_evidence`)
+
+The 42 SWE-bench patches again, with `"verdict_evidence": true` in each workspace, one pass for each model of the evaluator. In this test the option is an instruction to the evaluator only: the harness has no feature record, so `feature vote` does not refuse a verdict.
+
+| Evaluator | Wrong patches approved (19) | Correct patches rejected (23) | No decision | MCC |
+|---|---|---|---|---|
+| Haiku, option off, 3 passes | 3, 4, 2 | 15, 16, 15 | 4, 5, 6 | 0.10, -0.01, 0.16 |
+| Haiku, option on | 3 | 14 | 6 | 0.10 |
+| Sonnet, option off | 13 | 4 | 1 | 0.12 |
+| Sonnet, option on | 12 | 3 | 1 | 0.24 |
+
+- The verdicts did not change (Fisher exact test, p from 0.62 to 1.00). An instruction is not a control: the evaluator gave a verdict without the command.
+  - Sonnet read `config.json` in 1 of 42 runs and ran `repro` or `counterexample` in none.
+  - Haiku read it in 41 of 42 runs and ran one of the two commands in 22 runs, with 10 usage errors. It gave 28 FAIL verdicts, and 19 of them had no counterexample that the command accepted.
+- The records of the commands separate better than the verdicts. In the pass of Haiku:
+  - A counterexample of type `regression` (the check passes on the base and fails on the change): 3 runs, and the 3 patches are wrong.
+  - A counterexample of type `not-fixed` only (the check fails on the base also): 6 runs, 2 wrong patches and 4 correct patches. In the transcripts, a part of these checks imports the code from an absolute path, thus the run on the base used the code of the change. This type has little information.
+  - A verified reproduction (fails on the base, passes on the change): 3 runs; 2 are wrong patches that the evaluator approved. A test that the model wrote for the patch can agree with a wrong patch.
+- What this means for use: trust a `regression` counterexample. Do not read a `not-fixed` counterexample or a verified reproduction from the evaluator as a decision. Use `feature vote` or `feature pass`, which refuse a verdict without the record; a text of the evaluator does not.
+- Limits: 3, 6 and 3 runs are small numbers. One pass for each model. The baseline rows use the pack of version 0.6.0 and the rows with the option use the current pack with a gate file without commands; the text of the evaluator is the same, plus the paragraph of the option. Cost: 3.36 US dollars for the two passes.
+
 ### More than one run of the evaluator (version 0.6.0)
 
 The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent runs for each patch (126 runs, Claude Haiku).

@@ -1722,7 +1722,9 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
             kind, why = "base-unknown", f"the command fails on the current code; it did not finish on the base ({a.timeout}s)"
         else:
             kind, why = "not-fixed", ("the command fails on the current code and on the base: the change does not fix it. "
-                                      "Check that the two failures are the requirement, not a missing dependency or a wrong test")
+                                      "Check that the two failures are the requirement, not a missing dependency or a wrong test. "
+                                      "If the check imports the code from an absolute path or from an installed package, "
+                                      "the run on the base used the current code: this result then says nothing about the base")
     with contextlib.suppress(OSError):
         if result == "shown":
             COUNTER.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha, "kind": kind,
