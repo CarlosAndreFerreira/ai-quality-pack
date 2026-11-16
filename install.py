@@ -821,11 +821,20 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
         "Sandbox and permission settings from --with-sandbox and --with-guard stay in .claude/settings.json: remove them by hand.")
 
 
+def core_rules_text() -> str:
+    """The global Antigravity rules for a core install: without the line about skills that only --full installs."""
+    text = (PACK / "templates" / "antigravity" / "rules" / "AGENTS.md").read_text(encoding="utf-8")
+    return "".join(l for l in text.splitlines(True) if "`learn-from-mistakes`" not in l)
+
+
 def uninstall_global(a: argparse.Namespace) -> None:
     home = Path.home()
     agy_plugin = home / ".gemini" / "config" / "plugins" / "ai-quality-pack"
     for d in (agy_plugin / "skills", home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
         remove_skills(d, a.force)
+    rules = agy_plugin / "rules" / "AGENTS.md"
+    if rules.is_file() and rules.read_text(encoding="utf-8") == core_rules_text():
+        remove(rules)  # the rules of a core install are not the template: compare with what the installer wrote
     for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
         remove_pack_file(PACK / "templates" / "antigravity" / rel, agy_plugin / rel, a.force)
     for doc in ("README.md", "LICENSE"):
@@ -909,7 +918,12 @@ def main() -> None:
         for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
             src_f = agy_tpl / rel
             dst_f = agy_plugin / rel
-            if src_f.exists():
+            if rel == "rules/AGENTS.md" and not FULL:
+                if a.upgrade and dst_f.exists() and not DRY:
+                    dst_f.write_text(core_rules_text(), encoding="utf-8")
+                else:
+                    add_if_absent(None, dst_f, core_rules_text())
+            elif src_f.exists():
                 if a.upgrade and dst_f.exists() and not DRY:
                     shutil.copy2(src_f, dst_f)
                 else:

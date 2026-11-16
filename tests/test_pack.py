@@ -28,6 +28,13 @@ def verdicts_without_records(root):
     path.write_text(json.dumps(dict(data, verdict_evidence=False)), encoding="utf-8")
 
 
+def accept_later_tests(root):
+    """A person accepts a reproduction with a test that was not recorded before the change (`"accept_later_tests": true`)."""
+    path = Path(root) / ".agent-memory" / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    path.write_text(json.dumps(dict(data, accept_later_tests=True)), encoding="utf-8")
+
+
 def run(args, cwd, stdin=None, env=None):
     e = dict(os.environ, PYTHONIOENCODING="utf-8", **(env or {}))
     return subprocess.run([sys.executable, *map(str, args)], cwd=cwd, input=stdin, capture_output=True,
@@ -741,6 +748,10 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn("a PASS needs a reproduction for this code", r.stderr)
             self.assertEqual(self._repro(root).returncode, 0)       # fails on the base, passes now
+            r = vote("PASS")                                        # the test was not recorded with the criteria
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("used a test that was not recorded before the change", r.stderr)
+            accept_later_tests(root)
             self.assertEqual(vote("PASS").returncode, 0)
             r = m("feature", "pass", "--id", "F-1", "--evidence", "repro verified", "--verified-by", "evaluator")
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -836,6 +847,11 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(self._repro(root).returncode, 0)
             self.assertEqual(m("verdict").returncode, 3)            # a reproduction and no gate pass
             self.assertEqual(m("gate").returncode, 0)
+            r = m("verdict")
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # the reproduction test is from after the change
+            self.assertIn("verdict: UNKNOWN (the reproduction test was not recorded before the change", r.stdout)
+            self.assertIn('"accept_later_tests": true', r.stdout)
+            accept_later_tests(root)
             r = m("verdict")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("verdict: SUPPORTED", r.stdout)
@@ -1313,9 +1329,9 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
             self._git(root, "add", ".agent-memory/gate.json")  # a gate file that git does not have gives a warning
             self._git(root, "commit", "-q", "-m", "gate")
+            run([MEM, "feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4", "--test-file", "test_calc.py"], root)
             self.assertEqual(run([MEM, "repro", "--test", test, "--test-file", "test_calc.py"], root).returncode, 0)
             self.assertEqual(run([MEM, "gate"], root, stdin="").returncode, 0)
-            run([MEM, "feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4"], root)
             run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "test_calc passes", "--verified-by", "evaluator"], root)
             run([MEM, "task", "open", "--title", "add sums", "--feature", "F-1", "--scope", "*.py"], root)  # what the feature covers
             r = run([MEM, "evidence", "--strict"], root)
@@ -3250,7 +3266,8 @@ class VerificationBlockTests(unittest.TestCase):
                 "import sys\nsys.path.insert(0, 'src')\nfrom billing.fee import fee\nassert fee() == 2\n",
                 encoding="utf-8",
             )
-            self.assertEqual(run([MEM, "feature", "add", "--id", "F-1", "--desc", "Fee", "--criterion", "fee == 2"], root).returncode, 0)
+            self.assertEqual(run([MEM, "feature", "add", "--id", "F-1", "--desc", "Fee", "--criterion", "fee == 2",
+                                  "--test-file", "tests/billing/test_fee.py"], root).returncode, 0)
             self.assertEqual(run([MEM, "repro", "--test", f'"{py}" tests/billing/test_fee.py', "--test-file", "tests/billing/test_fee.py"], root).returncode, 0)
             self.assertEqual(run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "evaluator"], root).returncode, 0)
             g1 = run([MEM, "gate"], root, stdin="")
@@ -3523,9 +3540,18 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertIn("The test was not recorded before the change (`feature add --test-file`)", r.stdout)
             m("gate")
             v = m("verdict")
-            self.assertIn("verdict: SUPPORTED", v.stdout)             # still support, with the weaker test named
+            self.assertEqual(v.returncode, 3, v.stdout)              # a test from after the change does not support the result
+            self.assertIn("verdict: UNKNOWN", v.stdout)
             self.assertIn("reproduction_test not recorded before the change", v.stdout)
             self.assertIn("such a test can agree with a wrong change", v.stdout)
+            r = m("feature", "pass", "--id", "F-1", "--evidence", "repro", "--verified-by", "evaluator")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("does not support a PASS", r.stderr)
+            self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "read it", "--verified-by", "human").returncode, 0)
+            accept_later_tests(root)                                  # a person accepts tests that were written later
+            v = m("verdict")
+            self.assertEqual(v.returncode, 0, v.stdout)
+            self.assertIn("verdict: SUPPORTED", v.stdout)
             self.assertIn("The test was not recorded before the change: it can agree with a wrong change", m("evidence").stdout)
 
     def test_a_recorded_test_patch_counts_also(self):
@@ -3556,7 +3582,44 @@ class CoreAndRecordsTests(unittest.TestCase):
         for part in ("Write these tests now, in new test files", "Do not change an existing file", "--test-file <file>"):
             self.assertIn(part, criteria)
         self.assertNotIn("Bash", criteria.split("\n---\n")[0])              # it runs no command
-        self.assertIn("Core commands, enough for most work", run([MEM, "--help"], PACK).stdout)
+        short, full = run([MEM, "--help"], PACK).stdout, run([MEM, "--help-all"], PACK).stdout
+        self.assertIn("These are the core commands", short)
+        for name in ("verdict", "counterexample", "repro", "gate"):
+            self.assertIn(f"\n    {name} ", short)
+        for name in ("factory", "provenance", "gated-run"):
+            self.assertNotIn(f"\n    {name} ", short)                 # in --help-all only
+            self.assertIn(f"\n    {name} ", full)
+            self.assertEqual(run([MEM, name, "--help"], PACK).returncode, 0)  # the command still runs
+
+
+class CoreEverywhereTests(unittest.TestCase):
+    """The core is the default in each way to install: the Claude Code plugin and the global Antigravity install."""
+
+    def test_the_plugin_marketplace_entry_names_the_core_skills(self):
+        entry = json.loads((PACK / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))["plugins"][0]
+        self.assertEqual(entry["source"], "./")  # with the marketplace root as source, only the listed skills load
+        self.assertEqual(entry["skills"], ["./skills/long-horizon", "./skills/evaluator", "./skills/plan-before-code"])
+        installer = INST.read_text(encoding="utf-8")
+        self.assertIn('CORE_SKILLS = ("long-horizon", "evaluator", "plan-before-code")', installer)  # the same core
+        for path in entry["skills"]:
+            self.assertTrue((PACK / path / "SKILL.md").is_file(), path)
+
+    def test_global_install_of_the_core_writes_rules_without_skills_that_are_missing(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "USERPROFILE": home}
+            self.assertEqual(run([INST, "global"], home, env=env).returncode, 0)
+            plugin = Path(home) / ".gemini/config/plugins/ai-quality-pack"
+            rules = (plugin / "rules/AGENTS.md").read_text(encoding="utf-8")
+            self.assertNotIn("learn-from-mistakes", rules)
+            self.assertIn("Never weaken, skip, or delete tests", rules)
+            self.assertEqual(sorted(p.name for p in (plugin / "skills").iterdir()), ["evaluator", "long-horizon", "plan-before-code"])
+            self.assertEqual(run([INST, "uninstall", "--global"], home, env=env).returncode, 0)
+            self.assertFalse((plugin / "rules/AGENTS.md").exists())
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "USERPROFILE": home}
+            self.assertEqual(run([INST, "global", "--full", "--no-upstream"], home, env=env).returncode, 0)
+            rules = (Path(home) / ".gemini/config/plugins/ai-quality-pack/rules/AGENTS.md").read_text(encoding="utf-8")
+            self.assertIn("learn-from-mistakes", rules)
 
 
 if __name__ == "__main__":

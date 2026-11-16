@@ -1850,6 +1850,21 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
     sys.exit(0 if result == "shown" else 1)
 
 
+CORE_COMMANDS = ("init", "start", "task", "feature", "gate", "repro", "counterexample", "verdict", "evidence", "doctor")
+
+
+def later_tests_accepted() -> bool:
+    """`"accept_later_tests": true` in config.json: a reproduction with a test that was not recorded before the change
+    counts as support. Off by default: in our measurement 2 of 3 such reproductions were on wrong patches."""
+    return bool(load_config().get("accept_later_tests"))
+
+
+def repro_supports() -> bool:
+    """A verified reproduction for this code that counts: its test was recorded with the criteria, before the change,
+    or a person accepts tests that were written later."""
+    return repro_fresh() and (repro_before_change() or later_tests_accepted())
+
+
 def records_verdict() -> dict:
     """What the records for exactly this code support. Commands wrote these records; no text of an agent is read.
 
@@ -1864,15 +1879,18 @@ def records_verdict() -> dict:
                "counterexample": (cx or {}).get("kind") or "none", "mutation": mut or "not run"}
     if cx and cx.get("kind") == "regression":
         return {"verdict": "FAIL", "why": f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`", "records": records}
+    counts = repro and (before or later_tests_accepted())
     missing = [w for w, ok in (("a gate pass", bool(gate)), ("a verified reproduction", repro)) if not ok]
     notes = []
     if repro and not before:
-        notes.append("the reproduction test was not recorded before the change: such a test can agree with a wrong change")
+        notes.append("the reproduction test was not recorded before the change: such a test can agree with a wrong change"
+                     + ("" if counts else ". Record the tests with the criteria (`feature add --test-file`); "
+                        'a person accepts later tests with `"accept_later_tests": true` in config.json'))
     if cx:
         notes.append(f"a check fails on this code ({cx.get('kind')}): alone, this type does not decide")
     if mut == "fail":
         notes.append("the mutation check did not pass")
-    if missing or mut == "fail":
+    if missing or mut == "fail" or (repro and not counts):
         why = "; ".join((["no record of " + " and ".join(missing)] if missing else []) + notes)
         return {"verdict": "UNKNOWN", "why": why, "records": records}
     return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
@@ -1898,6 +1916,11 @@ def verdict_evidence_problem(verdict: str) -> str:
     models, and the records of commands did (docs/RESULTS.md). `"verdict_evidence": false` in config.json turns it off."""
     if not load_config().get("verdict_evidence", True):
         return ""
+    if verdict == "PASS" and repro_fresh() and not repro_supports():
+        return ("verdict_evidence: the reproduction for this code used a test that was not recorded before the change. Such a "
+                "test can agree with a wrong change, so it does not support a PASS. Record the tests with the criteria "
+                "(`memory.py feature add --test-file`), before the work. A person accepts later tests with "
+                '`"accept_later_tests": true` in config.json. Until then the result is UNKNOWN')
     if verdict == "PASS" and not repro_fresh():
         return ("verdict_evidence: a PASS needs a reproduction for this code (`memory.py repro --test ...`: a test that fails on "
                 "the base and passes now). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason. "
@@ -3047,8 +3070,9 @@ def main() -> None:
             stream.reconfigure(errors="replace") if stream.isatty() else stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(
         description="File-based agent memory: progress, features (+criteria), tasks, playbook lessons.",
-        epilog="Core commands, enough for most work: start, task, feature, gate, repro, counterexample, verdict, evidence, doctor. "
-               "The other commands are for reports, pull requests, audits and unattended runs.")
+        epilog="These are the core commands, enough for most work. `--help-all` lists each command: the others are for "
+               "reports, pull requests, audits and unattended runs. Each command has its own `--help`.")
+    p.add_argument("--help-all", action="store_true", help="show each command, not only the core commands")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create .agent-memory/").set_defaults(fn=cmd_init)
 
@@ -3227,6 +3251,13 @@ def main() -> None:
     s.add_argument("--min-gate-coverage", type=float, metavar="RATE",
                    help="exit code 1 when the gate ran a command in a smaller part of the sessions (0 to 1)")
     s.set_defaults(fn=cmd_stats)
+    if "--help-all" in sys.argv[1:]:
+        p.print_help()
+        sys.exit(0)
+    # The default help lists the core commands only: an agent reads this text, and 26 commands cost context.
+    # Each command still runs, and has its own --help.
+    sub._choices_actions = [c for c in sub._choices_actions if c.dest in CORE_COMMANDS]
+    sub.metavar = "{" + ",".join(c.dest for c in sub._choices_actions) + ",...}"
     a = p.parse_args()
     enter_project_root()
     a.fn(a)

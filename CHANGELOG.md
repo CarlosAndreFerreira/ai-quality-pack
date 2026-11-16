@@ -7,13 +7,18 @@ Two changes of defaults, from the results in [docs/RESULTS.md](docs/RESULTS.md):
 Changes that need attention in an upgrade:
 - `feature pass --verified-by evaluator` and `feature vote` now refuse a verdict without a record (a verified reproduction for a PASS, a counterexample for a FAIL). `"verdict_evidence": false` in `.agent-memory/config.json` gives the old behaviour. `--verified-by human` and `ci` did not change.
 - A new install has 3 skills. An install that has the other skills keeps them, and `--upgrade` still upgrades them.
+- A reproduction with a test that was not recorded with `feature add --test-file` no longer gives SUPPORTED or an evaluator PASS. Record the tests with the criteria, or set `"accept_later_tests": true`.
+- The Claude Code plugin loads 3 skills in place of 12. Use `install.py project . --full` for the others.
 
 - **Core install by default**: `long-horizon`, `evaluator`, `plan-before-code`. `install.py --full` adds the other 9 skills and the upstream skills (the core fetches nothing from the network). `AGENTS.md` of a core install has no line about skills that are not installed.
 - **`install.py --secure`**: one option for `--with-stop-gate --with-guard --with-sandbox --with-ci`.
 - **The result comes from records by default.** `verdict_evidence` is on unless the config file turns it off. The evaluator (skill, Claude Code and Antigravity subagents) says that its text does not decide: it shows a defect with `counterexample`, and it reports the line of `memory.py verdict`. The definition of done in `AGENTS.md` names `memory.py verdict`.
 - **Tests from before the work.** The `criteria` subagent writes the tests of the criteria in new test files (it has the `Write` tool, and no shell). `feature add --test-file FILE` (or `--test-patch`) records them with the feature. `repro` with a recorded file that did not change gives `recorded_test` in the run log; `verdict` has the record `reproduction_test`, and the evidence block says if the test was recorded before the change. A test that changed after the record does not count.
-- `memory.py --help` names the core commands.
-- 5 tests; 9 older tests set `"verdict_evidence": false` or use `--full`, because they are about other things.
+- **`memory.py --help` lists the 10 core commands**; `--help-all` lists each command. Each command still runs and has its own `--help`.
+- **A reproduction supports the result only with a test from before the change.** With a test that was not recorded with the criteria, `memory.py verdict` gives UNKNOWN and `feature pass --verified-by evaluator` and a PASS vote are refused. `"accept_later_tests": true` in `config.json` gives the old behaviour. Reason: 2 of 3 verified reproductions of the evaluator were on wrong patches. This is a small number: the rule follows the cause (a test written for a change can agree with it), not a measured rate.
+- **The Claude Code plugin has the core skills**: the marketplace entry lists the 3 skill directories (`claude plugin validate --strict` passes; the plugin was not installed again to check what it loads).
+- **`install.py global`**: the Antigravity rules of a core install have no line about skills that are not installed, and `uninstall --global` removes that file.
+- 7 tests; older tests set `"verdict_evidence": false` or `"accept_later_tests": true`, use `--full`, or record the test with the feature first.
 
 ## 0.8.0 — 2026-11-16
 

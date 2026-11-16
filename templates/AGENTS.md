@@ -9,7 +9,7 @@
 ## Definition of done
 1. Acceptance criteria were agreed before coding, and tests cover them. The full suite passes.
 2. Lint and typecheck are clean. No new suppressions without a reason on the same line.
-3. `memory.py verdict` prints SUPPORTED for this code: the gate passed, and a test fails on the base and passes now. The `evaluator` skill/subagent (separate context) looked for a counterexample. Its text does not decide; the records do.
+3. `memory.py verdict` prints SUPPORTED for this code: the gate passed, and a test that was recorded with the criteria (`feature add --test-file`) fails on the base and passes now. The `evaluator` skill/subagent (separate context) looked for a counterexample. Its text does not decide; the records do.
 
 ## Memory
 - Before saying done: `python3 .agents/skills/long-horizon/scripts/memory.py gate` must pass.

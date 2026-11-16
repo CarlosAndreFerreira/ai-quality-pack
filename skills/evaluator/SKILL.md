@@ -3,7 +3,7 @@ name: evaluator
 description: Use before declaring any feature, task or PR done, and whenever a feature is about to be marked as passing. Acts as a separate, skeptical evaluator that checks the agreed acceptance criteria against running code and real test output. The implementer must not grade its own work.
 license: MIT
 metadata:
-  version: "1.3"
+  version: "1.4"
   sources: "Anthropic, Harness design for long-running application development (2026)"
 ---
 # Evaluator (separate from the implementer)
@@ -41,7 +41,7 @@ Required fixes: <one line each, smallest change>
 ## The result comes from a command
 Your text does not decide the result. On hard issues, the verdicts of an evaluator did not separate wrong changes from correct changes, on two models; the records of commands did (docs/RESULTS.md of the pack). So:
 - A defect: show it with `memory.py counterexample --test "<command>"`. A counterexample of type `regression` (the check passes on the base and fails on the change) decides: FAIL. A FAIL without the command is UNKNOWN.
-- PASS: only after `memory.py repro --check` succeeds. Use the tests that were recorded with the criteria (`repro --test "<command>" --test-file <file>`). A test that is written after the change can agree with a wrong change.
+- PASS: only after `memory.py repro --check` succeeds. Use the tests that were recorded with the criteria (`repro --test "<command>" --test-file <file>`). A test that is written after the change can agree with a wrong change: it does not support a PASS, and `memory.py verdict` gives UNKNOWN for it. Only a person changes that, with `"accept_later_tests": true` in `.agent-memory/config.json`.
 - `memory.py verdict` prints what the records support for this code: SUPPORTED, FAIL or UNKNOWN. Report it as the overall result.
 - `feature pass --verified-by evaluator` and `feature vote` refuse a verdict without the record. A person turns this off with `"verdict_evidence": false` in `.agent-memory/config.json`.
 

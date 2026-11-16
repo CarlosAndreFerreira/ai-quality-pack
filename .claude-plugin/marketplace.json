@@ -9,7 +9,12 @@
     {
       "name": "ai-quality-pack",
       "source": "./",
-      "description": "Quality control for AI coding agents: a completion gate that runs the project's checks, a reproduction check, an independent evaluator, file memory for long work, and measured skill changes."
+      "description": "Quality control for AI coding agents: a completion gate that runs the project's checks, a reproduction check, an independent evaluator, file memory for long work, and measured skill changes.",
+      "skills": [
+        "./skills/long-horizon",
+        "./skills/evaluator",
+        "./skills/plan-before-code"
+      ]
     }
   ]
 }
