@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 PACK = Path(__file__).resolve().parents[1]
 MEM = PACK / "skills" / "long-horizon" / "scripts" / "memory.py"
@@ -92,7 +93,9 @@ class MemoryTests(unittest.TestCase):
     def test_concurrent_writes_do_not_lose_entries(self):
         def add(i):
             return self.m("task", "open", "--title", f"t{i}").returncode
-        with ThreadPoolExecutor(8) as ex:
+        # 16 writers wait for one lock. With the default wait of 10 s, the last writers gave up (exit code 4) when the
+        # machine had other work: the test checks that no entry is lost, not the speed of the machine.
+        with mock.patch.dict(os.environ, {"AGENT_MEMORY_LOCK_TIMEOUT": "50"}), ThreadPoolExecutor(8) as ex:
             codes = list(ex.map(add, range(16)))
         self.assertEqual(codes, [0] * 16)
         listed = self.m("task", "list").stdout.strip().splitlines()

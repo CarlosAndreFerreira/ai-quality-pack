@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- **Fix**: `AGENT_MEMORY_LOCK_TIMEOUT` (seconds, default 10) sets how long a writer waits for the memory lock. With many writers on a machine under load, the last writers ended with exit code 4. The test with 16 writers failed 2 times in about 12 complete runs on Windows for this reason; it now uses a longer wait.
 - **`memory.py counterexample`**: shows a defect with a command that fails on the current code, and runs it on the base to say if the change broke it (`regression`) or does not fix it (`not-fixed`). The evidence block shows it, with review risk `HIGH`.
 - **`"verdict_evidence": true`** in `config.json` (off by default): a PASS of the evaluator needs a reproduction for the current code, and a FAIL vote needs a counterexample. Without the command, the result is UNKNOWN. The evaluator has one paragraph for this option. Reason: on 42 patches, the evaluator on one model rejected most patches and on another model approved most patches. Not measured.
 - **`memory.py mutants`**: runs the mutation tool of the project (`"mutation_command"` in `gate.json`, for example `cargo mutants --in-diff {diff}`) on the lines that the change touched. The evidence block has a line for it. The pack has no mutation engine. Not run with a real tool.

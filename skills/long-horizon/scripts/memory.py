@@ -180,7 +180,10 @@ def ensure() -> None:
 
 @contextlib.contextmanager
 def locked(timeout: float = 10.0) -> Iterator[None]:
-    """Cross-platform advisory lock (O_EXCL lock file) so parallel agents do not interleave writes."""
+    """Cross-platform advisory lock (O_EXCL lock file) so parallel agents do not interleave writes.
+    AGENT_MEMORY_LOCK_TIMEOUT (seconds) changes how long a writer waits: many writers on a slow machine need more."""
+    with contextlib.suppress(ValueError):
+        timeout = max(1.0, min(55.0, float(os.environ.get("AGENT_MEMORY_LOCK_TIMEOUT", timeout))))  # below the 60 s of a stale lock
     deadline = time.time() + timeout
     while True:
         try:
