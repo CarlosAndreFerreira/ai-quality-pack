@@ -25,7 +25,9 @@ Requires Python 3.9+ and git. No other dependencies. Works on Linux, macOS and W
 
 ```bash
 git clone https://github.com/CarlosAndreFerreira/ai-quality-pack
-python3 ai-quality-pack/install.py project /path/to/your/repo          # auto-detects python / typescript / go / rust
+python3 ai-quality-pack/install.py project /path/to/your/repo          # the core; auto-detects python / typescript / go / rust
+python3 ai-quality-pack/install.py project . --secure                   # + Stop gate, guard, sandbox and CI gate, with one option
+python3 ai-quality-pack/install.py project . --full                     # + the other skills of the pack and the upstream skills
 python3 ai-quality-pack/install.py project . --with-stop-gate           # enforce the gate before Claude Code finishes
 python3 ai-quality-pack/install.py project . --with-egm                 # + Google Elephant-Goldfish design review
 python3 ai-quality-pack/install.py project . --link .codex/skills       # expose skills to another agent folder
@@ -65,6 +67,8 @@ CLAUDE.md                  @AGENTS.md
 ```
 
 ## Skills
+
+A default install has the core: `long-horizon`, `evaluator` and `plan-before-code`, with the three subagents and the hooks. `--full` adds the other skills of the table and the upstream skills. Reason: in the one comparison that we have, the full pack was never better than the core ([docs/RESULTS.md](docs/RESULTS.md)), and each skill description uses context in each session. The commands of `memory.py` are the same in the two installs; `memory.py --help` names the core commands. The Claude Code plugin has each skill.
 
 | Skill | Purpose |
 |---|---|
@@ -186,7 +190,7 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `skill-eval power` gives the number of tasks that a comparison needs. Run it before you spend tokens.
 - `diff-view` shows the change without the comments that it added. The evaluator reads this view.
 - `install.py project . --with-ci` adds a GitHub Actions workflow. It runs the gate on each pull request with the `gate.json` of the base branch.
-- The `criteria` subagent writes the acceptance criteria from the requirement. It does not see the implementation.
+- The `criteria` subagent writes the acceptance criteria and their tests from the requirement, in new test files. It does not see the implementation. Record the tests with the feature: `memory.py feature add --id F-1 --desc "..." --criterion "..." --test-file tests/test_x.py`. A reproduction with a recorded test file that did not change counts as a test from before the change. The evidence block and `memory.py verdict` say which type of test the reproduction used: a test that is written after the change can agree with a wrong change (2 of 3 such reproductions were on wrong patches in our measurement).
 - `memory.py evidence` prints a Markdown block for a pull request. It lists what the checks recorded for this code and what is not verified.
 - `skill-eval judge --cases cases.jsonl --judge-cmd "claude -p {prompt}"` measures the evaluator on cases with a known answer. The main number is the rate of wrong work that the evaluator approved. Add `--repeats 3` (`--rule asymmetric`) to approve a case only when all runs agree, and to report unanimous rate and pairwise kappa.
 - `install.py project . --evaluator-model opus` makes the evaluator subagent of Claude Code run on that model (a `model:` line in `.claude/agents/evaluator.md`). The idea is that a judge on the model of the author tends to agree with the author. Our one measurement does not support a stronger model by default: on the 24 shipped cases, the evaluator on Claude Sonnet approved 7 of 12 wrong patches, and the evaluator on Claude Haiku approved 0 of 12, for patches that Haiku wrote ([docs/RESULTS.md](docs/RESULTS.md)). The 7 are one type of defect, so this is not a general rate. On 42 patches for hard SWE-bench issues, Sonnet approved 13 of 19 wrong patches and Haiku 2 to 4; the two models did not separate wrong from correct patches. Measure the evaluator on cases with a known answer (`skill_eval.py judge`) before you change its model. Run the command again to change the model. OpenCode and the plugin are not changed.
@@ -202,7 +206,7 @@ python3 .agents/skills/long-horizon/scripts/memory.py mutants
 ```
 
 - **`counterexample`** is the opposite of `repro`. It shows a defect: a command that fails on the current code. Then it runs the command on the base. If the command passes on the base, the change broke it (`regression`). If it fails on the base too, the change does not fix it (`not-fixed`), or the check fails for another reason: read the two outputs. A command that passes on the current code shows no defect (exit code 1).
-- **`"verdict_evidence": true`** in `.agent-memory/config.json` makes the evidence necessary for the evaluator. A PASS (`feature pass --verified-by evaluator`, `feature vote --verdict PASS`) needs a reproduction for the current code. A FAIL vote needs a counterexample for the current code. Without the command, the result is UNKNOWN, and the evaluator says what it could not show. A person can pass a feature with `--verified-by human`.
+- **A verdict of the evaluator needs a record.** This is the default; `"verdict_evidence": false` in `.agent-memory/config.json` turns it off. The text of the evaluator does not decide: its task is to find a counterexample, and `memory.py verdict` gives the result. A PASS (`feature pass --verified-by evaluator`, `feature vote --verdict PASS`) needs a reproduction for the current code. A FAIL vote needs a counterexample for the current code. Without the command, the result is UNKNOWN, and the evaluator says what it could not show. A person can pass a feature with `--verified-by human`.
 - The evidence block shows a counterexample for the current code, and the review risk is then `HIGH`.
 - **A test inside the file that the fix changes.** In Rust or Go, a unit test is in the file of the code. `--test-file` copies that file to the base, and the fix goes with it. Use `--test-patch FILE`: a patch with the test only, which `repro` and `counterexample` apply on the base. Make it before you write the fix (`git diff > test.patch`), or cut the test lines from the complete diff. Add `--expect "<text of the failure>"`: without the test, the base can fail for another reason, for example a function that does not exist.
 - **A build cache that two checkouts use.** With `CARGO_TARGET_DIR`, or a build directory outside the repository, the run on the current code can use the files that the base compiled, and `repro` then says `STILL-FAILING` for a correct fix. `--base-env NAME=VALUE` sets a variable for the run on the base only, for example `--base-env CARGO_TARGET_DIR=/tmp/base-target`. `repro` names this cause when the last lines of the two outputs are the same.

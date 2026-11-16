@@ -20,6 +20,14 @@ INST = PACK / "install.py"
 EVAL = PACK / "skills" / "skill-eval" / "scripts" / "skill_eval.py"
 
 
+def verdicts_without_records(root):
+    """For a test that is about another thing: the evaluator may record a verdict without a reproduction or a
+    counterexample, as before version 0.9 (`"verdict_evidence": false`). Other keys of the config file stay."""
+    path = Path(root) / ".agent-memory" / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    path.write_text(json.dumps(dict(data, verdict_evidence=False)), encoding="utf-8")
+
+
 def run(args, cwd, stdin=None, env=None):
     e = dict(os.environ, PYTHONIOENCODING="utf-8", **(env or {}))
     return subprocess.run([sys.executable, *map(str, args)], cwd=cwd, input=stdin, capture_output=True,
@@ -44,6 +52,10 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.m("feature", "add", "--id", "F-1", "--desc", "y", "--criterion", "c").returncode, 2)  # immutable
         self.assertEqual(self.m("feature", "pass", "--id", "F-1", "--evidence", "ok").returncode, 2)  # no verifier
         self.assertEqual(self.m("feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "self").returncode, 2)
+        r = self.m("feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "evaluator")
+        self.assertEqual(r.returncode, 2)  # the default: a PASS of the evaluator needs a reproduction that a command verified
+        self.assertIn("a PASS needs a reproduction for this code", r.stderr)
+        verdicts_without_records(self.d)
         self.assertEqual(self.m("feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "evaluator").returncode, 0)
         f = json.loads((self.d / ".agent-memory" / "features.json").read_text(encoding="utf-8"))[0]
         self.assertTrue(f["passes"])
@@ -181,7 +193,7 @@ class SkillEvalTests(unittest.TestCase):
         root = Path(t)
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], cwd=root, check=True)
-        run([INST, "project", root, "--no-upstream", "--profile", "none"], root)
+        run([INST, "project", root, "--full", "--no-upstream", "--profile", "none"], root)
         (root / "fake_agent.py").write_text(FAKE_AGENT, encoding="utf-8")
         (root / "check.py").write_text("import sys,pathlib\nsys.exit(0 if pathlib.Path('result.txt').read_text()=='pass' else 1)\n", encoding="utf-8")
         subprocess.run(["git", "add", "fake_agent.py", "check.py"], cwd=root, check=True)
@@ -497,6 +509,7 @@ class ObservabilityTests(unittest.TestCase):
             self.assertEqual(m("s-empty", "gate").returncode, 1)  # no gate file: the gate checked nothing
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "print(1)"']}), encoding="utf-8")
             start("s-full")
+            verdicts_without_records(root)
             m("s-full", "feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c")
             self.assertEqual(m("s-full", "gate").returncode, 0)
             m("s-full", "feature", "pass", "--id", "F-1", "--evidence", "e", "--verified-by", "evaluator")
@@ -519,6 +532,7 @@ class ObservabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t, gate_ok=False)
             m = lambda *a: run([MEM, *a], root, stdin="", env={"AGENT_SESSION_ID": "s-9"})
+            verdicts_without_records(root)
             self.assertEqual(m("gate").returncode, 1)
             m("feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c")
             m("feature", "fail", "--id", "F-1")
@@ -708,7 +722,9 @@ class EvolutionTests(unittest.TestCase):
             m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})  # calc.py changes with the same size in one second
             m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4")
             vote = lambda v: m("feature", "vote", "--id", "F-1", "--verdict", v, "--evidence", "read the code")
-            self.assertEqual(vote("FAIL").returncode, 0)            # the option is off: as before
+            self.assertEqual(vote("FAIL").returncode, 2)            # the default: a FAIL needs a counterexample
+            verdicts_without_records(root)
+            self.assertEqual(vote("FAIL").returncode, 0)            # a person turned the option off: as before
             (root / ".agent-memory/config.json").write_text(json.dumps({"verdict_evidence": True}), encoding="utf-8")
             r = vote("FAIL")
             self.assertEqual(r.returncode, 2)
@@ -824,7 +840,8 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("verdict: SUPPORTED", r.stdout)
             self.assertIn("This is support, not proof", r.stdout)
-            self.assertIn("records for this code: gate pass, reproduction verified, counterexample none, mutation not run", r.stdout)
+            self.assertIn("records for this code: gate pass, reproduction verified, reproduction_test not recorded before the change, "
+                          "counterexample none, mutation not run", r.stdout)
             self.assertEqual(self._events(root, "verdict")[-1]["result"], "SUPPORTED")
 
     def test_repro_takes_a_test_that_is_inside_the_file_that_the_fix_changes(self):
@@ -1148,7 +1165,7 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
             self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
             self.assertEqual((agents / "evaluator.md").read_text(encoding="utf-8"), "old evaluator\n")  # never without --upgrade
             criteria = (agents / "criteria.md").read_text(encoding="utf-8")
-            self.assertIn("tools: Read, Grep, Glob\n", criteria)  # read-only: it cannot write the implementation
+            self.assertIn("tools: Read, Grep, Glob, Write\n", criteria)  # it writes new test files; it runs no command
             self.assertFalse((root / ".github").exists())  # CI only on request
             self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none", "--upgrade"], root).returncode, 0)
             evaluator = (agents / "evaluator.md").read_text(encoding="utf-8")
@@ -1329,6 +1346,7 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertNotIn("criterion 1 names code", r.stdout)
             self.assertIn("The `criteria` subagent writes criteria from the requirement", r.stdout)
             self.assertNotIn("name code", m("evidence").stdout)  # not graded yet: no PASS to qualify
+            verdicts_without_records(root)
             m("feature", "pass", "--id", "F-1", "--evidence", "e", "--verified-by", "evaluator")
             ev = m("evidence").stdout
             self.assertIn("1 of 2 criteria of F-1 name code: its PASS shows that the code is as described", ev)
@@ -1792,7 +1810,7 @@ class TriageAndFactoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
-            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none"], root).returncode, 0)
+            self.assertEqual(run([INST, "project", root, "--full", "--no-upstream", "--profile", "none"], root).returncode, 0)
             agent = (root / ".claude/agents/triage.md").read_text(encoding="utf-8")
             self.assertIn("tools: Read, Grep, Glob", agent)  # it cannot write code
             self.assertIn("TRIAGE: ASK", agent)
@@ -3154,6 +3172,7 @@ class VerificationBlockTests(unittest.TestCase):
             (root / "app.py").write_text("def fee():\n    return 1\n", encoding="utf-8")
             self.assertEqual(run([MEM, "init"], root).returncode, 0)
             (root / ".agent-memory/config.json").write_text(json.dumps({"evaluator_runs": 3}), encoding="utf-8")
+            verdicts_without_records(root)  # this test is about the number of runs
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "base")
 
@@ -3196,6 +3215,7 @@ class VerificationBlockTests(unittest.TestCase):
 
             # "evaluator_runs": "auto" requires 1 run on ordinary code and 3 runs when RISK_PATHS change
             (root / ".agent-memory/config.json").write_text(json.dumps({"evaluator_runs": "auto"}), encoding="utf-8")
+            verdicts_without_records(root)
             self.assertEqual(run([MEM, "feature", "add", "--id", "F-4", "--desc", "Low risk", "--criterion", "ok"], root).returncode, 0)
             self.assertEqual(run([MEM, "feature", "pass", "--id", "F-4", "--evidence", "ok", "--verified-by", "evaluator"], root).returncode, 0)
             (root / "auth_token.py").write_text("TOKEN = 1\n", encoding="utf-8")
@@ -3231,8 +3251,8 @@ class VerificationBlockTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(run([MEM, "feature", "add", "--id", "F-1", "--desc", "Fee", "--criterion", "fee == 2"], root).returncode, 0)
-            self.assertEqual(run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "evaluator"], root).returncode, 0)
             self.assertEqual(run([MEM, "repro", "--test", f'"{py}" tests/billing/test_fee.py', "--test-file", "tests/billing/test_fee.py"], root).returncode, 0)
+            self.assertEqual(run([MEM, "feature", "pass", "--id", "F-1", "--evidence", "ok", "--verified-by", "evaluator"], root).returncode, 0)
             g1 = run([MEM, "gate"], root, stdin="")
             self.assertEqual(g1.returncode, 0, g1.stdout)
             self.assertNotIn("outside the task scope", g1.stdout)
@@ -3410,6 +3430,133 @@ class SkillCheckTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)    # the pass rate went up, but the skill was not used
             self.assertIn("VERDICT: INCONCLUSIVE", r.stdout)
             self.assertIn("never used the skill in the candidate runs", r.stdout)
+
+
+class CoreAndRecordsTests(unittest.TestCase):
+    """The core install, and a result that comes from records: tests from before the work, verdicts with a command."""
+
+    def _git(self, root, *args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, check=True, capture_output=True)
+
+    def _calc(self, t):
+        root = Path(t)
+        self._git(root, "init", "-q")
+        (root / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")  # the defect
+        self._git(root, "add", "calc.py")
+        self._git(root, "commit", "-q", "-m", "init")
+        self.assertEqual(run([MEM, "init"], root).returncode, 0)
+        py = sys.executable.replace("\\", "/")
+        (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 2) == 4 else 1)\n", encoding="utf-8")
+        test = f'"{py}" test_calc.py'
+        (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
+        m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+        return root, test, m
+
+    def test_default_install_has_the_core_skills_and_full_has_each_skill(self):
+        every = sorted(p.name for p in (PACK / "skills").iterdir() if p.is_dir())
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            r = run([INST, "project", root, "--profile", "none"], root)  # no --no-upstream: the core fetches nothing
+            self.assertEqual(r.returncode, 0, r.stderr)
+            skills = root / ".agents/skills"
+            self.assertEqual(sorted(p.name for p in skills.iterdir()), ["evaluator", "long-horizon", "plan-before-code"])
+            self.assertIn("core install: long-horizon, evaluator, plan-before-code. Not installed (--full adds them):", r.stdout)
+            self.assertNotIn("upstream", r.stdout)
+            agents_md = (root / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertNotIn("learn-from-mistakes", agents_md)        # no line about a skill that is not there
+            self.assertIn("memory.py verdict` prints SUPPORTED", agents_md)
+            for agent in ("evaluator.md", "criteria.md", "triage.md"):
+                self.assertTrue((root / ".claude/agents" / agent).is_file())
+            # a skill that an older install put there is still upgraded, also without --full
+            (skills / "tdd-loop").mkdir()
+            (skills / "tdd-loop/SKILL.md").write_text("old\n", encoding="utf-8")
+            run([INST, "project", root, "--profile", "none", "--upgrade"], root)
+            self.assertIn("name: tdd-loop", (skills / "tdd-loop/SKILL.md").read_text(encoding="utf-8"))
+            self.assertFalse((skills / "code-review").exists())
+            run([INST, "uninstall", root], root)
+            self.assertEqual([p.name for p in skills.iterdir()], [".backup"])  # only the backup of --upgrade stays
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([INST, "project", root, "--full", "--no-upstream", "--profile", "none"], root).returncode, 0)
+            self.assertEqual(sorted(p.name for p in (root / ".agents/skills").iterdir()), every)
+            self.assertIn("learn-from-mistakes", (root / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_secure_turns_on_the_controls_with_one_option(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            self.assertEqual(run([INST, "project", root, "--profile", "none", "--secure"], root).returncode, 0)
+            settings = json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))
+            self.assertIn("gate_on_stop.py", json.dumps(settings["hooks"]["Stop"]))
+            self.assertIn("guard_pack_files.py", json.dumps(settings["hooks"]["PreToolUse"]))
+            self.assertTrue(any(".env" in rule for rule in settings["permissions"]["deny"]))  # the read rules of the sandbox option
+            self.assertTrue((root / ".github/workflows/quality-gate.yml").is_file())
+            self.assertTrue((root / ".claude/hooks/guard_pack_files.py").is_file())
+
+    def test_a_test_recorded_with_the_criteria_counts_as_written_before_the_change(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)
+            # the criteria and their test are recorded first; the code still has the defect
+            r = m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4", "--test-file", "test_calc.py")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("added F-1 with 1 criteria and 1 test file(s) recorded", r.stdout)
+            self.assertEqual(m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c", "--test-file", "missing.py").returncode, 2)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")  # the fix
+            r = m("repro", "--test", test, "--test-file", "test_calc.py")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("not recorded before the change", r.stdout)
+            self.assertEqual(m("gate").returncode, 0)
+            v = m("verdict")
+            self.assertIn("verdict: SUPPORTED", v.stdout)
+            self.assertIn("reproduction_test recorded before the change", v.stdout)
+            self.assertNotIn("can agree with a wrong change", v.stdout)
+            self.assertIn("The test was recorded with the criteria, before the change", m("evidence").stdout)
+            self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "repro", "--verified-by", "evaluator").returncode, 0)
+            events = [json.loads(l) for l in (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertTrue([e for e in events if e["ev"] == "repro"][-1]["recorded_test"])
+            # the test file is changed after it was recorded: it is a test from after the change now
+            (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(1, 1) == 2 else 1)\n", encoding="utf-8")
+            r = m("repro", "--test", test, "--test-file", "test_calc.py")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("The test was not recorded before the change (`feature add --test-file`)", r.stdout)
+            m("gate")
+            v = m("verdict")
+            self.assertIn("verdict: SUPPORTED", v.stdout)             # still support, with the weaker test named
+            self.assertIn("reproduction_test not recorded before the change", v.stdout)
+            self.assertIn("such a test can agree with a wrong change", v.stdout)
+            self.assertIn("The test was not recorded before the change: it can agree with a wrong change", m("evidence").stdout)
+
+    def test_a_recorded_test_patch_counts_also(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)
+            (root / "test_calc.py").unlink()
+            patch = ("--- /dev/null\n+++ b/test_calc.py\n@@ -0,0 +1,2 @@\n+import calc, sys\n"
+                     "+sys.exit(0 if calc.add(2, 2) == 4 else 1)\n")
+            (root / "tests.patch").write_bytes(patch.encode("utf-8"))
+            self.assertEqual(m("feature", "add", "--id", "F-1", "--desc", "d", "--criterion", "c", "--test-patch", "tests.patch").returncode, 0)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            subprocess.run(["git", "apply", "tests.patch"], cwd=root, check=True, capture_output=True)
+            r = m("repro", "--test", test, "--test-patch", "tests.patch")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("not recorded before the change", r.stdout)
+            (root / "tests.patch").write_bytes(patch.replace("\n", "\r\n").encode("utf-8"))  # the same patch with other line ends
+            feats = json.loads((root / ".agent-memory/features.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(feats[0]["recorded_tests"]), 1)
+
+    def test_the_evaluator_and_the_criteria_subagent_say_where_the_result_comes_from(self):
+        for name in ("templates/.claude/agents/evaluator.md", "templates/antigravity/agents/evaluator.md", "skills/evaluator/SKILL.md"):
+            text = (PACK / name).read_text(encoding="utf-8")
+            for part in ("counterexample --test", "repro --check", "verdict", "A counterexample of type `regression`",
+                         '"verdict_evidence": false'):
+                self.assertIn(part, text, f"{name}: {part}")
+            self.assertNotIn('sets `"verdict_evidence": true`', text)      # it is the default now, not an option to turn on
+        criteria = (PACK / "templates/.claude/agents/criteria.md").read_text(encoding="utf-8")
+        for part in ("Write these tests now, in new test files", "Do not change an existing file", "--test-file <file>"):
+            self.assertIn(part, criteria)
+        self.assertNotIn("Bash", criteria.split("\n---\n")[0])              # it runs no command
+        self.assertIn("Core commands, enough for most work", run([MEM, "--help"], PACK).stdout)
 
 
 if __name__ == "__main__":

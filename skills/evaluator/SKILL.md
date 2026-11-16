@@ -3,7 +3,7 @@ name: evaluator
 description: Use before declaring any feature, task or PR done, and whenever a feature is about to be marked as passing. Acts as a separate, skeptical evaluator that checks the agreed acceptance criteria against running code and real test output. The implementer must not grade its own work.
 license: MIT
 metadata:
-  version: "1.2"
+  version: "1.3"
   sources: "Anthropic, Harness design for long-running application development (2026)"
 ---
 # Evaluator (separate from the implementer)
@@ -12,7 +12,7 @@ A model that grades its own work rates it too highly. A separate evaluator, tune
 
 - **Claude Code / Antigravity:** delegate to the `evaluator` subagent (`.claude/agents/evaluator.md` or `~/.gemini/config/plugins/ai-quality-pack/agents/evaluator.md` via `invoke_subagent`). Give it the requirement as the user wrote it, the feature id, the base ref and the test commands. Do not give it your reasoning, your summary or a PR description: text from the author makes a reviewer accept the change.
 - Model tier: the evaluator may run on a stronger model than the implementer (subagent `model:` field). Checking is cheaper than building, so it is the best place to spend on a stronger model.
-- Criteria: in Claude Code, the `criteria` subagent writes the acceptance criteria from the requirement before the implementation starts. It does not see the implementation, so it does not share the implementer's reading.
+- Criteria and tests: in Claude Code, the `criteria` subagent writes the acceptance criteria and their tests from the requirement before the implementation starts. It does not see the implementation, so it does not share the implementer's reading. Record the tests with the feature: `memory.py feature add ... --test-file <file>`.
 - **Other agents:** start a new agent conversation with the same inputs. If that is not possible, state in the report that the evaluation ran in the same context. That is weaker evidence, and the user should know.
 
 ## Inputs
@@ -37,6 +37,13 @@ Feature F-003 — FAIL (2/3)
 - [PASS] gates — pytest 48 passed, pyright 0 errors, ruff clean
 Required fixes: <one line each, smallest change>
 ```
+
+## The result comes from a command
+Your text does not decide the result. On hard issues, the verdicts of an evaluator did not separate wrong changes from correct changes, on two models; the records of commands did (docs/RESULTS.md of the pack). So:
+- A defect: show it with `memory.py counterexample --test "<command>"`. A counterexample of type `regression` (the check passes on the base and fails on the change) decides: FAIL. A FAIL without the command is UNKNOWN.
+- PASS: only after `memory.py repro --check` succeeds. Use the tests that were recorded with the criteria (`repro --test "<command>" --test-file <file>`). A test that is written after the change can agree with a wrong change.
+- `memory.py verdict` prints what the records support for this code: SUPPORTED, FAIL or UNKNOWN. Report it as the overall result.
+- `feature pass --verified-by evaluator` and `feature vote` refuse a verdict without the record. A person turns this off with `"verdict_evidence": false` in `.agent-memory/config.json`.
 
 ## After grading
 - Multi-run mode (`"evaluator_runs"` > 1 or `"auto"` in `.agent-memory/config.json`): record each independent run with `memory.py feature vote --id <F> --verdict PASS|FAIL|UNKNOWN --evidence "<the evidence lines>" --evaluator-id <id>`. The asymmetric rule grants `PASS` only on unanimous `PASS` votes for the current code state; splits stay `UNKNOWN` in the evidence report until fixed or resolved by a person.

@@ -4,7 +4,9 @@
   python3 install.py project [DIR] [--profile auto|python|typescript|go|rust|none]
   python3 install.py global
 Options:
-  --no-upstream        skip mattpocock/skills (grill-me & co.)
+  --full               install each skill of the pack and the upstream skills (default: the core skills only)
+  --secure             one option for the controls: --with-stop-gate --with-guard --with-sandbox --with-ci
+  --no-upstream        with --full: skip mattpocock/skills (grill-me & co.)
   --update-upstream    re-fetch upstream skills (only folders marked .upstream are replaced)
   --upstream-ref REF   upstream revision (default: a pinned, reviewed SHA)
   --upgrade            replace pack-owned skills, hook scripts and subagents with this version (old copies backed up)
@@ -109,14 +111,24 @@ def copytree(src: Path, dst: Path) -> None:
 
 
 # ---------------------------------------------------------------- skills
+# The skills of a default install. In the one comparison that we have, the full pack was never better than this
+# core (docs/RESULTS.md), and each skill description costs context in each session. `--full` installs the others.
+CORE_SKILLS = ("long-horizon", "evaluator", "plan-before-code")
+FULL = False
+
+
 def install_pack_skills(dest: Path, upgrade: bool) -> None:
     if not DRY:
         dest.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    left_out = []
     for src in sorted((PACK / "skills").iterdir()):
         if not src.is_dir():
             continue
         target = dest / src.name
+        if not FULL and src.name not in CORE_SKILLS and not target.exists():
+            left_out.append(src.name)  # a skill that an older install put there is still upgraded below
+            continue
         if target.exists():
             if (target / ".upstream").exists():
                 log(f"skip (upstream skill with same name): {target}")
@@ -132,6 +144,8 @@ def install_pack_skills(dest: Path, upgrade: bool) -> None:
         else:
             log(f"added: {target}")
         copytree(src, target)
+    if left_out:
+        log(f"core install: {', '.join(CORE_SKILLS)}. Not installed (--full adds them): {', '.join(left_out)}")
 
 
 def fetch_upstream(dest: Path, update: bool, ref: str = UPSTREAM_REF) -> None:
@@ -495,7 +509,7 @@ def merge_settings(path: Path, stop_gate: bool = False) -> None:
 def install_project(root: Path, a: argparse.Namespace) -> None:
     skills = root / ".agents" / "skills"
     install_pack_skills(skills, a.upgrade)
-    if not a.no_upstream:
+    if FULL and not a.no_upstream:
         fetch_upstream(skills, a.update_upstream, a.upstream_ref)
     link_dir(root / ".claude" / "skills", os.path.join("..", ".agents", "skills"), skills)
     for extra in a.link:
@@ -510,6 +524,8 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
         for p in profiles
     ) or "- Test: `<fill in>`\n- Lint: `<fill in>`\n- Typecheck: `<fill in>`"
     agents_md = (PACK / "templates" / "AGENTS.md").read_text(encoding="utf-8").replace("{{COMMANDS}}", cmds)
+    if not FULL:  # the line names skills that only --full installs
+        agents_md = "".join(l for l in agents_md.splitlines(True) if "`learn-from-mistakes`" not in l)
     add_if_absent(None, root / "AGENTS.md", agents_md)
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
     for agent in ("evaluator.md", "criteria.md", "triage.md"):
@@ -825,6 +841,10 @@ def main() -> None:
                     help="uninstall removes what the pack installed in DIR (with --global: in your home directory)")
     ap.add_argument("dir", nargs="?", default=".")
     ap.add_argument("--profile", default="auto", choices=["auto", "python", "typescript", "go", "rust", "none"])
+    ap.add_argument("--full", action="store_true",
+                    help="install each skill of the pack and the upstream skills (default: the core: " + ", ".join(CORE_SKILLS) + ")")
+    ap.add_argument("--secure", action="store_true",
+                    help="one option for the controls: --with-stop-gate --with-guard --with-sandbox --with-ci")
     ap.add_argument("--no-upstream", action="store_true")
     ap.add_argument("--update-upstream", action="store_true")
     ap.add_argument("--upstream-ref", default=UPSTREAM_REF, help="git ref of mattpocock/skills (default: pinned, reviewed SHA)")
@@ -855,6 +875,10 @@ def main() -> None:
     ap.add_argument("--purge-memory", action="store_true", help="uninstall: also remove .agent-memory/")
     a = ap.parse_args()
     DRY = a.dry_run
+    global FULL
+    FULL = a.full
+    if a.secure:
+        a.with_stop_gate = a.with_guard = a.with_sandbox = a.with_ci = True
     if a.evaluator_model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}", a.evaluator_model):
         sys.exit("--evaluator-model: a model name or alias, for example `opus` or `claude-opus-5-5`")
     if sys.version_info < (3, 9):
@@ -879,7 +903,7 @@ def main() -> None:
         agy_plugin = home / ".gemini" / "config" / "plugins" / "ai-quality-pack"
         agy_skills = agy_plugin / "skills"
         install_pack_skills(agy_skills, a.upgrade)
-        if not a.no_upstream:
+        if FULL and not a.no_upstream:
             fetch_upstream(agy_skills, a.update_upstream, a.upstream_ref)
         agy_tpl = PACK / "templates" / "antigravity"
         for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
@@ -895,7 +919,7 @@ def main() -> None:
                 add_if_absent(PACK / doc, agy_plugin / doc)
         for d in (home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
             install_pack_skills(d, a.upgrade)
-            if not a.no_upstream:
+            if FULL and not a.no_upstream:
                 fetch_upstream(d, a.update_upstream, a.upstream_ref)
         if a.with_egm:
             install_egm()

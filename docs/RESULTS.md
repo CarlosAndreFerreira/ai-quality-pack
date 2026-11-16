@@ -180,6 +180,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
+- The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, and the tests that the `criteria` subagent writes before the work (do they separate wrong changes better than tests that are written after?).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.

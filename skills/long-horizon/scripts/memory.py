@@ -485,7 +485,8 @@ def load_features() -> List[dict]:
             continue
         cur = by_id.setdefault(fid, {"id": fid, "description": "", "criteria": [], "passes": False,
                                      "evidence": "", "verified_by": "", "votes": [], "updated": e.get("updated", "")})
-        for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated", "votes", "vote_summary"):
+        for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated", "votes", "vote_summary",
+                  "recorded_tests"):
             if k in e:
                 cur[k] = e[k]
     return list(by_id.values())
@@ -851,13 +852,18 @@ def cmd_feature(a: argparse.Namespace) -> None:
             if not a.criterion:
                 die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
             guard_secrets(a.desc, *a.criterion)
+            patches = [patch_digest(f) for f in list(a.test_file or []) + list(a.test_patch or [])]
+            if not all(patches):
+                die("feature add: a --test-file or --test-patch file cannot be read")
             rec = {"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
                    "evidence": "", "verified_by": "", "votes": [], "updated": now()}
+            if patches:  # tests from the time of the criteria: `repro` with the same files counts as a test written before the change
+                rec["recorded_tests"] = patches
             fs.append(rec)
             save_features(fs, dict(rec, ev="add"))
             named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
             log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
-            print(f"added {a.id} with {len(a.criterion)} criteria")
+            print(f"added {a.id} with {len(a.criterion)} criteria" + (f" and {len(patches)} test file(s) recorded" if patches else ""))
             for i, terms in named:
                 print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
                       "Write what a user or a test can observe, not how the code does it: "
@@ -1646,6 +1652,31 @@ def cmd_gated_run(a: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------- reproduction check
+def patch_digest(path: str) -> str:
+    """Hash of a test file or a test patch. Line ends do not count: the same file on Windows and on Linux is one file."""
+    import hashlib
+    try:
+        return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    except OSError:
+        return ""
+
+
+def recorded_test_patches() -> set:
+    """The tests that `feature add --test-file` or `--test-patch` recorded. A feature is never rewritten, so these
+    tests are from the time of the criteria: their author did not see the change. A test file that was changed after
+    that has another hash, and does not count."""
+    return {h for f in load_features() for h in (f.get("recorded_tests") or [])}
+
+
+def repro_before_change() -> bool:
+    """True when the verified reproduction used only test patches that were recorded with a feature."""
+    try:
+        rec = json.loads(REPRO.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return rec.get("hash") == workspace_hash() and bool(rec.get("recorded_test"))
+
+
 def repro_fresh() -> bool:
     """True when a reproduction was verified for exactly this workspace."""
     try:
@@ -1827,12 +1858,16 @@ def records_verdict() -> dict:
     separate wrong from correct patches. SUPPORTED: the gate passed and a reproduction is verified. This is support
     and not proof: 2 of 3 verified reproductions were on wrong patches. UNKNOWN: the rest."""
     cx, gate, repro, mut = counterexample_fresh(), gate_fresh(), repro_fresh(), mutants_state()
+    before = repro and repro_before_change()
     records = {"gate": "pass" if gate else ("none" if gate is None else "no pass"), "reproduction": "verified" if repro else "none",
+               "reproduction_test": ("recorded before the change" if before else "not recorded before the change") if repro else "none",
                "counterexample": (cx or {}).get("kind") or "none", "mutation": mut or "not run"}
     if cx and cx.get("kind") == "regression":
         return {"verdict": "FAIL", "why": f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`", "records": records}
     missing = [w for w, ok in (("a gate pass", bool(gate)), ("a verified reproduction", repro)) if not ok]
     notes = []
+    if repro and not before:
+        notes.append("the reproduction test was not recorded before the change: such a test can agree with a wrong change")
     if cx:
         notes.append(f"a check fails on this code ({cx.get('kind')}): alone, this type does not decide")
     if mut == "fail":
@@ -1858,13 +1893,15 @@ def cmd_verdict(a: argparse.Namespace) -> None:
 
 
 def verdict_evidence_problem(verdict: str) -> str:
-    """With `"verdict_evidence": true` in config.json, a verdict needs evidence that a command produced for this code.
-    "" when the verdict has it, or when the option is off."""
-    if not load_config().get("verdict_evidence"):
+    """A verdict of the evaluator needs evidence that a command produced for this code. "" when the verdict has it.
+    This is the default: the evaluator did not separate wrong patches from correct patches on hard issues, on two
+    models, and the records of commands did (docs/RESULTS.md). `"verdict_evidence": false` in config.json turns it off."""
+    if not load_config().get("verdict_evidence", True):
         return ""
     if verdict == "PASS" and not repro_fresh():
         return ("verdict_evidence: a PASS needs a reproduction for this code (`memory.py repro --test ...`: a test that fails on "
-                "the base and passes now). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason")
+                "the base and passes now). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason. "
+                "`memory.py verdict` prints what the records support")
     if verdict == "FAIL" and not counterexample_fresh():
         return ("verdict_evidence: a FAIL needs a counterexample for this code (`memory.py counterexample --test ...`: a command "
                 "that fails on the change). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason")
@@ -1965,12 +2002,19 @@ def cmd_repro(a: argparse.Namespace) -> None:
                     "for example --base-env CARGO_TARGET_DIR=<directory>, or make the command compile again")
     else:
         result, why = "verified", "the test fails on the base and passes on the current code"
+    # Was the test written before the change? Yes only if each test file and test patch is one that `feature add` recorded.
+    used = [patch_digest(f) for f in list(getattr(a, "test_patch", None) or []) + list(getattr(a, "test_file", None) or [])]
+    recorded_test = bool(used) and all(h and h in recorded_test_patches() for h in used)
+    if result == "verified" and not recorded_test:
+        why += (". The test was not recorded before the change (`feature add --test-file`): a test that is written for a "
+                "change can agree with a wrong change")
     with contextlib.suppress(OSError):
         if result == "verified":
-            REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha}) + "\n", encoding="utf-8")
+            REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha,
+                                         "recorded_test": recorded_test}) + "\n", encoding="utf-8")
         else:
             REPRO.unlink()
-    log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12])
+    log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12], recorded_test=recorded_test if result == "verified" else None)
     print(f"repro {result.upper()}: {why}")
     if before not in (0, None):
         print("failure on the base (check that it is the problem and not a missing dependency):\n"
@@ -2099,7 +2143,9 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         gaps.append("the completion gate did not pass for this code")
     if repro_fresh():
         rec = json.loads(REPRO.read_text(encoding="utf-8"))
-        lines.append(f"- Reproduction: VERIFIED, `{clean(rec.get('test', '?'), 100)}` fails on {str(rec.get('base', '?'))[:12]} and passes on this code")
+        lines.append(f"- Reproduction: VERIFIED, `{clean(rec.get('test', '?'), 100)}` fails on {str(rec.get('base', '?'))[:12]} and passes on this code"
+                     + (". The test was recorded with the criteria, before the change" if rec.get("recorded_test")
+                        else ". The test was not recorded before the change: it can agree with a wrong change"))
     else:
         lines.append("- Reproduction: none verified for this code")
         gaps.append("no test was shown to fail before the change and pass after it")
@@ -2999,7 +3045,10 @@ def main() -> None:
     for stream in (sys.stdout, sys.stderr):  # a pipe (hook, agent) gets UTF-8; a console never fails on a character
         with contextlib.suppress(Exception):
             stream.reconfigure(errors="replace") if stream.isatty() else stream.reconfigure(encoding="utf-8", errors="replace")
-    p = argparse.ArgumentParser(description="File-based agent memory: progress, features (+criteria), tasks, playbook lessons.")
+    p = argparse.ArgumentParser(
+        description="File-based agent memory: progress, features (+criteria), tasks, playbook lessons.",
+        epilog="Core commands, enough for most work: start, task, feature, gate, repro, counterexample, verdict, evidence, doctor. "
+               "The other commands are for reports, pull requests, audits and unattended runs.")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create .agent-memory/").set_defaults(fn=cmd_init)
 
@@ -3025,6 +3074,11 @@ def main() -> None:
     s.add_argument("--id")
     s.add_argument("--desc")
     s.add_argument("--criterion", action="append", help="testable acceptance criterion (repeatable)")
+    s.add_argument("--test-file", action="append", default=[], metavar="FILE",
+                   help="add: a test file of the criteria, written before the work (repeatable). `repro --test-file` with "
+                        "the same file, not changed, then counts as a test written before the change")
+    s.add_argument("--test-patch", action="append", default=[], metavar="FILE",
+                   help="add: the same for a patch with the tests (for `repro --test-patch`)")
     s.add_argument("--evidence")
     s.add_argument("--verified-by", choices=["evaluator", "human", "ci", "self"])
     s.add_argument("--verdict", choices=["PASS", "FAIL", "UNKNOWN"])

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+Two changes of defaults, from the results in [docs/RESULTS.md](docs/RESULTS.md): the full pack was never better than the core, and the verdicts of the evaluator did not separate wrong patches from correct patches while the records of commands did. Not measured: the effect of these two defaults, and the tests that the `criteria` subagent writes. The tests ran on Linux only (Python 3.14).
+
+Changes that need attention in an upgrade:
+- `feature pass --verified-by evaluator` and `feature vote` now refuse a verdict without a record (a verified reproduction for a PASS, a counterexample for a FAIL). `"verdict_evidence": false` in `.agent-memory/config.json` gives the old behaviour. `--verified-by human` and `ci` did not change.
+- A new install has 3 skills. An install that has the other skills keeps them, and `--upgrade` still upgrades them.
+
+- **Core install by default**: `long-horizon`, `evaluator`, `plan-before-code`. `install.py --full` adds the other 9 skills and the upstream skills (the core fetches nothing from the network). `AGENTS.md` of a core install has no line about skills that are not installed.
+- **`install.py --secure`**: one option for `--with-stop-gate --with-guard --with-sandbox --with-ci`.
+- **The result comes from records by default.** `verdict_evidence` is on unless the config file turns it off. The evaluator (skill, Claude Code and Antigravity subagents) says that its text does not decide: it shows a defect with `counterexample`, and it reports the line of `memory.py verdict`. The definition of done in `AGENTS.md` names `memory.py verdict`.
+- **Tests from before the work.** The `criteria` subagent writes the tests of the criteria in new test files (it has the `Write` tool, and no shell). `feature add --test-file FILE` (or `--test-patch`) records them with the feature. `repro` with a recorded file that did not change gives `recorded_test` in the run log; `verdict` has the record `reproduction_test`, and the evidence block says if the test was recorded before the change. A test that changed after the record does not count.
+- `memory.py --help` names the core commands.
+- 5 tests; 9 older tests set `"verdict_evidence": false` or use `--full`, because they are about other things.
+
 ## 0.8.0 — 2026-11-16
 
 This release ties a verdict to a command that ran. We measured the evaluator on 42 patches for hard issues with two models: one model rejected most patches, the other approved most patches, and the two did not separate wrong patches from correct patches. An instruction to bring evidence did not change the verdicts. The records of the commands did separate in one case: each of the 3 counterexamples of type `regression` was on a wrong patch. The numbers are small, and they are in [docs/RESULTS.md](docs/RESULTS.md). The release also has the corrections from the first use on a real project.
