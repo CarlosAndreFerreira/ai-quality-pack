@@ -3622,5 +3622,46 @@ class CoreEverywhereTests(unittest.TestCase):
             self.assertIn("learn-from-mistakes", rules)
 
 
+class OwnCodeTests(unittest.TestCase):
+    """The pack's own script: the functions do not grow back to what they were before they were split."""
+
+    # The limits are the numbers after the split of the large functions. Lower them when a function gets simpler;
+    # do not raise them: split the function.
+    MAX_COMPLEXITY = 41       # the most complex function (it was 71)
+    MAX_ABOVE_25 = 5          # functions with complexity above 25 (they were 13)
+    MAX_LINES = 70            # the longest function, in lines, without `main`, which builds the parser (it was 130)
+
+    @staticmethod
+    def _complexity(node):
+        import ast
+        n = 1
+        for x in ast.walk(node):
+            if isinstance(x, (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.With, ast.IfExp, ast.comprehension, ast.Assert)):
+                n += 1
+            elif isinstance(x, ast.BoolOp):
+                n += len(x.values) - 1
+        return n
+
+    def test_no_function_of_memory_py_is_more_complex_than_the_limit(self):
+        import ast
+        tree = ast.parse(MEM.read_text(encoding="utf-8"))
+        funcs = [f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name != "main"]  # main builds the parser
+        scores = sorted(((self._complexity(f), f.name) for f in funcs), reverse=True)
+        self.assertLessEqual(scores[0][0], self.MAX_COMPLEXITY, f"split this function: {scores[0]}")
+        above = [s for s in scores if s[0] > 25]
+        self.assertLessEqual(len(above), self.MAX_ABOVE_25, f"too many complex functions: {above}")
+        longest = max(funcs, key=lambda f: f.end_lineno - f.lineno + 1)
+        self.assertLessEqual(longest.end_lineno - longest.lineno + 1, self.MAX_LINES, f"split this function: {longest.name}")
+
+    def test_the_commands_with_actions_have_one_function_for_each_action(self):
+        src = MEM.read_text(encoding="utf-8")
+        for name in ("feature_add", "feature_grade", "feature_vote", "lesson_new", "lesson_recur", "task_open", "task_worktree",
+                     "gate_warnings", "gate_blockers", "gate_checks", "digest_attention", "digest_playbook",
+                     "evidence_gate", "evidence_checks", "evidence_grades", "evidence_coverage", "stats_data", "factory_github"):
+            self.assertIn(f"\ndef {name}(", src, name)
+        local = [l for l in src.splitlines() if l.startswith(("from .", "import memory", "from memory"))]
+        self.assertEqual(local, [])  # CI copies this one file from the base branch; an import of a local module would not be there
+
+
 if __name__ == "__main__":
     unittest.main()

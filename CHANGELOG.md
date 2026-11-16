@@ -4,6 +4,8 @@
 
 Two changes of defaults, from the results in [docs/RESULTS.md](docs/RESULTS.md): the full pack was never better than the core, and the verdicts of the evaluator did not separate wrong patches from correct patches while the records of commands did. Not measured: the effect of these two defaults, and the tests that the `criteria` subagent writes. The tests ran on Linux only (Python 3.14).
 
+- **`memory.py`: the large functions are split, with no change of behaviour.** The commands with actions (`feature`, `lesson`, `task`) have one function for each action; the gate has stages (warnings, changes that need a person, checks) and one function for a failure; the session digest and the evidence block have one function for each section; `stats` and `factory` compute and print in different functions. The most complex function went from 71 to 41 (our count of branches), the functions above 25 from 13 to 5, and the longest function from 130 to 69 lines. A test keeps these limits. The script is still one file with no local import: CI copies this one file from the base branch, and that is what stops a pull request from a change of its checker. `cmd_pr` is not split yet.
+
 Changes that need attention in an upgrade:
 - `feature pass --verified-by evaluator` and `feature vote` now refuse a verdict without a record (a verified reproduction for a PASS, a counterexample for a FAIL). `"verdict_evidence": false` in `.agent-memory/config.json` gives the old behaviour. `--verified-by human` and `ci` did not change.
 - A new install has 3 skills. An install that has the other skills keeps them, and `--upgrade` still upgrades them.

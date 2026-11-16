@@ -630,21 +630,21 @@ def cmd_init(a: argparse.Namespace) -> None:
     print(f"initialised {ROOT}/ (schema {SCHEMA})")
 
 
-def cmd_start(a: argparse.Namespace) -> None:
-    if not ROOT.exists():
-        print("[memory] no .agent-memory/ in this repo (run memory.py init to enable)." + (" " + plugin_note() if plugin_note() else ""))
-        return
-    hook = hook_input()
+def record_session(hook: dict) -> None:
+    """Keep the session id and the model that the hook reported: later commands of this session (gate, feature,
+    lesson) carry them in the run log."""
     sid = CTRL_RE.sub("", str(hook.get("session_id") or ""))[:80]
-    if sid:  # later commands of this session (gate, feature, lesson) carry the same id in the run log
+    if sid:
         with contextlib.suppress(OSError):
             model = hook.get("model")
             model = model.get("id") or model.get("display_name") if isinstance(model, dict) else model
             SESSION.write_text(sid + "\n" + CTRL_RE.sub("", str(model or ""))[:80] + "\n", encoding="utf-8")
             _IDENTITY.clear()
     log_event("session_start", source=clean(hook.get("source") or ("hook" if sid else "manual"), 40))
-    out: List[str] = ["# Session start digest", ""] + ([plugin_note(), ""] if plugin_note() else [])
-    tasks = load_tasks()
+
+
+def digest_attention(tasks: Dict[str, dict]) -> List[str]:
+    """What a person must act on, first (Super-agent: speak only when a person must act)."""
     human = [t for t in tasks.values() if t["status"] == "needs-human"]
     stuck = [f for f in load_features() if f.get("fail_streak", 0) >= STUCK_AFTER and not f.get("passes")]
     broken = hook_problems()
@@ -658,61 +658,98 @@ def cmd_start(a: argparse.Namespace) -> None:
     last_gate = next((e for e in reversed(read_jsonl(EVENTS)) if e.get("ev") == "gate"), None)
     for w in ((last_gate or {}).get("warnings") or [])[:5]:  # tests turned off or deleted, gate.json edited
         broken.append(f"Gate warning: {clean(w, 200)}.")
-    if human or stuck or broken:  # attention first (Super-agent: speak only when a person must act)
-        out += ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
-        out += [f"- {f['id']} stuck: evaluator failed it {f['fail_streak']}× in a row — needs a human decision" for f in stuck]
-        out += [f"- {b} Tell the user." for b in broken]
-        out.append("")
+    if not (human or stuck or broken):
+        return []
+    out = ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
+    out += [f"- {f['id']} stuck: evaluator failed it {f['fail_streak']}× in a row — needs a human decision" for f in stuck]
+    out += [f"- {b} Tell the user." for b in broken]
+    return out + [""]
+
+
+def digest_git(commits: int) -> List[str]:
     branch, status = git("rev-parse", "--abbrev-ref", "HEAD"), git("status", "--porcelain")
-    if branch:
-        out.append(f"git: branch `{branch}`, {'DIRTY (' + str(len(status.splitlines())) + ' files) — interrupted work? inspect before new edits' if status else 'clean'}")
-        log = git("log", "--oneline", "-n", str(a.commits))
-        if log:
-            out += ["", "## Recent commits", log]
+    if not branch:
+        return []
+    out = [f"git: branch `{branch}`, {'DIRTY (' + str(len(status.splitlines())) + ' files) — interrupted work? inspect before new edits' if status else 'clean'}"]
+    log = git("log", "--oneline", "-n", str(commits))
+    return out + (["", "## Recent commits", log] if log else [])
+
+
+def digest_resume(tasks: Dict[str, dict], stale_hours: int) -> List[str]:
     active = [t for t in tasks.values() if t["status"] in ("in-progress", "blocked")]
-    if active:
-        out += ["", "## Resume (unfinished tasks)"]
-        for t in active:
-            last = t["notes"][-1] if t["notes"] else "no notes"
-            stale = ""
-            with contextlib.suppress(Exception):
-                if (dt.datetime.now() - dt.datetime.fromisoformat(t["updated"])).total_seconds() > a.stale_hours * 3600:
-                    stale = " ⏱ stale"
-            wt = f" [worktree {t['worktree']}]" if t.get("worktree") else ""
-            out.append(f"- {t['id']} ({t['status']}{stale}){wt} {t['title']} — last: {last}")
+    if not active:
+        return []
+    out = ["", "## Resume (unfinished tasks)"]
+    for t in active:
+        last = t["notes"][-1] if t["notes"] else "no notes"
+        stale = ""
+        with contextlib.suppress(Exception):
+            if (dt.datetime.now() - dt.datetime.fromisoformat(t["updated"])).total_seconds() > stale_hours * 3600:
+                stale = " ⏱ stale"
+        wt = f" [worktree {t['worktree']}]" if t.get("worktree") else ""
+        out.append(f"- {t['id']} ({t['status']}{stale}){wt} {t['title']} — last: {last}")
+    return out
+
+
+def digest_progress(entries: int) -> List[str]:
     text = PROGRESS.read_text(encoding="utf-8") if PROGRESS.exists() else ""
     starts = [m.start() for m in ENTRY_RE.finditer(text)]
-    if starts:
-        k = min(a.entries, len(starts))
-        out += ["", f"## Last {k} progress entries", text[starts[-k]:].strip()]
+    if not starts:
+        return []
+    k = min(entries, len(starts))
+    return ["", f"## Last {k} progress entries", text[starts[-k]:].strip()]
+
+
+def digest_features(limit: int) -> List[str]:
     fs = load_features()
-    if fs:
-        todo = [f for f in fs if not f.get("passes")]
-        out += ["", f"## Features: {len(fs) - len(todo)}/{len(fs)} passing"]
-        out += [f"- [ ] {f['id']}: {f['description']}" for f in todo[: a.features]]
-        if len(todo) > a.features:
-            out.append(f"- … {len(todo) - a.features} more failing")
+    if not fs:
+        return []
+    todo = [f for f in fs if not f.get("passes")]
+    out = ["", f"## Features: {len(fs) - len(todo)}/{len(fs)} passing"]
+    out += [f"- [ ] {f['id']}: {f['description']}" for f in todo[:limit]]
+    return out + ([f"- … {len(todo) - limit} more failing"] if len(todo) > limit else [])
+
+
+def digest_playbook(limit: int, threshold: int) -> List[str]:
+    """The confirmed lessons, best score first. A lesson that an agent wrote is text from a model: it enters the
+    digest only after a person confirms it."""
     ls = [l for l in load_lessons() if l.get("status", "active") == "active"]
-    if ls:
-        ls.sort(key=lambda l: (-score(l), l["key"]))
-        out += ["", "## Playbook (apply; best-scoring first — vote with `lesson vote`)"]
-        # a lesson that an agent wrote is text from a model: it enters the digest only after a person confirms it
-        waiting = [l for l in ls if not lesson_confirmed(l)]
-        if waiting:
-            out.append(f"- {len(waiting)} lesson(s) that an agent recorded wait for a person: `memory.py lesson list`, "
-                       "then `memory.py lesson confirm --key <key>` in a terminal. They are not shown here.")
-        for l in [l for l in ls if lesson_confirmed(l)][: a.lessons]:
-            tag = "✓" if l.get("kind") == "strategy" else "✗"
-            out.append(f"- {tag} [{l['key']}] {l['rule']}" + (f"  (skill: {l['skill']})" if l.get("skill") else "") + f"  ·{l.get('count',1)}× +{l.get('helpful',0)}/-{l.get('harmful',0)}")
-        cands = [l for l in ls if l.get("count", 1) >= a.threshold]
-        harmful = [l for l in ls if l.get("harmful", 0) > l.get("helpful", 0)]
-        if cands:
-            out.append(f"\n⚠ {len(cands)} lesson(s) recurred ≥{a.threshold}×: run `skill-evolve` and propose a skill update.")
-        if harmful:
-            out.append(f"⚠ {len(harmful)} lesson(s) voted more harmful than helpful: review and retire ({', '.join(l['key'] for l in harmful)}).")
+    if not ls:
+        return []
+    ls.sort(key=lambda l: (-score(l), l["key"]))
+    out = ["", "## Playbook (apply; best-scoring first — vote with `lesson vote`)"]
+    waiting = [l for l in ls if not lesson_confirmed(l)]
+    if waiting:
+        out.append(f"- {len(waiting)} lesson(s) that an agent recorded wait for a person: `memory.py lesson list`, "
+                   "then `memory.py lesson confirm --key <key>` in a terminal. They are not shown here.")
+    for l in [l for l in ls if lesson_confirmed(l)][:limit]:
+        tag = "✓" if l.get("kind") == "strategy" else "✗"
+        out.append(f"- {tag} [{l['key']}] {l['rule']}" + (f"  (skill: {l['skill']})" if l.get("skill") else "") + f"  ·{l.get('count',1)}× +{l.get('helpful',0)}/-{l.get('harmful',0)}")
+    cands = [l for l in ls if l.get("count", 1) >= threshold]
+    harmful = [l for l in ls if l.get("harmful", 0) > l.get("helpful", 0)]
+    if cands:
+        out.append(f"\n⚠ {len(cands)} lesson(s) recurred ≥{threshold}×: run `skill-evolve` and propose a skill update.")
+    if harmful:
+        out.append(f"⚠ {len(harmful)} lesson(s) voted more harmful than helpful: review and retire ({', '.join(l['key'] for l in harmful)}).")
+    return out
+
+
+def digest_proposals() -> List[str]:
     pend = sorted(PROPOSALS.glob("*.md")) if PROPOSALS.exists() else []
-    if pend:
-        out += ["", f"## Pending skill proposals ({len(pend)}) — awaiting user approval"] + [f"- {p.name}" for p in pend]
+    if not pend:
+        return []
+    return ["", f"## Pending skill proposals ({len(pend)}) — awaiting user approval"] + [f"- {p.name}" for p in pend]
+
+
+def cmd_start(a: argparse.Namespace) -> None:
+    if not ROOT.exists():
+        print("[memory] no .agent-memory/ in this repo (run memory.py init to enable)." + (" " + plugin_note() if plugin_note() else ""))
+        return
+    record_session(hook_input())
+    tasks = load_tasks()
+    out: List[str] = ["# Session start digest", ""] + ([plugin_note(), ""] if plugin_note() else [])
+    out += digest_attention(tasks) + digest_git(a.commits) + digest_resume(tasks, a.stale_hours)
+    out += digest_progress(a.entries) + digest_features(a.features) + digest_playbook(a.lessons, a.threshold) + digest_proposals()
     body = "\n".join(clean(line) for line in out)
     if a.max_chars and len(body) > a.max_chars:  # the digest is read at every session start: keep its cost fixed
         total = len(body)
@@ -839,113 +876,222 @@ def aggregate_feature_votes(votes: List[dict], current_hash: str, req: int) -> d
             "total": len(valid), "stale": stale, "required": req, "valid": valid}
 
 
+def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """Record a feature with its criteria, and the tests of the criteria. A feature is never rewritten."""
+    if not a.id or not a.desc:
+        die("feature add needs --id and --desc")
+    if a.id in by_id:
+        die(f"feature {a.id} exists; features are never rewritten")
+    if not a.criterion:
+        die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
+    guard_secrets(a.desc, *a.criterion)
+    patches = [patch_digest(f) for f in list(a.test_file or []) + list(a.test_patch or [])]
+    if not all(patches):
+        die("feature add: a --test-file or --test-patch file cannot be read")
+    rec = {"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
+           "evidence": "", "verified_by": "", "votes": [], "updated": now()}
+    if patches:  # tests from the time of the criteria: `repro` with the same files counts as a test written before the change
+        rec["recorded_tests"] = patches
+    fs.append(rec)
+    save_features(fs, dict(rec, ev="add"))
+    named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
+    log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
+    print(f"added {a.id} with {len(a.criterion)} criteria" + (f" and {len(patches)} test file(s) recorded" if patches else ""))
+    for i, terms in named:
+        print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
+              "Write what a user or a test can observe, not how the code does it: "
+              "a PASS of this criterion shows only that the code is as written.")
+    if named:
+        print("The `criteria` subagent writes criteria from the requirement, without the implementation.")
+
+
+def feature_grade(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """One verdict for a feature: `pass` needs evidence and a verifier that is not the author."""
+    if a.id not in by_id:
+        die(f"unknown feature {a.id}")
+    req = required_evaluator_runs()
+    f = by_id[a.id]
+    cur_hash = code_state_hash()
+    if a.action == "pass":
+        if not a.evidence:
+            die("PASS requires --evidence (test names / command output you saw)")
+        if not a.verified_by:
+            die("PASS requires --verified-by (evaluator | human | ci). The implementer does not grade its own work.")
+        if a.verified_by == "self":
+            die("--verified-by self is not accepted; run the `evaluator` skill/subagent")
+        if a.verified_by == "evaluator" and verdict_evidence_problem("PASS"):
+            die(verdict_evidence_problem("PASS"))
+        if a.verified_by == "evaluator" and req > 1:
+            agg = aggregate_feature_votes(f.get("votes", []), cur_hash, req)
+            if agg["status"] != "PASS":
+                die(f"{a.id} needs {req} unanimous PASS evaluator votes on the current code "
+                    f"(has {agg['pass']} PASS, {agg['fail']} FAIL); use `feature vote`")
+    streak = 0 if a.action == "pass" else f.get("fail_streak", 0) + 1
+    f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
+             fail_streak=streak, updated=now())
+    save_features(fs, dict(f, ev=a.action))
+    log_event("feature", id=a.id, result=a.action, verified_by=a.verified_by, fail_streak=streak,
+              gate_fresh=gate_fresh())
+    print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
+    if streak >= STUCK_AFTER:
+        print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
+
+
+def feature_vote(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """One independent run of the evaluator. The feature passes only when each required run is a PASS for this code."""
+    if not a.id or a.id not in by_id:
+        die(f"unknown or missing feature {a.id or '(none)'}")
+    if a.verdict not in ("PASS", "FAIL", "UNKNOWN"):
+        die("feature vote needs --verdict PASS|FAIL|UNKNOWN")
+    if not a.evidence:
+        die("feature vote needs --evidence (independent verification command output)")
+    guard_secrets(a.evidence, a.evaluator_id or "")
+    if verdict_evidence_problem(a.verdict):
+        die(verdict_evidence_problem(a.verdict))
+    f = by_id[a.id]
+    cur_hash = code_state_hash()
+    req = required_evaluator_runs()
+    votes = list(f.get("votes") or [])
+    valid_count = sum(1 for v in votes if v.get("hash") == cur_hash)
+    votes.append({"verdict": a.verdict, "evidence": a.evidence,
+                  "evaluator_id": a.evaluator_id or f"run-{valid_count + 1}",
+                  "hash": cur_hash, "ts": now()})
+    agg = aggregate_feature_votes(votes, cur_hash, req)
+    vote_summary = {"hash": cur_hash, "required": req, "pass": agg["pass"], "fail": agg["fail"],
+                    "unknown": agg["unknown"], "status": agg["status"], "split": agg["split"]}
+    streak = 0 if agg["status"] == "PASS" else (f.get("fail_streak", 0) + 1 if a.verdict == "FAIL" else f.get("fail_streak", 0))
+    ev_text = "; ".join(v["evidence"] for v in agg["valid"][-req:]) if agg["status"] == "PASS" else a.evidence
+    f.update(votes=votes, vote_summary=vote_summary, passes=(agg["status"] == "PASS"),
+             evidence=ev_text, verified_by=("evaluator" if agg["status"] == "PASS" else ""),
+             fail_streak=streak, updated=now())
+    save_features(fs, dict(f, ev="vote"))
+    log_event("feature", id=a.id, result="vote", verdict=a.verdict, status=agg["status"],
+              votes_pass=agg["pass"], votes_fail=agg["fail"], required=req,
+              hash=cur_hash[:12], gate_fresh=gate_fresh())
+    if agg["status"] == "PASS":
+        print(f"{a.id} -> PASS ({agg['pass']}/{req} unanimous)")
+    elif agg["status"] == "FAIL":
+        print(f"{a.id} -> FAIL ({agg['fail']}/{agg['total']} fail)")
+        if streak >= STUCK_AFTER:
+            print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
+    elif agg["status"] == "UNKNOWN":
+        print(f"{a.id} -> UNKNOWN (split {agg['pass']} PASS / {agg['fail']} FAIL on current code)")
+    else:
+        print(f"{a.id} -> PENDING ({agg['pass']}/{req} PASS votes on current code)")
+
+
+def feature_show(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    if a.id not in by_id:
+        die(f"unknown feature {a.id}")
+    print(json.dumps(by_id[a.id], indent=2, ensure_ascii=False))
+
+
+def feature_list(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    for f in fs:
+        print(f"[{'x' if f.get('passes') else ' '}] {f['id']}: {f['description']}  ({len(f.get('criteria', []))} criteria)")
+
+
 def cmd_feature(a: argparse.Namespace) -> None:
     ensure()
     with locked():
         fs = load_features()
         by_id = {f["id"]: f for f in fs}
         if a.action == "add":
-            if not a.id or not a.desc:
-                die("feature add needs --id and --desc")
-            if a.id in by_id:
-                die(f"feature {a.id} exists; features are never rewritten")
-            if not a.criterion:
-                die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
-            guard_secrets(a.desc, *a.criterion)
-            patches = [patch_digest(f) for f in list(a.test_file or []) + list(a.test_patch or [])]
-            if not all(patches):
-                die("feature add: a --test-file or --test-patch file cannot be read")
-            rec = {"id": a.id, "description": a.desc, "criteria": a.criterion, "passes": False,
-                   "evidence": "", "verified_by": "", "votes": [], "updated": now()}
-            if patches:  # tests from the time of the criteria: `repro` with the same files counts as a test written before the change
-                rec["recorded_tests"] = patches
-            fs.append(rec)
-            save_features(fs, dict(rec, ev="add"))
-            named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
-            log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
-            print(f"added {a.id} with {len(a.criterion)} criteria" + (f" and {len(patches)} test file(s) recorded" if patches else ""))
-            for i, terms in named:
-                print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
-                      "Write what a user or a test can observe, not how the code does it: "
-                      "a PASS of this criterion shows only that the code is as written.")
-            if named:
-                print("The `criteria` subagent writes criteria from the requirement, without the implementation.")
+            feature_add(a, fs, by_id)
         elif a.action in ("pass", "fail"):
-            if a.id not in by_id:
-                die(f"unknown feature {a.id}")
-            req = required_evaluator_runs()
-            f = by_id[a.id]
-            cur_hash = code_state_hash()
-            if a.action == "pass":
-                if not a.evidence:
-                    die("PASS requires --evidence (test names / command output you saw)")
-                if not a.verified_by:
-                    die("PASS requires --verified-by (evaluator | human | ci). The implementer does not grade its own work.")
-                if a.verified_by == "self":
-                    die("--verified-by self is not accepted; run the `evaluator` skill/subagent")
-                if a.verified_by == "evaluator" and verdict_evidence_problem("PASS"):
-                    die(verdict_evidence_problem("PASS"))
-                if a.verified_by == "evaluator" and req > 1:
-                    agg = aggregate_feature_votes(f.get("votes", []), cur_hash, req)
-                    if agg["status"] != "PASS":
-                        die(f"{a.id} needs {req} unanimous PASS evaluator votes on the current code "
-                            f"(has {agg['pass']} PASS, {agg['fail']} FAIL); use `feature vote`")
-            streak = 0 if a.action == "pass" else f.get("fail_streak", 0) + 1
-            f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
-                     fail_streak=streak, updated=now())
-            save_features(fs, dict(f, ev=a.action))
-            log_event("feature", id=a.id, result=a.action, verified_by=a.verified_by, fail_streak=streak,
-                      gate_fresh=gate_fresh())
-            print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
-            if streak >= STUCK_AFTER:
-                print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
+            feature_grade(a, fs, by_id)
         elif a.action == "vote":
-            if not a.id or a.id not in by_id:
-                die(f"unknown or missing feature {a.id or '(none)'}")
-            if a.verdict not in ("PASS", "FAIL", "UNKNOWN"):
-                die("feature vote needs --verdict PASS|FAIL|UNKNOWN")
-            if not a.evidence:
-                die("feature vote needs --evidence (independent verification command output)")
-            guard_secrets(a.evidence, a.evaluator_id or "")
-            if verdict_evidence_problem(a.verdict):
-                die(verdict_evidence_problem(a.verdict))
-            f = by_id[a.id]
-            cur_hash = code_state_hash()
-            req = required_evaluator_runs()
-            votes = list(f.get("votes") or [])
-            valid_count = sum(1 for v in votes if v.get("hash") == cur_hash)
-            votes.append({"verdict": a.verdict, "evidence": a.evidence,
-                          "evaluator_id": a.evaluator_id or f"run-{valid_count + 1}",
-                          "hash": cur_hash, "ts": now()})
-            agg = aggregate_feature_votes(votes, cur_hash, req)
-            vote_summary = {"hash": cur_hash, "required": req, "pass": agg["pass"], "fail": agg["fail"],
-                            "unknown": agg["unknown"], "status": agg["status"], "split": agg["split"]}
-            streak = 0 if agg["status"] == "PASS" else (f.get("fail_streak", 0) + 1 if a.verdict == "FAIL" else f.get("fail_streak", 0))
-            ev_text = "; ".join(v["evidence"] for v in agg["valid"][-req:]) if agg["status"] == "PASS" else a.evidence
-            f.update(votes=votes, vote_summary=vote_summary, passes=(agg["status"] == "PASS"),
-                     evidence=ev_text, verified_by=("evaluator" if agg["status"] == "PASS" else ""),
-                     fail_streak=streak, updated=now())
-            save_features(fs, dict(f, ev="vote"))
-            log_event("feature", id=a.id, result="vote", verdict=a.verdict, status=agg["status"],
-                      votes_pass=agg["pass"], votes_fail=agg["fail"], required=req,
-                      hash=cur_hash[:12], gate_fresh=gate_fresh())
-            if agg["status"] == "PASS":
-                print(f"{a.id} -> PASS ({agg['pass']}/{req} unanimous)")
-            elif agg["status"] == "FAIL":
-                print(f"{a.id} -> FAIL ({agg['fail']}/{agg['total']} fail)")
-                if streak >= STUCK_AFTER:
-                    print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
-            elif agg["status"] == "UNKNOWN":
-                print(f"{a.id} -> UNKNOWN (split {agg['pass']} PASS / {agg['fail']} FAIL on current code)")
-            else:
-                print(f"{a.id} -> PENDING ({agg['pass']}/{req} PASS votes on current code)")
+            feature_vote(a, fs, by_id)
         elif a.action == "show":
-            if a.id not in by_id:
-                die(f"unknown feature {a.id}")
-            print(json.dumps(by_id[a.id], indent=2, ensure_ascii=False))
+            feature_show(a, fs, by_id)
         else:
-            for f in fs:
-                print(f"[{'x' if f.get('passes') else ' '}] {f['id']}: {f['description']}  ({len(f.get('criteria', []))} criteria)")
+            feature_list(a, fs, by_id)
+
+
+def lesson_recur(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    l = by_key[a.key]
+    l["count"] = l.get("count", 1) + 1
+    l.setdefault("seen", []).append(now())
+    if a.trigger:
+        l["triggers"] = (l.get("triggers", []) + [a.trigger])[-5:]
+    if l.get("status") == "retired":
+        l["status"] = "active"
+    print(f"lesson {a.key} recurred → count {l['count']}")
+    log_event("lesson", key=a.key, action="recur", count=l["count"])
+
+
+def lesson_new(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    """A lesson with a new key. A rule that is near to an older rule is refused: reuse that key."""
+    dups = similar(a.rule, ls)
+    if dups and not a.force:
+        die("similar lesson(s) exist: " + ", ".join(d["key"] for d in dups) +
+            " — reuse that --key (recurrence) or pass --force if it is genuinely different", 5)
+    if a.by == "human" and not is_human():
+        die("--by human is for a person at a terminal. Leave it out: the lesson is recorded as an agent's, "
+            "and a person confirms it with `memory.py lesson confirm`")
+    ls.append({"key": a.key, "kind": a.kind, "rule": a.rule, "cause": a.cause or "",
+               "triggers": [a.trigger] if a.trigger else [], "skill": a.skill or "",
+               "count": 1, "helpful": 0, "harmful": 0, "seen": [now()], "status": "active",
+               "origin": a.by, "commit": git("rev-parse", "--short", "HEAD").strip(), "session": session_id()})
+    print(f"lesson {a.key} recorded ({a.kind})" + ("" if a.by == "human" else
+          ". It enters the session digest after a person confirms it: `memory.py lesson confirm --key " + a.key + "`"))
+    log_event("lesson", key=a.key, action="add", kind=a.kind)
+
+
+def lesson_add(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    """A new lesson, or one more occurrence of a lesson that has this key."""
+    if not (a.key and a.rule):
+        die("lesson add needs --key and --rule")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,60}", a.key):
+        die("--key must be a lowercase slug, e.g. missing-await-in-handler")
+    guard_secrets(a.rule, a.trigger or "", a.cause or "")
+    if a.key in by_key:
+        lesson_recur(a, ls, by_key)
+    else:
+        lesson_new(a, ls, by_key)
+    save_lessons(ls)
+
+
+def lesson_vote(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    if a.key not in by_key or a.vote not in ("helpful", "harmful"):
+        die("lesson vote needs a known --key and --vote helpful|harmful")
+    by_key[a.key][a.vote] = by_key[a.key].get(a.vote, 0) + 1
+    save_lessons(ls)
+    print(f"{a.key}: +1 {a.vote}")
+    log_event("lesson", key=a.key, action="vote", vote=a.vote)
+
+
+def lesson_confirm(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    """A person confirms a lesson: only then it enters the session digest."""
+    if a.key not in by_key:
+        die("lesson confirm needs a known --key")
+    if not is_human():
+        die("a person confirms a lesson, in a terminal. Tell the user to run: memory.py lesson confirm --key " + a.key)
+    by_key[a.key].update(confirmed=True, confirmed_at=now())
+    save_lessons(ls)
+    print(f"{a.key}: confirmed. It is in the session digest from now on.")
+    log_event("lesson", key=a.key, action="confirm")
+
+
+def lesson_status(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    if a.key not in by_key or a.status not in ("active", "promoted", "retired"):
+        die("lesson status needs a known --key and --status active|promoted|retired")
+    by_key[a.key]["status"] = a.status
+    save_lessons(ls)
+    print(f"{a.key} -> {a.status}")
+
+
+def lesson_candidates(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    c = [l for l in ls if l.get("status", "active") == "active"
+         and (l.get("count", 1) >= a.threshold or l.get("harmful", 0) > l.get("helpful", 0))]
+    print(json.dumps(sorted(c, key=lambda l: -score(l)), indent=2, ensure_ascii=False) if c else "no candidates")
+
+
+def lesson_list(a: argparse.Namespace, ls: List[dict], by_key: Dict[str, dict]) -> None:
+    for l in sorted(ls, key=lambda l: (-score(l), l["key"])):
+        print(f"{score(l):>3} [{l.get('status','active'):8}] {l.get('kind','mistake'):8} {l['key']}: {l['rule']}"
+              + (f"  (skill: {l['skill']})" if l.get("skill") else "")
+              + ("" if lesson_confirmed(l) else f"  [not confirmed; by {l.get('origin', '?')} at {l.get('commit') or '?'}]"))
 
 
 def cmd_lesson(a: argparse.Namespace) -> None:
@@ -954,68 +1100,80 @@ def cmd_lesson(a: argparse.Namespace) -> None:
         ls = load_lessons()
         by_key = {l["key"]: l for l in ls}
         if a.action == "add":
-            if not (a.key and a.rule):
-                die("lesson add needs --key and --rule")
-            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,60}", a.key):
-                die("--key must be a lowercase slug, e.g. missing-await-in-handler")
-            guard_secrets(a.rule, a.trigger or "", a.cause or "")
-            if a.key in by_key:
-                l = by_key[a.key]
-                l["count"] = l.get("count", 1) + 1
-                l.setdefault("seen", []).append(now())
-                if a.trigger:
-                    l["triggers"] = (l.get("triggers", []) + [a.trigger])[-5:]
-                if l.get("status") == "retired":
-                    l["status"] = "active"
-                print(f"lesson {a.key} recurred → count {l['count']}")
-                log_event("lesson", key=a.key, action="recur", count=l["count"])
-            else:
-                dups = similar(a.rule, ls)
-                if dups and not a.force:
-                    die("similar lesson(s) exist: " + ", ".join(d["key"] for d in dups) +
-                        " — reuse that --key (recurrence) or pass --force if it is genuinely different", 5)
-                if a.by == "human" and not is_human():
-                    die("--by human is for a person at a terminal. Leave it out: the lesson is recorded as an agent's, "
-                        "and a person confirms it with `memory.py lesson confirm`")
-                ls.append({"key": a.key, "kind": a.kind, "rule": a.rule, "cause": a.cause or "",
-                           "triggers": [a.trigger] if a.trigger else [], "skill": a.skill or "",
-                           "count": 1, "helpful": 0, "harmful": 0, "seen": [now()], "status": "active",
-                           "origin": a.by, "commit": git("rev-parse", "--short", "HEAD").strip(), "session": session_id()})
-                print(f"lesson {a.key} recorded ({a.kind})" + ("" if a.by == "human" else
-                      ". It enters the session digest after a person confirms it: `memory.py lesson confirm --key " + a.key + "`"))
-                log_event("lesson", key=a.key, action="add", kind=a.kind)
-            save_lessons(ls)
+            lesson_add(a, ls, by_key)
         elif a.action == "vote":
-            if a.key not in by_key or a.vote not in ("helpful", "harmful"):
-                die("lesson vote needs a known --key and --vote helpful|harmful")
-            by_key[a.key][a.vote] = by_key[a.key].get(a.vote, 0) + 1
-            save_lessons(ls)
-            print(f"{a.key}: +1 {a.vote}")
-            log_event("lesson", key=a.key, action="vote", vote=a.vote)
+            lesson_vote(a, ls, by_key)
         elif a.action == "confirm":
-            if a.key not in by_key:
-                die("lesson confirm needs a known --key")
-            if not is_human():
-                die("a person confirms a lesson, in a terminal. Tell the user to run: memory.py lesson confirm --key " + a.key)
-            by_key[a.key].update(confirmed=True, confirmed_at=now())
-            save_lessons(ls)
-            print(f"{a.key}: confirmed. It is in the session digest from now on.")
-            log_event("lesson", key=a.key, action="confirm")
+            lesson_confirm(a, ls, by_key)
         elif a.action == "status":
-            if a.key not in by_key or a.status not in ("active", "promoted", "retired"):
-                die("lesson status needs a known --key and --status active|promoted|retired")
-            by_key[a.key]["status"] = a.status
-            save_lessons(ls)
-            print(f"{a.key} -> {a.status}")
+            lesson_status(a, ls, by_key)
         elif a.action == "candidates":
-            c = [l for l in ls if l.get("status", "active") == "active"
-                 and (l.get("count", 1) >= a.threshold or l.get("harmful", 0) > l.get("helpful", 0))]
-            print(json.dumps(sorted(c, key=lambda l: -score(l)), indent=2, ensure_ascii=False) if c else "no candidates")
+            lesson_candidates(a, ls, by_key)
         else:
-            for l in sorted(ls, key=lambda l: (-score(l), l["key"])):
-                print(f"{score(l):>3} [{l.get('status','active'):8}] {l.get('kind','mistake'):8} {l['key']}: {l['rule']}"
-                      + (f"  (skill: {l['skill']})" if l.get("skill") else "")
-                      + ("" if lesson_confirmed(l) else f"  [not confirmed; by {l.get('origin', '?')} at {l.get('commit') or '?'}]"))
+            lesson_list(a, ls, by_key)
+
+
+def task_open(a: argparse.Namespace, tasks: Dict[str, dict]) -> None:
+    """A new work item, with the commit where the work starts (the base for the gate) and its scope."""
+    if not a.title:
+        die("task open needs --title")
+    scopes = [s.strip() for s in (a.scope or []) if s.strip()]
+    guard_secrets(a.title, a.source or "", *scopes)
+    tid = next_task_id(tasks)
+    base = git("rev-parse", "--verify", "HEAD") or None
+    task_event(ev="open", id=tid, title=a.title, source=a.source, feature=a.feature, status="open",
+               base=base, scope=scopes or None)
+    log_event("task", action="open", id=tid, base=base, scope=scopes or None)
+    print(tid)
+
+
+def task_list(a: argparse.Namespace, tasks: Dict[str, dict]) -> None:
+    for t in sorted(tasks.values(), key=lambda t: t["id"]):
+        if a.all or t["status"] not in ("done", "dropped"):
+            print(f"{t['id']} [{t['status']:11}] {t['title']}" + (f"  feature={t['feature']}" if t.get("feature") else ""))
+
+
+def task_status(a: argparse.Namespace, t: dict) -> None:
+    if a.status not in TASK_STATES:
+        die(f"--status must be one of {', '.join(TASK_STATES)}")
+    if a.status in ("blocked", "needs-human") and not a.note:
+        die(f"status {a.status} needs --note saying exactly what is needed")
+    guard_secrets(a.note or "")
+    task_event(ev="status", id=a.id, status=a.status, note=a.note)
+    print(f"{a.id} -> {a.status}")
+
+
+def task_note(a: argparse.Namespace, t: dict) -> None:
+    if not a.note:
+        die("task note needs --note")
+    guard_secrets(a.note)
+    task_event(ev="note", id=a.id, note=a.note)
+    print("noted")
+
+
+def task_link(a: argparse.Namespace, t: dict) -> None:
+    if not a.link or ":" not in a.link:
+        die("task link needs --link kind:value (lesson:x, commit:abc123, pr:URL, feature:F-001, task:T-0002)")
+    task_event(ev="link", id=a.id, link=a.link)
+    print(f"{a.id} ↔ {a.link}")
+
+
+def task_worktree(a: argparse.Namespace, t: dict) -> None:
+    """A git worktree and a branch for the task: an isolated place to work."""
+    top = git("rev-parse", "--show-toplevel")
+    if not top:
+        die("not a git repository")
+    path = str(Path(top).parent / f"{Path(top).name}-{a.id}")
+    branch = f"agent/{a.id.lower()}"
+    r = subprocess.run(["git", "worktree", "add", "-b", branch, path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        die(r.stderr.strip() or "git worktree add failed")
+    base = None if t.get("base") else (git("rev-parse", "--verify", "HEAD") or None)
+    task_event(ev="worktree", id=a.id, worktree=path, link=f"branch:{branch}", status="in-progress", base=base)
+    if base:
+        log_event("task", action="worktree", id=a.id, base=base)
+    print(f"{a.id}: worktree {path} on branch {branch}")
+    print(f"hint: keep ONE shared memory — in the worktree run: export AGENT_MEMORY_DIR={ROOT.resolve()}")
 
 
 def cmd_task(a: argparse.Namespace) -> None:
@@ -1023,61 +1181,24 @@ def cmd_task(a: argparse.Namespace) -> None:
     with locked():
         tasks = load_tasks()
         if a.action == "open":
-            if not a.title:
-                die("task open needs --title")
-            scopes = [s.strip() for s in (a.scope or []) if s.strip()]
-            guard_secrets(a.title, a.source or "", *scopes)
-            tid = next_task_id(tasks)
-            base = git("rev-parse", "--verify", "HEAD") or None
-            task_event(ev="open", id=tid, title=a.title, source=a.source, feature=a.feature, status="open",
-                       base=base, scope=scopes or None)
-            log_event("task", action="open", id=tid, base=base, scope=scopes or None)
-            print(tid)
+            task_open(a, tasks)
             return
         if a.action == "list":
-            for t in sorted(tasks.values(), key=lambda t: t["id"]):
-                if a.all or t["status"] not in ("done", "dropped"):
-                    print(f"{t['id']} [{t['status']:11}] {t['title']}" + (f"  feature={t['feature']}" if t.get("feature") else ""))
+            task_list(a, tasks)
             return
         if not a.id or a.id not in tasks:
             die("unknown or missing task id")
         t = tasks[a.id]
         if a.action == "status":
-            if a.status not in TASK_STATES:
-                die(f"--status must be one of {', '.join(TASK_STATES)}")
-            if a.status in ("blocked", "needs-human") and not a.note:
-                die(f"status {a.status} needs --note saying exactly what is needed")
-            guard_secrets(a.note or "")
-            task_event(ev="status", id=a.id, status=a.status, note=a.note)
-            print(f"{a.id} -> {a.status}")
+            task_status(a, t)
         elif a.action == "note":
-            if not a.note:
-                die("task note needs --note")
-            guard_secrets(a.note)
-            task_event(ev="note", id=a.id, note=a.note)
-            print("noted")
+            task_note(a, t)
         elif a.action == "link":  # chain of recall: lesson:key, commit:sha, pr:url, feature:F-001, task:T-0002
-            if not a.link or ":" not in a.link:
-                die("task link needs --link kind:value (lesson:x, commit:abc123, pr:URL, feature:F-001, task:T-0002)")
-            task_event(ev="link", id=a.id, link=a.link)
-            print(f"{a.id} ↔ {a.link}")
+            task_link(a, t)
         elif a.action == "show":
             print(json.dumps(t, indent=2, ensure_ascii=False))
         elif a.action == "worktree":  # isolated worker: own branch + directory
-            top = git("rev-parse", "--show-toplevel")
-            if not top:
-                die("not a git repository")
-            path = str(Path(top).parent / f"{Path(top).name}-{a.id}")
-            branch = f"agent/{a.id.lower()}"
-            r = subprocess.run(["git", "worktree", "add", "-b", branch, path], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode != 0:
-                die(r.stderr.strip() or "git worktree add failed")
-            base = None if t.get("base") else (git("rev-parse", "--verify", "HEAD") or None)
-            task_event(ev="worktree", id=a.id, worktree=path, link=f"branch:{branch}", status="in-progress", base=base)
-            if base:
-                log_event("task", action="worktree", id=a.id, base=base)
-            print(f"{a.id}: worktree {path} on branch {branch}")
-            print(f"hint: keep ONE shared memory — in the worktree run: export AGENT_MEMORY_DIR={ROOT.resolve()}")
+            task_worktree(a, t)
 
 
 # ---------------------------------------------------------------- completion gate
@@ -1501,6 +1622,80 @@ def gate_no_check(reason: str, check: bool) -> None:
     sys.exit(1)
 
 
+def gate_fail(message: str, failed: str, warnings: List[str], **fields) -> None:
+    """A gate failure: print why, remove the record of the last pass, write the run log line, exit 1."""
+    print(message)
+    with contextlib.suppress(FileNotFoundError):
+        GATE_PASS.unlink()
+    log_event("gate", result="fail", failed=failed, **fields, warnings=warnings or None)
+    sys.exit(1)
+
+
+def gate_warnings(ref: str, cfg: dict, first: List[str]) -> tuple:
+    """(warnings, risk matches) of the change: what a person looks at. A warning does not fail the gate."""
+    warnings = first + test_changes(ref)
+    oos = out_of_scope_files(ref)
+    if oos:
+        warnings.append(f"{len(oos)} file(s) changed outside the task scope: {', '.join(oos[:10])}")
+    drift = base_drift()
+    if drift and drift["behind"]:
+        warnings.append(drift_line(drift))
+    if cfg.get("max_changed_lines"):  # a change that is too large to review well: reported, a person decides
+        files, changed, _ = change_size(ref)
+        if changed > int(cfg["max_changed_lines"]):
+            warnings.append(f"the change has {changed} lines in {files} files (limit {int(cfg['max_changed_lines'])}): split it")
+    if cfg.get("max_complexity"):  # reported, not blocked: a person decides if the function must be split
+        warnings += complexity_findings(ref, int(cfg["max_complexity"]))[:10]
+    risk, risk_problems = risk_matches(ref, cfg)
+    warnings += risk_problems + [risk_line(m) + ". A person reviews this change" for m in risk if not m["waived"]]
+    return warnings, risk
+
+
+def gate_blockers(ref: str, cfg: dict, risk: List[dict], warnings: List[str]) -> None:
+    """Changes that do not pass without a person: a risk rule with `block`, a deleted test, a new skip marker.
+    This runs before the commands and before the "unchanged" shortcut: no pass exists with these changes."""
+    risk_blocked = [m for m in risk if m["block"] and not m["waived"]]
+    if risk_blocked:  # the project decided that this type of change does not pass without a person
+        gate_fail("gate FAILED: risk rules that need a person\n" + "\n".join(risk_line(m) for m in risk_blocked)
+                  + "\nTell the user. A person reviews these lines and then runs: memory.py risk waive --rule "
+                  + risk_blocked[0]["name"] + " --reason \"...\"", "risk rules", warnings, blocked=len(risk_blocked))
+    blocked = blocked_test_changes(ref, cfg)
+    if blocked:
+        gate_fail("gate FAILED: test changes that need a person\n" + "\n".join(blocked[:20])
+                  + "\nRestore the test, or tell the user why it must go. A person who agrees adds the path to "
+                  f"\"allowed_test_changes\" in {GATE.as_posix()} and commits it.", "test changes", warnings, blocked=len(blocked))
+
+
+def gate_checks(ref: str, cfg: dict, warnings: List[str], t0: float) -> None:
+    """The secret scan, then each command of the gate file. The first failure ends the gate."""
+    limit, timeout = int(cfg.get("max_output", 3000)), int(cfg.get("timeout", 900))
+    if cfg.get("secret_scan", True):  # before the project's commands: a secret in the change stops the gate
+        found = scan_secrets(ref)
+        if found:
+            gate_fail("gate FAILED: secret scan\n" + "\n".join(found[:20])
+                      + f"\nRemove the value and rotate it. A false alarm: put `{SECRET_ALLOW}` on the line.",
+                      "secret scan", warnings, seconds=round(time.time() - t0, 1))
+    for c in cfg.get("commands", []):
+        timed_out = None
+        try:
+            r = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            ok, out = r.returncode == 0, (r.stdout + r.stderr)
+        except subprocess.TimeoutExpired:
+            ok, out, timed_out = False, f"timeout after {timeout}s", True
+        if not ok:
+            gate_fail(f"gate FAILED: {c}\n" + out[-limit:], safe_cmd(c), warnings, timed_out=timed_out,
+                      seconds=round(time.time() - t0, 1))
+        print(f"gate ok: {c}")
+    replay_status, replay_paths, replay_out = run_replay_base_tests(ref, cfg, limit, timeout)
+    if replay_status == "fail":
+        msg = "the tests of the base fail on this code: " + ", ".join(replay_paths[:10])
+        if str(cfg.get("replay_base_tests") or "").lower() == "block":
+            gate_fail(f"gate FAILED: {msg}" + (f"\n{replay_out}" if replay_out else ""), "base tests", warnings,
+                      seconds=round(time.time() - t0, 1))
+        warnings.append(msg)
+        print(f"gate WARNING: {msg}")
+
+
 def cmd_gate(a: argparse.Namespace) -> None:
     restored_warnings = restore_replay_backup()
     if ROOT.is_dir():
@@ -1517,98 +1712,28 @@ def cmd_gate(a: argparse.Namespace) -> None:
     import hashlib
     global _POLICY  # in each gate line of the run log: which version of the rules gave this result
     _POLICY = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    cmds = cfg.get("commands", [])
-    limit = int(cfg.get("max_output", 3000))
-    timeout = int(cfg.get("timeout", 900))
     if a.check:  # no command runs: did the gate pass for exactly this code? (the Stop hook asks this on a release)
         fresh = gate_fresh()
         print("gate: passed for this workspace" if fresh else "gate: no pass for this workspace")
         sys.exit(0 if fresh else 1)
     if ref_note:
         print(f"gate: {ref_note}")
-    warnings = restored_warnings + ref_warnings + ([note] if note else []) + test_changes(ref)
-    oos = out_of_scope_files(ref)
-    if oos:
-        warnings.append(f"{len(oos)} file(s) changed outside the task scope: {', '.join(oos[:10])}")
-    drift = base_drift()
-    if drift and drift["behind"]:
-        warnings.append(drift_line(drift))
-    if cfg.get("max_changed_lines"):  # a change that is too large to review well: reported, a person decides
-        files, changed, _ = change_size(ref)
-        if changed > int(cfg["max_changed_lines"]):
-            warnings.append(f"the change has {changed} lines in {files} files (limit {int(cfg['max_changed_lines'])}): split it")
-    if cfg.get("max_complexity"):  # reported, not blocked: a person decides if the function must be split
-        warnings += complexity_findings(ref, int(cfg["max_complexity"]))[:10]
-    risk, risk_problems = risk_matches(ref, cfg)
-    warnings += risk_problems + [risk_line(m) + ". A person reviews this change" for m in risk if not m["waived"]]
+    warnings, risk = gate_warnings(ref, cfg, restored_warnings + ref_warnings + ([note] if note else []))
     for w in warnings:
         print(f"gate WARNING: {w}")
     for m in risk:
         if m["waived"]:
             print(f"gate: {risk_line(m)}")
-    risk_blocked = [m for m in risk if m["block"] and not m["waived"]]
-    if risk_blocked:  # the project decided that this type of change does not pass without a person
-        print("gate FAILED: risk rules that need a person\n" + "\n".join(risk_line(m) for m in risk_blocked)
-              + "\nTell the user. A person reviews these lines and then runs: memory.py risk waive --rule "
-              + risk_blocked[0]["name"] + " --reason \"...\"")
-        with contextlib.suppress(FileNotFoundError):
-            GATE_PASS.unlink()
-        log_event("gate", result="fail", failed="risk rules", blocked=len(risk_blocked), warnings=warnings or None)
-        sys.exit(1)
-    blocked = blocked_test_changes(ref, cfg)
-    if blocked:  # before the commands, and before the "unchanged" shortcut: no pass exists with these changes
-        print("gate FAILED: test changes that need a person\n" + "\n".join(blocked[:20])
-              + "\nRestore the test, or tell the user why it must go. A person who agrees adds the path to "
-              f"\"allowed_test_changes\" in {GATE.as_posix()} and commits it.")
-        with contextlib.suppress(FileNotFoundError):
-            GATE_PASS.unlink()
-        log_event("gate", result="fail", failed="test changes", blocked=len(blocked), warnings=warnings or None)
-        sys.exit(1)
+    gate_blockers(ref, cfg, risk, warnings)
     wh = workspace_hash()
     if not a.force and GATE_PASS.exists() and GATE_PASS.read_text(encoding="utf-8").strip() == wh:
         print("gate: workspace unchanged since last pass — skipped")
         log_event("gate", result="skipped", warnings=warnings or None)
         return
     t0 = time.time()
-    if cfg.get("secret_scan", True):  # before the project's commands: a secret in the change stops the gate
-        found = scan_secrets(ref)
-        if found:
-            print("gate FAILED: secret scan\n" + "\n".join(found[:20])
-                  + f"\nRemove the value and rotate it. A false alarm: put `{SECRET_ALLOW}` on the line.")
-            with contextlib.suppress(FileNotFoundError):
-                GATE_PASS.unlink()
-            log_event("gate", result="fail", failed="secret scan", seconds=round(time.time() - t0, 1), warnings=warnings or None)
-            sys.exit(1)
-    for c in cmds:
-        timed_out = None
-        try:
-            r = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-            ok, out = r.returncode == 0, (r.stdout + r.stderr)
-        except subprocess.TimeoutExpired:
-            ok, out, timed_out = False, f"timeout after {timeout}s", True
-        if not ok:
-            print(f"gate FAILED: {c}\n" + out[-limit:])
-            with contextlib.suppress(FileNotFoundError):
-                GATE_PASS.unlink()
-            log_event("gate", result="fail", failed=safe_cmd(c), timed_out=timed_out, seconds=round(time.time() - t0, 1),
-                      warnings=warnings or None)
-            sys.exit(1)
-        print(f"gate ok: {c}")
-    replay_status, replay_paths, replay_out = run_replay_base_tests(ref, cfg, limit, timeout)
-    if replay_status == "fail":
-        msg = "the tests of the base fail on this code: " + ", ".join(replay_paths[:10])
-        if str(cfg.get("replay_base_tests") or "").lower() == "block":
-            print(f"gate FAILED: {msg}")
-            if replay_out:
-                print(replay_out)
-            with contextlib.suppress(FileNotFoundError):
-                GATE_PASS.unlink()
-            log_event("gate", result="fail", failed="base tests", seconds=round(time.time() - t0, 1), warnings=warnings or None)
-            sys.exit(1)
-        warnings.append(msg)
-        print(f"gate WARNING: {msg}")
+    gate_checks(ref, cfg, warnings, t0)
     GATE_PASS.write_text(wh + "\n", encoding="utf-8")
-    log_event("gate", result="pass", commands=len(cmds), seconds=round(time.time() - t0, 1), warnings=warnings or None)
+    log_event("gate", result="pass", commands=len(cfg.get("commands", [])), seconds=round(time.time() - t0, 1), warnings=warnings or None)
     print("gate PASSED")
 
 
@@ -1981,6 +2106,30 @@ def mutants_state() -> str:
         return ""
 
 
+def repro_result(a: argparse.Namespace, sha: str, rel: Path, before, before_out: str, after, after_out: str) -> tuple:
+    """(result, why) from the two runs of the test: on the base and on the current code. Only `verified` shows a fix."""
+    if before == 0:
+        result, why = "not-reproduced", "the test passes on the base: it does not show the problem"
+        if after == 0 and base_seen(a.test, a.test_file, sha, rel, a.timeout, a.base) is False:
+            why += (". The run on the base did not load the source files that the change touched: the test imports the code from "
+                    "another place (an absolute path, an installed package). Import the code relative to the current directory")
+    elif before is None:
+        result, why = "base-timeout", f"the test did not finish on the base ({a.timeout}s)"
+    elif a.expect and a.expect not in before_out:
+        result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
+    elif after != 0:
+        result, why = "still-failing", "the test still fails on the current code"
+        tail = lambda out: [l.strip() for l in out.strip().splitlines() if l.strip()][-4:]
+        if after is not None and tail(before_out) and tail(before_out) == tail(after_out) and not _BASE_OPTS["env"]:
+            why += (". The last lines of the two outputs are the same. If the project keeps compiled files outside the "
+                    "repository (for example CARGO_TARGET_DIR, or a build directory that the two checkouts use), the run on the "
+                    "current code can have used the files that the base compiled. Give the base its own directory, "
+                    "for example --base-env CARGO_TARGET_DIR=<directory>, or make the command compile again")
+    else:
+        result, why = "verified", "the test fails on the base and passes on the current code"
+    return result, why
+
+
 def cmd_repro(a: argparse.Namespace) -> None:
     """A fix is shown by a test that fails on the base commit and passes on the current code.
 
@@ -2006,25 +2155,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
     before, before_out = run_check_on_base(a.test, a.test_file, sha, rel, a.timeout, a.base)
     after, after_out = run_check(a.test, Path("."), a.timeout)
 
-    if before == 0:
-        result, why = "not-reproduced", "the test passes on the base: it does not show the problem"
-        if after == 0 and base_seen(a.test, a.test_file, sha, rel, a.timeout, a.base) is False:
-            why += (". The run on the base did not load the source files that the change touched: the test imports the code from "
-                    "another place (an absolute path, an installed package). Import the code relative to the current directory")
-    elif before is None:
-        result, why = "base-timeout", f"the test did not finish on the base ({a.timeout}s)"
-    elif a.expect and a.expect not in before_out:
-        result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
-    elif after != 0:
-        result, why = "still-failing", "the test still fails on the current code"
-        tail = lambda out: [l.strip() for l in out.strip().splitlines() if l.strip()][-4:]
-        if after is not None and tail(before_out) and tail(before_out) == tail(after_out) and not _BASE_OPTS["env"]:
-            why += (". The last lines of the two outputs are the same. If the project keeps compiled files outside the "
-                    "repository (for example CARGO_TARGET_DIR, or a build directory that the two checkouts use), the run on the "
-                    "current code can have used the files that the base compiled. Give the base its own directory, "
-                    "for example --base-env CARGO_TARGET_DIR=<directory>, or make the command compile again")
-    else:
-        result, why = "verified", "the test fails on the base and passes on the current code"
+    result, why = repro_result(a, sha, rel, before, before_out, after, after_out)
     # Was the test written before the change? Yes only if each test file and test patch is one that `feature add` recorded.
     used = [patch_digest(f) for f in list(getattr(a, "test_patch", None) or []) + list(getattr(a, "test_file", None) or [])]
     recorded_test = bool(used) and all(h and h in recorded_test_patches() for h in used)
@@ -2144,13 +2275,7 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
     return ("HIGH", high) if high else ("MEDIUM", medium) if medium else ("LOW", ["small change, every check has a record"])
 
 
-def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Optional[List[str]] = None) -> tuple:
-    """(Markdown text, gaps, warnings, risk label) for exactly this code.
-
-    It states what is not verified as plainly as what is: a reviewer decides faster with the gaps in view.
-    Everything comes from records that the checks wrote; nothing here is the agent's own claim.
-    """
-    lines, gaps = ["## Verification evidence", ""], []
+def evidence_gate(lines: List[str], gaps: List[str]) -> None:
     events = read_jsonl(EVENTS)
     last_gate = next((e for e in reversed(events) if e.get("ev") == "gate" and e.get("result") in ("pass", "fail")), None)
     fresh = gate_fresh()
@@ -2164,6 +2289,10 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         failed = (last_gate or {}).get("failed") if (last_gate or {}).get("result") == "fail" else None
         lines.append("- Gate: NOT passed for this code" + (f" (last run failed: `{clean(failed, 100)}`)" if failed else ""))
         gaps.append("the completion gate did not pass for this code")
+
+
+def evidence_checks(ref: str, lines: List[str], gaps: List[str]) -> None:
+    """The records of the commands that show a result: reproduction, counterexample, mutation check."""
     if repro_fresh():
         rec = json.loads(REPRO.read_text(encoding="utf-8"))
         lines.append(f"- Reproduction: VERIFIED, `{clean(rec.get('test', '?'), 100)}` fails on {str(rec.get('base', '?'))[:12]} and passes on this code"
@@ -2187,64 +2316,85 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
                                                      "fail": "FAILED for this code (a mutant lived, or the tool gave an error)"}.get(state, "not run for this code"))
                 if state != "pass":
                     gaps.append("the mutation check did not pass for this code: the tests can accept a wrong version of the change")
+
+
+def evidence_grades(ref: str, feats: List[dict], lines: List[str], gaps: List[str]) -> None:
+    """Which features are graded as passing, by whom, and what weakens a grade."""
     req_runs = required_evaluator_runs(ref=ref)
     cur_code_hash = code_state_hash()
+    graded = [f for f in feats if f.get("passes")]
+    graded_labels = []
+    for f in graded[:8]:
+        vs = f.get("vote_summary") or {}
+        ver = f.get("verified_by") or "?"
+        if vs.get("status") == "PASS" and vs.get("required", 1) > 1:
+            graded_labels.append(f"{f['id']} by {ver} ({vs['pass']}/{vs['required']} runs)")
+        else:
+            graded_labels.append(f"{f['id']} by {ver}")
+    lines.append(f"- Acceptance criteria: {len(graded)} of {len(feats)} features graded as passing"
+                 + (" (" + ", ".join(graded_labels) + ")" if graded_labels else ""))
+    open_ids = [f["id"] for f in feats if not f.get("passes")]
+    if open_ids:
+        gaps.append("features not graded as passing: " + ", ".join(open_ids[:8]))
+    for f in feats:
+        if f.get("passes"):
+            continue
+        agg = aggregate_feature_votes(f.get("votes", []), cur_code_hash, req_runs) if f.get("votes") else None
+        vs = f.get("vote_summary") or {}
+        if agg and agg["split"]:
+            gaps.append(f"evaluator split on {f['id']} ({agg['pass']} PASS, {agg['fail']} FAIL of {req_runs} runs)")
+        elif vs.get("split"):
+            gaps.append(f"evaluator split on {f['id']} ({vs.get('pass', 0)} PASS, {vs.get('fail', 0)} FAIL of {vs.get('required', req_runs)} runs)")
+    selfgraded = [f["id"] for f in graded if (f.get("verified_by") or "") not in ("evaluator", "human", "ci")]
+    if selfgraded:
+        gaps.append("graded without an independent verifier: " + ", ".join(selfgraded[:8]))
+    for f in graded[:8]:
+        n = sum(1 for c in f.get("criteria") or [] if impl_terms(str(c)))
+        if n:
+            gaps.append(f"{n} of {len(f['criteria'])} criteria of {f['id']} name code: its PASS shows that the code is "
+                        "as described, not that the behaviour is correct")
+
+
+def evidence_coverage(ref: str, feats: List[dict], lines: List[str], gaps: List[str]) -> None:
+    """Which part of the change the graded features cover: a PASS of a feature is not a PASS of the change."""
+    cov = feature_coverage(ref, feats)
+    if cov and cov["pending"]:
+        ids = ", ".join(cov["pending_features"][:6])
+        gaps.append(f"{len(cov['pending'])} changed file(s) are in the scope of {ids}, not graded yet: they wait for that grade")
+    if cov and not cov["scoped"] and cov["pending"]:
+        lines.append(f"- Feature coverage: 0 of {cov['files']} changed file(s) are in the scope of a graded feature; "
+                     f"{len(cov['pending'])} are in the scope of a feature that is not graded yet")
+        if cov["outside"]:
+            gaps.append(f"{len(cov['outside'])} changed file(s) are not linked to a feature (`task open --title T --feature F --scope GLOB`): "
+                        + ", ".join(clean(p, 80) for p in cov["outside"][:10]))
+    elif cov and not cov["scoped"]:
+        lines.append(f"- Feature coverage: not recorded. No task of a graded feature has a scope, thus the {cov['files']} "
+                     "changed file(s) are not linked to a feature that passed")
+        gaps.append(f"the {cov['files']} changed file(s) are not linked to a graded feature (`task open --title T --feature F --scope GLOB`): "
+                    "a PASS of a feature is not a PASS of the change")
+    elif cov:
+        out = cov["outside"]
+        covered = cov["files"] - len(out) - len(cov["pending"])
+        lines.append(f"- Feature coverage: {covered} of {cov['files']} changed file(s) are in the scope of a graded feature"
+                     + (f"; {len(cov['pending'])} are in the scope of a feature that is not graded yet" if cov["pending"] else ""))
+        if out:
+            gaps.append(f"{len(out)} changed file(s) are outside the scope of each graded feature, with no criteria and no evaluator: "
+                        + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
+
+
+def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Optional[List[str]] = None) -> tuple:
+    """(Markdown text, gaps, warnings, risk label) for exactly this code.
+
+    It states what is not verified as plainly as what is: a reviewer decides faster with the gaps in view.
+    Everything comes from records that the checks wrote; nothing here is the agent's own claim.
+    """
+    lines, gaps = ["## Verification evidence", ""], []
+    evidence_gate(lines, gaps)
+    evidence_checks(ref, lines, gaps)
     feats = load_features()
     if feats:
-        graded = [f for f in feats if f.get("passes")]
-        graded_labels = []
-        for f in graded[:8]:
-            vs = f.get("vote_summary") or {}
-            ver = f.get("verified_by") or "?"
-            if vs.get("status") == "PASS" and vs.get("required", 1) > 1:
-                graded_labels.append(f"{f['id']} by {ver} ({vs['pass']}/{vs['required']} runs)")
-            else:
-                graded_labels.append(f"{f['id']} by {ver}")
-        lines.append(f"- Acceptance criteria: {len(graded)} of {len(feats)} features graded as passing"
-                     + (" (" + ", ".join(graded_labels) + ")" if graded_labels else ""))
-        open_ids = [f["id"] for f in feats if not f.get("passes")]
-        if open_ids:
-            gaps.append("features not graded as passing: " + ", ".join(open_ids[:8]))
-        for f in feats:
-            if f.get("passes"):
-                continue
-            agg = aggregate_feature_votes(f.get("votes", []), cur_code_hash, req_runs) if f.get("votes") else None
-            vs = f.get("vote_summary") or {}
-            if agg and agg["split"]:
-                gaps.append(f"evaluator split on {f['id']} ({agg['pass']} PASS, {agg['fail']} FAIL of {req_runs} runs)")
-            elif vs.get("split"):
-                gaps.append(f"evaluator split on {f['id']} ({vs.get('pass', 0)} PASS, {vs.get('fail', 0)} FAIL of {vs.get('required', req_runs)} runs)")
-        selfgraded = [f["id"] for f in graded if (f.get("verified_by") or "") not in ("evaluator", "human", "ci")]
-        if selfgraded:
-            gaps.append("graded without an independent verifier: " + ", ".join(selfgraded[:8]))
-        for f in graded[:8]:
-            n = sum(1 for c in f.get("criteria") or [] if impl_terms(str(c)))
-            if n:
-                gaps.append(f"{n} of {len(f['criteria'])} criteria of {f['id']} name code: its PASS shows that the code is "
-                            "as described, not that the behaviour is correct")
-        cov = feature_coverage(ref, feats)
-        if cov and cov["pending"]:
-            ids = ", ".join(cov["pending_features"][:6])
-            gaps.append(f"{len(cov['pending'])} changed file(s) are in the scope of {ids}, not graded yet: they wait for that grade")
-        if cov and not cov["scoped"] and cov["pending"]:
-            lines.append(f"- Feature coverage: 0 of {cov['files']} changed file(s) are in the scope of a graded feature; "
-                         f"{len(cov['pending'])} are in the scope of a feature that is not graded yet")
-            if cov["outside"]:
-                gaps.append(f"{len(cov['outside'])} changed file(s) are not linked to a feature (`task open --title T --feature F --scope GLOB`): "
-                            + ", ".join(clean(p, 80) for p in cov["outside"][:10]))
-        elif cov and not cov["scoped"]:
-            lines.append(f"- Feature coverage: not recorded. No task of a graded feature has a scope, thus the {cov['files']} "
-                         "changed file(s) are not linked to a feature that passed")
-            gaps.append(f"the {cov['files']} changed file(s) are not linked to a graded feature (`task open --title T --feature F --scope GLOB`): "
-                        "a PASS of a feature is not a PASS of the change")
-        elif cov:
-            out = cov["outside"]
-            covered = cov["files"] - len(out) - len(cov["pending"])
-            lines.append(f"- Feature coverage: {covered} of {cov['files']} changed file(s) are in the scope of a graded feature"
-                         + (f"; {len(cov['pending'])} are in the scope of a feature that is not graded yet" if cov["pending"] else ""))
-            if out:
-                gaps.append(f"{len(out)} changed file(s) are outside the scope of each graded feature, with no criteria and no evaluator: "
-                            + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
+        evidence_grades(ref, feats, lines, gaps)
+        evidence_coverage(ref, feats, lines, gaps)
     else:
         lines.append("- Acceptance criteria: none recorded")
         gaps.append("no acceptance criteria were recorded")
@@ -2449,60 +2599,85 @@ def gh_time(s: Optional[str]) -> Optional[dt.datetime]:
         return None
 
 
+def factory_github(a: argparse.Namespace):
+    """The pull requests on branches with the agent prefix, from GitHub. None when the GitHub CLI does not answer."""
+    from collections import Counter
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=a.days)
+    try:
+        raw = json.loads(gh("pr", "list", "--state", "all", "--limit", "1000", "--json",
+                            "number,title,headRefName,state,isDraft,createdAt,mergedAt,closedAt,body") or "[]")
+    except (SystemExit, ValueError):
+        return None
+    mine = [p for p in raw if str(p.get("headRefName", "")).startswith(a.branch_prefix)
+            and (gh_time(p.get("createdAt")) or since) >= since]
+    merged = [p for p in mine if p.get("state") == "MERGED"]
+    closed = [p for p in mine if p.get("state") == "CLOSED"]
+    hours = sorted((gh_time(p["mergedAt"]) - gh_time(p["createdAt"])).total_seconds() / 3600
+                   for p in merged if gh_time(p.get("mergedAt")) and gh_time(p.get("createdAt")))
+    costs = {p["number"]: float(m.group(1)) for p in mine for m in [re.search(r"Cost: \$([0-9]+(?:\.[0-9]+)?)", p.get("body") or "")] if m}
+    risks = Counter(m.group(1) for p in mine for m in [re.search(r"Review risk: (HIGH|MEDIUM|LOW)", p.get("body") or "")] if m)
+    numbers = {p["number"] for p in merged}
+    reverted = {n for p in raw if re.match(r"\s*revert\b", p.get("title") or "", re.I)
+                for n in numbers if re.search(rf"#{n}\b", (p.get("title") or "") + " " + (p.get("body") or ""))}
+    decided = len(merged) + len(closed)
+    return {
+        "pull_requests": len(mine), "merged": len(merged), "closed_without_merge": len(closed),
+        "open": len(mine) - decided, "open_drafts": sum(1 for p in mine if p.get("state") == "OPEN" and p.get("isDraft")),
+        "merge_rate": round(len(merged) / decided, 2) if decided else None, "merge_rate_ci95": wilson(len(merged), decided),
+        "median_hours_to_merge": round(hours[len(hours) // 2], 1) if hours else None,
+        "cost_usd": round(sum(costs.values()), 2) if costs else None, "with_cost": len(costs),
+        "cost_per_merged_usd": round(sum(costs.values()) / len(merged), 2) if costs and merged and len(costs) == len(mine) else None,
+        "review_risk": dict(risks), "reverted": len(reverted),
+        "revert_rate": round(len(reverted) / len(merged), 2) if merged else None,
+    }
+
+
+def factory_local(days: int) -> dict:
+    """What the run log of this machine has: pull requests refused for a red gate, unattended runs, triage results."""
+    from collections import Counter
+    cut = (dt.datetime.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
+    evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= cut]
+    prs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "pr")
+    runs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "gated-run")
+    tri = Counter(e.get("result", "?") for e in evs if e.get("ev") == "triage")
+    tried = prs["opened"] + prs["refused-red-gate"]
+    return {
+        "pr_opened": prs["opened"], "pr_refused_red_gate": prs["refused-red-gate"], "pr_refused_duplicate": prs["refused-duplicate"],
+        "false_done_rate": round(prs["refused-red-gate"] / tried, 2) if tried else None,
+        "false_done_ci95": wilson(prs["refused-red-gate"], tried),
+        "gated_runs_pass": runs["pass"], "gated_runs_fail": runs["fail"],
+        "triage_ready": tri["ready"], "triage_needs_info": tri["needs-info"],
+    }
+
+
+def print_factory_github(g: dict, rate) -> None:
+    print(f"pull requests: {g['pull_requests']} opened · {g['merged']} merged · {g['closed_without_merge']} closed without merge · "
+          f"{g['open']} open ({g['open_drafts']} drafts)")
+    print(f"merge rate (of the decided ones): {rate(g['merge_rate'], g['merge_rate_ci95'])}")
+    print("time to merge: " + (f"median {g['median_hours_to_merge']} hours" if g["median_hours_to_merge"] is not None else "no data"))
+    if g["cost_usd"] is None:
+        print("cost: not recorded in the pull requests (`memory.py pr --cost-usd`)")
+    elif g["cost_per_merged_usd"] is not None:
+        print(f"cost: ${g['cost_usd']:.2f} for all runs · ${g['cost_per_merged_usd']:.2f} for each merged pull request")
+    else:
+        print(f"cost: ${g['cost_usd']:.2f} in {g['with_cost']} of {g['pull_requests']} pull requests "
+              "(not enough for a cost for each merged pull request)")
+    if g["review_risk"]:
+        print("review risk: " + " · ".join(f"{k} {v}" for k, v in sorted(g["review_risk"].items())))
+    print(f"stability: {g['reverted']} of {g['merged']} merged pull requests were reverted" if g["merged"] else "stability: no merged pull request")
+
+
 def cmd_factory(a: argparse.Namespace) -> None:
     """Numbers of the agent line: what came out, what was merged, how fast, at what cost, and what was reverted.
 
     Two sources. GitHub (durable): the pull requests on branches with the agent prefix. The local run log
     (this machine only, and a CI runner loses it): pull requests refused for a red gate, triage results.
     """
-    from collections import Counter
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=a.days)
     data: dict = {"days": a.days, "branch_prefix": a.branch_prefix}
     if not a.no_github:
-        try:
-            raw = json.loads(gh("pr", "list", "--state", "all", "--limit", "1000", "--json",
-                                "number,title,headRefName,state,isDraft,createdAt,mergedAt,closedAt,body") or "[]")
-        except (SystemExit, ValueError):
-            raw = None
-        if raw is None:
-            data["github"] = None
-        else:
-            mine = [p for p in raw if str(p.get("headRefName", "")).startswith(a.branch_prefix)
-                    and (gh_time(p.get("createdAt")) or since) >= since]
-            merged = [p for p in mine if p.get("state") == "MERGED"]
-            closed = [p for p in mine if p.get("state") == "CLOSED"]
-            hours = sorted((gh_time(p["mergedAt"]) - gh_time(p["createdAt"])).total_seconds() / 3600
-                           for p in merged if gh_time(p.get("mergedAt")) and gh_time(p.get("createdAt")))
-            costs = {p["number"]: float(m.group(1)) for p in mine for m in [re.search(r"Cost: \$([0-9]+(?:\.[0-9]+)?)", p.get("body") or "")] if m}
-            risks = Counter(m.group(1) for p in mine for m in [re.search(r"Review risk: (HIGH|MEDIUM|LOW)", p.get("body") or "")] if m)
-            numbers = {p["number"] for p in merged}
-            reverted = {n for p in raw if re.match(r"\s*revert\b", p.get("title") or "", re.I)
-                        for n in numbers if re.search(rf"#{n}\b", (p.get("title") or "") + " " + (p.get("body") or ""))}
-            decided = len(merged) + len(closed)
-            data["github"] = {
-                "pull_requests": len(mine), "merged": len(merged), "closed_without_merge": len(closed),
-                "open": len(mine) - decided, "open_drafts": sum(1 for p in mine if p.get("state") == "OPEN" and p.get("isDraft")),
-                "merge_rate": round(len(merged) / decided, 2) if decided else None, "merge_rate_ci95": wilson(len(merged), decided),
-                "median_hours_to_merge": round(hours[len(hours) // 2], 1) if hours else None,
-                "cost_usd": round(sum(costs.values()), 2) if costs else None, "with_cost": len(costs),
-                "cost_per_merged_usd": round(sum(costs.values()) / len(merged), 2) if costs and merged and len(costs) == len(mine) else None,
-                "review_risk": dict(risks), "reverted": len(reverted),
-                "revert_rate": round(len(reverted) / len(merged), 2) if merged else None,
-            }
+        data["github"] = factory_github(a)
     if ROOT.exists():
-        cut = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
-        evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= cut]
-        prs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "pr")
-        runs = Counter(e.get("result", "?") for e in evs if e.get("ev") == "gated-run")
-        tri = Counter(e.get("result", "?") for e in evs if e.get("ev") == "triage")
-        tried = prs["opened"] + prs["refused-red-gate"]
-        data["local"] = {
-            "pr_opened": prs["opened"], "pr_refused_red_gate": prs["refused-red-gate"], "pr_refused_duplicate": prs["refused-duplicate"],
-            "false_done_rate": round(prs["refused-red-gate"] / tried, 2) if tried else None,
-            "false_done_ci95": wilson(prs["refused-red-gate"], tried),
-            "gated_runs_pass": runs["pass"], "gated_runs_fail": runs["fail"],
-            "triage_ready": tri["ready"], "triage_needs_info": tri["needs-info"],
-        }
+        data["local"] = factory_local(a.days)
     if a.json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return
@@ -2516,20 +2691,7 @@ def cmd_factory(a: argparse.Namespace) -> None:
     elif g is None:
         print("GitHub: not available (the GitHub CLI did not answer). The numbers below are from this machine only.")
     else:
-        print(f"pull requests: {g['pull_requests']} opened · {g['merged']} merged · {g['closed_without_merge']} closed without merge · "
-              f"{g['open']} open ({g['open_drafts']} drafts)")
-        print(f"merge rate (of the decided ones): {rate(g['merge_rate'], g['merge_rate_ci95'])}")
-        print("time to merge: " + (f"median {g['median_hours_to_merge']} hours" if g["median_hours_to_merge"] is not None else "no data"))
-        if g["cost_usd"] is None:
-            print("cost: not recorded in the pull requests (`memory.py pr --cost-usd`)")
-        elif g["cost_per_merged_usd"] is not None:
-            print(f"cost: ${g['cost_usd']:.2f} for all runs · ${g['cost_per_merged_usd']:.2f} for each merged pull request")
-        else:
-            print(f"cost: ${g['cost_usd']:.2f} in {g['with_cost']} of {g['pull_requests']} pull requests "
-                  "(not enough for a cost for each merged pull request)")
-        if g["review_risk"]:
-            print("review risk: " + " · ".join(f"{k} {v}" for k, v in sorted(g["review_risk"].items())))
-        print(f"stability: {g['reverted']} of {g['merged']} merged pull requests were reverted" if g["merged"] else "stability: no merged pull request")
+        print_factory_github(g, rate)
     loc = data.get("local")
     if loc:
         print(f"this machine: {loc['pr_opened']} pull requests opened · {loc['pr_refused_red_gate']} refused for a red gate · "
@@ -2985,11 +3147,9 @@ def control_coverage(evs: List[dict]) -> dict:
     return out
 
 
-def cmd_stats(a: argparse.Namespace) -> None:
-    ensure()
+def stats_data(evs: List[dict], days: int) -> dict:
+    """The numbers of `stats`, from the run log lines of the period."""
     from collections import Counter
-    since = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
-    evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= since]
     gates = [e for e in evs if e.get("ev") == "gate"]
     ran = [g for g in gates if g.get("result") in ("pass", "fail")]
     failed = [g for g in ran if g["result"] == "fail"]
@@ -3007,8 +3167,8 @@ def cmd_stats(a: argparse.Namespace) -> None:
     repros = Counter(e.get("result", "?") for e in evs if e.get("ev") == "repro")
     lessons = Counter(e.get("action", "?") for e in evs if e.get("ev") == "lesson")
     votes = Counter(e.get("vote", "?") for e in evs if e.get("ev") == "lesson" and e.get("action") == "vote")
-    data = {
-        "days": a.days, "events": len(evs), "sessions": len({e["session"] for e in evs if e.get("session")}),
+    return {
+        "days": days, "events": len(evs), "sessions": len({e["session"] for e in evs if e.get("session")}),
         "gate": {"runs": len(ran), "failed": len(failed), "skipped": len(gates) - len(ran),
                  "fail_rate": round(len(failed) / len(ran), 2) if ran else None,
                  "median_seconds": secs[len(secs) // 2] if secs else None,
@@ -3023,28 +3183,22 @@ def cmd_stats(a: argparse.Namespace) -> None:
         "lessons": {"added": lessons["add"], "recurred": lessons["recur"], "helpful": votes["helpful"], "harmful": votes["harmful"]},
         "coverage": control_coverage(evs),
     }
-    if a.json:
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-        cov = data["coverage"]
-        if a.min_gate_coverage is not None and cov["sessions"] and cov["gate_checked"] / cov["sessions"] < a.min_gate_coverage:
-            sys.exit(1)
-        return
-    if not evs:
-        print(f"no events in the last {a.days} days ({EVENTS} is written by gate, feature, lesson and the hooks)")
-        return
+
+
+def print_stats(data: dict) -> None:
     g, st, f, l = data["gate"], data["stop_hook"], data["features"], data["lessons"]
-    print(f"# Run statistics: last {a.days} days ({data['events']} events, {data['sessions']} sessions)")
+    print(f"# Run statistics: last {data['days']} days ({data['events']} events, {data['sessions']} sessions)")
     print(f"gate: {g['runs']} runs · {g['failed']} failed" + (f" ({g['fail_rate']:.0%})" if g["runs"] else "")
-          + f" · {g['skipped']} skipped (unchanged)" + (f" · median {g['median_seconds']}s" if secs else ""))
+          + f" · {g['skipped']} skipped (unchanged)" + (f" · median {g['median_seconds']}s" if g["median_seconds"] is not None else ""))
     for c, n in g["fails_by_command"].items():
         print(f"  {n}× failed: {c}")
     print(f"stop hook: {st['blocked']} blocked · {st['released_red']} released without a passing gate")
     print(f"features: {f['passed']} passed · {f['failed_gradings']} failed gradings"
-          + (f" · {f['rounds_per_pass']} evaluator rounds per pass" if rounds else "")
-          + (" · verified by: " + ", ".join(f"{k} {v}" for k, v in f["verified_by"].items()) if passes else ""))
+          + (f" · {f['rounds_per_pass']} evaluator rounds per pass" if f["rounds_per_pass"] is not None else "")
+          + (" · verified by: " + ", ".join(f"{k} {v}" for k, v in f["verified_by"].items()) if f["passed"] else ""))
     if f["passed_without_green_gate"]:
         print("  ⚠ marked as passing while the gate was not green for that workspace: " + ", ".join(f["passed_without_green_gate"]))
-    if sum(repros.values()):
+    if data["repro"]["verified"] + data["repro"]["not_verified"]:
         print(f"reproductions: {data['repro']['verified']} verified · {data['repro']['not_verified']} not verified")
     print(f"lessons: {l['added']} added · {l['recurred']} recurred · votes +{l['helpful']}/-{l['harmful']}")
     c = data["coverage"]
@@ -3058,7 +3212,23 @@ def cmd_stats(a: argparse.Namespace) -> None:
               f" · reproduction verified: {c['repro']} of {n}")
         if c["no_control"]:
             print(f"  ⚠ no control left a record: {c['no_control']} of {n}")
-    if a.min_gate_coverage is not None and c["sessions"] and c["gate_checked"] / c["sessions"] < a.min_gate_coverage:
+
+
+def cmd_stats(a: argparse.Namespace) -> None:
+    ensure()
+    since = (dt.datetime.now() - dt.timedelta(days=a.days)).isoformat(timespec="seconds")
+    evs = [e for p in (EVENTS_OLD, EVENTS) for e in read_jsonl(p) if str(e.get("ts", "")) >= since]
+    data = stats_data(evs, a.days)
+    c = data["coverage"]
+    low = a.min_gate_coverage is not None and c["sessions"] and c["gate_checked"] / c["sessions"] < a.min_gate_coverage
+    if a.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        sys.exit(1 if low else 0)
+    if not evs:
+        print(f"no events in the last {a.days} days ({EVENTS} is written by gate, feature, lesson and the hooks)")
+        return
+    print_stats(data)
+    if low:
         print(f"stats FAILED: the gate ran a command in {c['gate_checked']} of {c['sessions']} sessions "
               f"(less than {a.min_gate_coverage:.0%})")
         sys.exit(1)
