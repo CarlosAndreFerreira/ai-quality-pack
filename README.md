@@ -192,6 +192,22 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py power --delta 0.15 --rho
 - `install.py project . --evaluator-model opus` makes the evaluator subagent of Claude Code run on that model (a `model:` line in `.claude/agents/evaluator.md`). The idea is that a judge on the model of the author tends to agree with the author. Our one measurement does not support a stronger model by default: on the 24 shipped cases, the evaluator on Claude Sonnet approved 7 of 12 wrong patches, and the evaluator on Claude Haiku approved 0 of 12, for patches that Haiku wrote ([docs/RESULTS.md](docs/RESULTS.md)). The 7 are one type of defect, so this is not a general rate. On 42 patches for hard SWE-bench issues, Sonnet approved 13 of 19 wrong patches and Haiku 2 to 4; the two models did not separate wrong from correct patches. Measure the evaluator on cases with a known answer (`skill_eval.py judge`) before you change its model. Run the command again to change the model. OpenCode and the plugin are not changed.
 - Set `"evaluator_runs": 3` (or `"auto"`) in `.agent-memory/config.json` to require unanimous `feature vote` runs for `feature pass --verified-by evaluator`. Editing code makes old votes stale; disagreements appear as `UNKNOWN` in `evidence` until a fix or a human override.
 
+### Evidence for a verdict: counterexample and mutation check
+
+We measured the evaluator on 42 patches for hard issues with two models. One model rejected most patches and the other approved most patches, and the two did not separate wrong patches from correct patches ([docs/RESULTS.md](docs/RESULTS.md)). A verdict that only the opinion of a model supports has little information. These commands tie a verdict to a command that ran.
+
+```bash
+python3 .agents/skills/long-horizon/scripts/memory.py counterexample --test "pytest tests/test_probe.py" --test-file tests/test_probe.py
+python3 .agents/skills/long-horizon/scripts/memory.py mutants
+```
+
+- **`counterexample`** is the opposite of `repro`. It shows a defect: a command that fails on the current code. Then it runs the command on the base. If the command passes on the base, the change broke it (`regression`). If it fails on the base too, the change does not fix it (`not-fixed`), or the check fails for another reason: read the two outputs. A command that passes on the current code shows no defect (exit code 1).
+- **`"verdict_evidence": true`** in `.agent-memory/config.json` makes the evidence necessary for the evaluator. A PASS (`feature pass --verified-by evaluator`, `feature vote --verdict PASS`) needs a reproduction for the current code. A FAIL vote needs a counterexample for the current code. Without the command, the result is UNKNOWN, and the evaluator says what it could not show. A person can pass a feature with `--verified-by human`.
+- The evidence block shows a counterexample for the current code, and the review risk is then `HIGH`.
+- **`mutants`** runs the mutation tool of the project on the lines that the change touched. A mutation tool makes small wrong versions of the code. A test suite that accepts a wrong version does not check that code. The pack has no mutation engine: put the command in `gate.json`, with `{diff}` for the path of a diff file. For Rust: `"mutation_command": "cargo mutants --in-diff {diff}"` ([cargo-mutants](https://mutants.rs/in-diff.html); exit code 2 means that mutants were missed). StrykerJS has `--incremental`. When the command is in the gate file, the evidence block has a line "Mutation check", and a check that did not pass is in "Not verified". The gate does not run it: it is slow.
+- Why these two: a study that replayed the validation commands of repair agents on the code before and after the change found that, in 24% of the runs, no command that passed could tell the bug from the fix ([arXiv 2607.28871](https://arxiv.org/abs/2607.28871)). A benchmark of test suites written by models found that a high pass rate can hide a low rate of mutants caught ([SWE-Mutation, arXiv 2605.22175](https://arxiv.org/abs/2605.22175)). We read the abstracts (for SWE-Mutation, a page that summarises it), not the full papers.
+- Limits: a reproduction test that the same model wrote can agree with a wrong patch. In one study, 22% to 36% of the patches that passed such a test failed the tests of the maintainers ([arXiv 2511.16858](https://arxiv.org/abs/2511.16858)). The check of the base uses a git worktree: files that git does not track are not there. `mutants` trusts the exit code of the tool. Not measured: the effect of `verdict_evidence` on wrong work approved and on correct work rejected, and `mutants` with a real tool.
+
 ### From an issue to a draft pull request
 
 ```bash
@@ -434,6 +450,7 @@ python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
 - [Google Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model): fresh-context design review
 - DeepSeek Super-agent, Prime Agent, LongHorizon-Harness: task IDs and recovery, completion gate, stuck detection
 - [Test-Driven Development for Code Generation](https://arxiv.org/abs/2402.13521); [OWASP Top 10:2025](https://owasp.org/Top10/2025/)
+- [Validation Evidence in LLM Repair Agents](https://arxiv.org/abs/2607.28871): replay a check on the code before and after the change; [Investigating Test Overfitting on SWE-bench](https://arxiv.org/abs/2511.16858): the limit of tests that the same model wrote; [SWE-Mutation](https://arxiv.org/abs/2605.22175) and [cargo-mutants](https://mutants.rs/): mutation checks on the changed lines
 
 Evaluated projects and why each was or was not adopted: [docs/extensions.md](docs/extensions.md).
 

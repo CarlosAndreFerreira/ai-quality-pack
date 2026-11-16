@@ -87,6 +87,8 @@ PACK_VERSION = "0.7.1"  # the same as .claude-plugin/plugin.json (a test checks 
 CHAIN_START = "0" * 32  # `prev` of the first event of a chain
 SESSION = ROOT / ".session"
 REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
+COUNTER = ROOT / ".counterexample"  # the last counterexample that was shown: a command that fails on this code
+MUTANTS = ROOT / ".mutants"      # the last run of the mutation tool: which code it was for
 REPLAY_BACKUP = ROOT / ".replay-backup.json"  # temporary backup while replaying base tests on new code
 # test files, and markers that turn a test off (the gate reports deleted tests and new markers)
 TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_test\.(py|go|rs)$"
@@ -586,7 +588,8 @@ def task_event(**kw: object) -> None:
     append_line(TASKS, {k: v for k, v in kw.items() if v not in (None, "", [])})
 
 
-GITIGNORE_ENTRIES = ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro", ".replay-backup.json")
+GITIGNORE_ENTRIES = ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro", ".replay-backup.json",
+                     ".counterexample", ".mutants")
 
 
 def ensure_gitignore(create: bool = False) -> None:
@@ -871,6 +874,8 @@ def cmd_feature(a: argparse.Namespace) -> None:
                     die("PASS requires --verified-by (evaluator | human | ci). The implementer does not grade its own work.")
                 if a.verified_by == "self":
                     die("--verified-by self is not accepted; run the `evaluator` skill/subagent")
+                if a.verified_by == "evaluator" and verdict_evidence_problem("PASS"):
+                    die(verdict_evidence_problem("PASS"))
                 if a.verified_by == "evaluator" and req > 1:
                     agg = aggregate_feature_votes(f.get("votes", []), cur_hash, req)
                     if agg["status"] != "PASS":
@@ -893,6 +898,8 @@ def cmd_feature(a: argparse.Namespace) -> None:
             if not a.evidence:
                 die("feature vote needs --evidence (independent verification command output)")
             guard_secrets(a.evidence, a.evaluator_id or "")
+            if verdict_evidence_problem(a.verdict):
+                die(verdict_evidence_problem(a.verdict))
             f = by_id[a.id]
             cur_hash = code_state_hash()
             req = required_evaluator_runs()
@@ -1633,6 +1640,165 @@ def repro_fresh() -> bool:
         return False
 
 
+def run_check(test: str, cwd: Path, timeout: int) -> tuple:
+    """(exit code or None for a timeout, output) of one check command."""
+    try:
+        r = subprocess.run(test, shell=True, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+        return r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        return None, f"timeout after {timeout}s"
+
+
+def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str) -> tuple:
+    """Run a check on the base commit: a throw-away git worktree of `sha`, with the test files of the workspace on top."""
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="repro-"))
+    wt = tmp / "base"
+    try:
+        r = subprocess.run(["git", "worktree", "add", "--detach", str(wt), sha], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            die(f"could not check out {label}: {clean(r.stderr.strip(), 200)}")
+        for f in test_files:
+            if not Path(f).is_file():
+                die(f"--test-file {f} is not a file")
+            dst = wt / rel / f
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dst)
+        return run_check(test, wt / rel, timeout)
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)], capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["git", "worktree", "prune"], capture_output=True)
+
+
+def counterexample_fresh() -> Optional[dict]:
+    """The counterexample that was shown for exactly this workspace, or None."""
+    try:
+        rec = json.loads(COUNTER.read_text(encoding="utf-8"))
+        return rec if rec.get("hash") == workspace_hash() else None
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_counterexample(a: argparse.Namespace) -> None:
+    """A defect is shown by a command that fails on the current code. The base says which type of defect it is.
+
+    The command runs on the current code first: when it passes there, it shows no defect. Then it runs on the base
+    (as `repro` does). Passes on the base: the change broke it. Fails on the base too: the change does not fix it,
+    or the check fails for a reason that is not the change (a missing dependency, a wrong test): read the output.
+    A FAIL of an evaluator without such a command is an opinion.
+    """
+    ensure()
+    if a.check:
+        rec = counterexample_fresh()
+        print(f"counterexample: shown for this workspace ({rec['kind']})" if rec else "counterexample: none shown for this workspace")
+        sys.exit(0 if rec else 1)
+    if not a.test:
+        die("counterexample needs --test \"<command>\" (and --test-file for each test file that the base does not have)")
+    sha = git("rev-parse", "--verify", f"{a.base}^{{commit}}")
+    top = git("rev-parse", "--show-toplevel")
+    if not sha or not top:
+        die(f"counterexample needs a git repository and a known --base (got {a.base})")
+    rel = Path.cwd().resolve().relative_to(Path(top).resolve())
+    after, after_out = run_check(a.test, Path("."), a.timeout)
+    before = before_out = None
+    if after == 0:
+        result, kind, why = "not-shown", "", "the command passes on the current code: it shows no defect"
+    elif after is None:
+        result, kind, why = "timeout", "", f"the command did not finish on the current code ({a.timeout}s)"
+    elif a.expect and a.expect not in after_out:
+        result, kind, why = "wrong-failure", "", f"the command fails on the current code, but its output does not contain {a.expect!r}"
+    else:
+        before, before_out = run_check_on_base(a.test, a.test_file, sha, rel, a.timeout, a.base)
+        result = "shown"
+        if before == 0:
+            kind, why = "regression", "the command passes on the base and fails on the current code: the change broke it"
+        elif before is None:
+            kind, why = "base-unknown", f"the command fails on the current code; it did not finish on the base ({a.timeout}s)"
+        else:
+            kind, why = "not-fixed", ("the command fails on the current code and on the base: the change does not fix it. "
+                                      "Check that the two failures are the requirement, not a missing dependency or a wrong test")
+    with contextlib.suppress(OSError):
+        if result == "shown":
+            COUNTER.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha, "kind": kind,
+                                           "feature": a.id or ""}) + "\n", encoding="utf-8")
+        else:
+            COUNTER.unlink()
+    log_event("counterexample", result=result, kind=kind or None, id=a.id, test=safe_cmd(a.test), base=sha[:12])
+    print(f"counterexample {result.upper()}" + (f" ({kind})" if kind else "") + f": {why}")
+    if result == "shown":
+        print("failure on the current code:\n" + clean(after_out.strip()[-600:], 600))
+        if kind == "not-fixed":
+            print("failure on the base:\n" + clean((before_out or "").strip()[-400:], 400))
+    sys.exit(0 if result == "shown" else 1)
+
+
+def verdict_evidence_problem(verdict: str) -> str:
+    """With `"verdict_evidence": true` in config.json, a verdict needs evidence that a command produced for this code.
+    "" when the verdict has it, or when the option is off."""
+    if not load_config().get("verdict_evidence"):
+        return ""
+    if verdict == "PASS" and not repro_fresh():
+        return ("verdict_evidence: a PASS needs a reproduction for this code (`memory.py repro --test ...`: a test that fails on "
+                "the base and passes now). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason")
+    if verdict == "FAIL" and not counterexample_fresh():
+        return ("verdict_evidence: a FAIL needs a counterexample for this code (`memory.py counterexample --test ...`: a command "
+                "that fails on the change). Without it, the result is UNKNOWN: use `feature vote --verdict UNKNOWN`, with the reason")
+    return ""
+
+
+def cmd_mutants(a: argparse.Namespace) -> None:
+    """Run the mutation tool of the project on the lines that the change touched: do the tests catch a wrong version?
+
+    The pack has no mutation engine. `"mutation_command"` in the gate file names the tool, with `{diff}` for the path
+    of a diff file, for example `cargo mutants --in-diff {diff}`. Exit code 0 of the tool means that each mutant was
+    caught. The command comes from the gate file of the base, as the gate commands do.
+    """
+    ensure()
+    if a.check:
+        ok = mutants_state() == "pass"
+        print("mutants: passed for this workspace" if ok else "mutants: no pass for this workspace")
+        sys.exit(0 if ok else 1)
+    ref = resolve_gate_ref(a.base)[0]
+    cfg = gate_config(ref)[0] if GATE.exists() else {}
+    cmd = str(cfg.get("mutation_command") or "")
+    if not cmd:
+        die(f'no "mutation_command" in {GATE.as_posix()}. Example for Rust: "cargo mutants --in-diff {{diff}}"')
+    diff = subprocess.run(["git", "diff", "--no-renames", ref, "--", ".", f":(exclude){ROOT.as_posix()}"],
+                          capture_output=True, timeout=60).stdout
+    if not diff.strip():
+        print(f"mutants: no tracked change against {ref[:12]}: nothing to mutate")
+        return
+    import tempfile
+    timeout = int(cfg.get("mutation_timeout", 3600))
+    with tempfile.TemporaryDirectory(prefix="mutants-") as tmp:
+        path = Path(tmp) / "change.diff"
+        path.write_bytes(diff)
+        t0 = time.time()
+        rc, out = run_check(cmd.replace("{diff}", f'"{path.as_posix()}"'), Path("."), timeout)
+    result = "pass" if rc == 0 else "fail"
+    with contextlib.suppress(OSError):
+        MUTANTS.write_text(json.dumps({"hash": workspace_hash(), "result": result, "rc": rc}) + "\n", encoding="utf-8")
+    log_event("mutants", result=result, rc=rc, seconds=round(time.time() - t0, 1), cmd=safe_cmd(cmd))
+    if rc == 0:
+        print("mutants PASSED: the tool reports that the tests caught each mutant of the changed lines")
+        return
+    print(f"mutants FAILED (exit code {'timeout' if rc is None else rc}): mutants that the tests did not catch, or an error of the tool. "
+          "A mutant that lives is a wrong version of the code that the tests accept.\n" + clean(out.strip()[-int(cfg.get('max_output', 3000)):], 3000))
+    sys.exit(1)
+
+
+def mutants_state() -> str:
+    """"pass" or "fail" when the mutation tool ran for exactly this workspace, else ""."""
+    try:
+        rec = json.loads(MUTANTS.read_text(encoding="utf-8"))
+        return str(rec.get("result") or "") if rec.get("hash") == workspace_hash() else ""
+    except (OSError, ValueError):
+        return ""
+
+
 def cmd_repro(a: argparse.Namespace) -> None:
     """A fix is shown by a test that fails on the base commit and passes on the current code.
 
@@ -1654,34 +1820,8 @@ def cmd_repro(a: argparse.Namespace) -> None:
         die(f"repro needs a git repository and a known --base (got {a.base})")
     rel = Path.cwd().resolve().relative_to(Path(top).resolve())
 
-    def run_test(cwd: Path) -> tuple:
-        try:
-            r = subprocess.run(a.test, shell=True, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=a.timeout)
-            return r.returncode, r.stdout + r.stderr
-        except subprocess.TimeoutExpired:
-            return None, f"timeout after {a.timeout}s"
-
-    import shutil
-    import tempfile
-    tmp = Path(tempfile.mkdtemp(prefix="repro-"))
-    wt = tmp / "base"
-    try:
-        r = subprocess.run(["git", "worktree", "add", "--detach", str(wt), sha], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if r.returncode != 0:
-            die(f"could not check out {a.base}: {clean(r.stderr.strip(), 200)}")
-        for f in a.test_file:
-            if not Path(f).is_file():
-                die(f"--test-file {f} is not a file")
-            dst = wt / rel / f
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, dst)
-        before, before_out = run_test(wt / rel)
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(wt)], capture_output=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-        subprocess.run(["git", "worktree", "prune"], capture_output=True)
-    after, after_out = run_test(Path("."))
+    before, before_out = run_check_on_base(a.test, a.test_file, sha, rel, a.timeout, a.base)
+    after, after_out = run_check(a.test, Path("."), a.timeout)
 
     if before == 0:
         result, why = "not-reproduced", "the test passes on the base: it does not show the problem"
@@ -1789,6 +1929,8 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
         high.append("tests or the gate file changed (see the warnings)")
     if any("gate did not pass" in g for g in gaps):
         high.append("the gate did not pass")
+    if any("a recorded check fails on this code" in g for g in gaps):
+        high.append("a counterexample was shown for this code")
     if lines > RISK_LINES_HIGH:
         high.append(f"{lines} changed lines (more than {RISK_LINES_HIGH})")
     if drift and drift.get("conflicts"):
@@ -1829,6 +1971,20 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     else:
         lines.append("- Reproduction: none verified for this code")
         gaps.append("no test was shown to fail before the change and pass after it")
+    counter = counterexample_fresh()
+    if counter:
+        what = {"regression": "it passes on the base: the change broke it",
+                "not-fixed": "it fails on the base too: the change does not fix it"}.get(counter.get("kind"), "the base did not give a result")
+        lines.append(f"- Counterexample: SHOWN, `{clean(counter.get('test', '?'), 100)}` fails on this code ({what})")
+        gaps.append("a recorded check fails on this code (see Counterexample)")
+    if GATE.exists():
+        with contextlib.suppress(OSError, ValueError):
+            if gate_config(ref)[0].get("mutation_command"):
+                state = mutants_state()
+                lines.append("- Mutation check: " + {"pass": "PASSED for this code (the tests caught each mutant of the changed lines)",
+                                                     "fail": "FAILED for this code (a mutant lived, or the tool gave an error)"}.get(state, "not run for this code"))
+                if state != "pass":
+                    gaps.append("the mutation check did not pass for this code: the tests can accept a wrong version of the change")
     req_runs = required_evaluator_runs(ref=ref)
     cur_code_hash = code_state_hash()
     feats = load_features()
@@ -2783,6 +2939,19 @@ def main() -> None:
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
     s.set_defaults(fn=cmd_repro)
+    s = sub.add_parser("counterexample", help="show a defect: a command that fails on the current code; the base says if the change broke it")
+    s.add_argument("--test", help="shell command that fails when the defect is there")
+    s.add_argument("--test-file", action="append", default=[], help="test file to copy onto the base (repeatable)")
+    s.add_argument("--base", default="HEAD", help="commit without the change (default HEAD: the change is not committed)")
+    s.add_argument("--id", help="the feature that the counterexample is for")
+    s.add_argument("--expect", help="text that the failure on the current code must print")
+    s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a counterexample was shown for this workspace")
+    s.set_defaults(fn=cmd_counterexample)
+    s = sub.add_parser("mutants", help="run the project's mutation tool (\"mutation_command\" in gate.json) on the changed lines")
+    s.add_argument("--base", help="ref to compare with (default: the ref of the gate)")
+    s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the tool passed for this workspace")
+    s.set_defaults(fn=cmd_mutants)
     sub.add_parser("doctor", help="check that hooks, gate and memory can work in this repository").set_defaults(fn=cmd_doctor)
     s = sub.add_parser("evidence", help="Markdown block for a pull request: what was verified for this code, and what was not")
     s.add_argument("--base", default=None, help="ref to compare with (default: active task base, origin default merge-base, or HEAD)")

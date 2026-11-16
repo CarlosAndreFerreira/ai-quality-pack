@@ -667,6 +667,106 @@ class EvolutionTests(unittest.TestCase):
     def _repro(self, root, *extra):
         return run([MEM, "repro", "--test", f'"{self.py}" test_calc.py', "--test-file", "test_calc.py", *extra], root)
 
+    def test_counterexample_shows_a_defect_and_says_if_the_change_broke_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)                                    # calc.add is `a - b` on the base
+            test = f'"{self.py}" test_calc.py'                      # add(2, 2) == 4: fails on the base
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            r = m("counterexample", "--test", test, "--test-file", "test_calc.py")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # the code has the defect: nothing fixed it
+            self.assertIn("counterexample SHOWN (not-fixed)", r.stdout)
+            self.assertIn("the change does not fix it", r.stdout)
+            self.assertEqual(m("counterexample", "--check").returncode, 0)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
+            r = m("counterexample", "--test", test, "--test-file", "test_calc.py")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("counterexample NOT-SHOWN: the command passes on the current code: it shows no defect", r.stdout)
+            self.assertEqual(m("counterexample", "--check").returncode, 1)
+            self.assertNotIn("Counterexample", m("evidence").stdout)
+            (root / "probe.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 0) == 2 else 1)\n", encoding="utf-8")
+            (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # a change that breaks add(2, 0)
+            r = m("counterexample", "--test", f'"{self.py}" probe.py', "--test-file", "probe.py", "--id", "F-1")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("counterexample SHOWN (regression)", r.stdout)
+            self.assertIn("passes on the base and fails on the current code: the change broke it", r.stdout)
+            ev = m("evidence").stdout
+            self.assertIn("- Counterexample: SHOWN,", ev)
+            self.assertIn("it passes on the base: the change broke it", ev)
+            self.assertRegex(ev, r"Review risk: HIGH \(.*a counterexample was shown for this code")
+            last = self._events(root, "counterexample")[-1]
+            self.assertEqual((last["result"], last["kind"], last["id"]), ("shown", "regression", "F-1"))
+            self.assertEqual(m("counterexample").returncode, 2)     # no --test
+
+    def test_verdict_evidence_makes_a_verdict_without_a_command_an_unknown(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            test = f'"{self.py}" test_calc.py'
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) == 4")
+            vote = lambda v: m("feature", "vote", "--id", "F-1", "--verdict", v, "--evidence", "read the code")
+            self.assertEqual(vote("FAIL").returncode, 0)            # the option is off: as before
+            (root / ".agent-memory/config.json").write_text(json.dumps({"verdict_evidence": True}), encoding="utf-8")
+            r = vote("FAIL")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("a FAIL needs a counterexample for this code", r.stderr)
+            self.assertIn("the result is UNKNOWN", r.stderr)
+            self.assertEqual(vote("UNKNOWN").returncode, 0)         # an honest "could not show it" is always accepted
+            self.assertEqual(m("counterexample", "--test", test, "--test-file", "test_calc.py").returncode, 0)
+            self.assertEqual(vote("FAIL").returncode, 0, "a FAIL with a command that fails on this code")
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
+            r = vote("PASS")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("a PASS needs a reproduction for this code", r.stderr)
+            r = m("feature", "pass", "--id", "F-1", "--evidence", "looks right", "--verified-by", "evaluator")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("a PASS needs a reproduction for this code", r.stderr)
+            self.assertEqual(self._repro(root).returncode, 0)       # fails on the base, passes now
+            self.assertEqual(vote("PASS").returncode, 0)
+            r = m("feature", "pass", "--id", "F-1", "--evidence", "repro verified", "--verified-by", "evaluator")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "read it", "--verified-by", "human").returncode, 0)
+
+    def test_mutants_runs_the_mutation_tool_of_the_project_on_the_change(self):
+        tool = ("import sys\n"
+                "diff = open(sys.argv[1], encoding='utf-8').read()\n"
+                "print('MISSED calc.py:2 replace + with *' if 'a * b' in diff else 'all caught')\n"
+                "sys.exit(2 if 'a * b' in diff else 0)\n")
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            (root / "tool.py").write_text(tool, encoding="utf-8")
+            gate = root / ".agent-memory/gate.json"
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"']}), encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "tool")
+            r = m("mutants")
+            self.assertEqual(r.returncode, 2)                       # no tool is configured
+            self.assertIn('no "mutation_command"', r.stderr)
+            self.assertNotIn("Mutation check", m("evidence").stdout)
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"'],
+                                        "mutation_command": f'"{self.py}" tool.py {{diff}}'}), encoding="utf-8")
+            self._git(root, "commit", "-q", "-am", "mutation tool")
+            r = m("mutants")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("nothing to mutate", r.stdout)
+            self.assertIn("- Mutation check: not run for this code", m("evidence").stdout)
+            (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")
+            r = m("mutants")
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("mutants FAILED (exit code 2)", r.stdout)
+            self.assertIn("MISSED calc.py:2", r.stdout)
+            ev = m("evidence").stdout
+            self.assertIn("- Mutation check: FAILED for this code", ev)
+            self.assertIn("the mutation check did not pass for this code", ev)
+            self.assertEqual(m("mutants", "--check").returncode, 1)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            r = m("mutants")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("mutants PASSED", r.stdout)
+            self.assertIn("- Mutation check: PASSED for this code", m("evidence").stdout)
+            self.assertEqual(m("mutants", "--check").returncode, 0)
+            self.assertEqual(self._events(root, "mutants")[-1]["result"], "pass")
+
     def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
