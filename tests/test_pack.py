@@ -836,8 +836,7 @@ class EvolutionTests(unittest.TestCase):
             # the test is in calc.py, as a unit test of Rust or Go is in the file of the code
             (root / "calc.py").write_text(base + selftest, encoding="utf-8")
             patch = Path(t) / "test-only.patch"
-            patch.write_text(subprocess.run(["git", "diff", "--", "calc.py"], cwd=root, capture_output=True, text=True).stdout,
-                             encoding="utf-8", newline="\n")
+            patch.write_bytes(subprocess.run(["git", "diff", "--", "calc.py"], cwd=root, capture_output=True).stdout)
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n" + selftest, encoding="utf-8")   # the fix
             test = f'"{self.py}" -c "import calc; calc.selftest()"'
             # a copy of calc.py takes the fix to the base: the test passes there and shows nothing
