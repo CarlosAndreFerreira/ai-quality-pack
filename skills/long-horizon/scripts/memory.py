@@ -1653,8 +1653,10 @@ def run_check(test: str, cwd: Path, timeout: int) -> tuple:
         return None, f"timeout after {timeout}s"
 
 
-def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str) -> tuple:
-    """Run a check on the base commit: a throw-away git worktree of `sha`, with the test files of the workspace on top."""
+def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str,
+                      poison: Optional[List[str]] = None, token: str = "", poisoned: Optional[List[str]] = None) -> tuple:
+    """Run a check on the base commit: a throw-away git worktree of `sha`, with the test files of the workspace on top.
+    `poison`: paths from the top of the repository whose content becomes `token` (see `base_seen`)."""
     import shutil
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="repro-"))
@@ -1669,11 +1671,38 @@ def run_check_on_base(test: str, test_files: List[str], sha: str, rel: Path, tim
             dst = wt / rel / f
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dst)
+        for name in poison or []:
+            target = wt / name
+            if target.is_file():
+                target.write_text(token + "\n", encoding="utf-8")
+                if poisoned is not None:
+                    poisoned.append(name)
         return run_check(test, wt / rel, timeout)
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(wt)], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
         subprocess.run(["git", "worktree", "prune"], capture_output=True)
+
+
+def base_seen(test: str, test_files: List[str], sha: str, rel: Path, timeout: int, label: str) -> Optional[bool]:
+    """Does the check load the code of the worktree where it runs? A check that imports the code from an absolute
+    path or from an installed package runs the current code in the two runs, and then says nothing about the base.
+
+    The probe runs the check one more time on the base, with each source file that the change touched replaced by
+    one unknown name. A check that loads those files fails with that name in its output. None: no answer (the change
+    touches no source file that the base has, or the run did not finish)."""
+    names = git("diff", "--name-only", "--no-renames", sha, "--", ".", f":(exclude){ROOT.as_posix()}").splitlines()
+    tests = {(rel / f).as_posix().lstrip("./") for f in test_files}
+    code = [n for n in names if n.rsplit(".", 1)[-1].lower() in (HASH_COMMENT | SLASH_COMMENT | DASH_COMMENT) - {"yml", "yaml", "toml", "cfg", "ini", "mk"}
+            and n not in tests and not TEST_PATH_RE.search(n)]
+    if not code:
+        return None
+    token = "AQP_BASE_PROBE_" + os.urandom(6).hex()
+    done: List[str] = []
+    rc, out = run_check_on_base(test, test_files, sha, rel, timeout, label, poison=code, token=token, poisoned=done)
+    if not done or rc is None:
+        return None
+    return token in out
 
 
 def counterexample_fresh() -> Optional[dict]:
@@ -1721,10 +1750,20 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
         elif before is None:
             kind, why = "base-unknown", f"the command fails on the current code; it did not finish on the base ({a.timeout}s)"
         else:
-            kind, why = "not-fixed", ("the command fails on the current code and on the base: the change does not fix it. "
-                                      "Check that the two failures are the requirement, not a missing dependency or a wrong test. "
-                                      "If the check imports the code from an absolute path or from an installed package, "
-                                      "the run on the base used the current code: this result then says nothing about the base")
+            seen = base_seen(a.test, a.test_file, sha, rel, a.timeout, a.base)
+            if seen is False:
+                kind, why = "base-not-seen", ("the command fails on the current code. The run on the base did not load the source files "
+                                              "that the change touched: the check imports the code from another place (an absolute path, "
+                                              "an installed package), so it says nothing about the base. Import the code relative to the "
+                                              "current directory, and run the command again")
+            elif seen:
+                kind, why = "not-fixed", ("the command fails on the current code and on the base, and the check loads the code of the base: "
+                                          "the change does not fix it. Check that the two failures are the requirement, not a wrong test")
+            else:
+                kind, why = "not-fixed", ("the command fails on the current code and on the base: the change does not fix it. "
+                                          "Check that the two failures are the requirement, not a missing dependency or a wrong test. "
+                                          "If the check imports the code from an absolute path or from an installed package, "
+                                          "the run on the base used the current code: this result then says nothing about the base")
     with contextlib.suppress(OSError):
         if result == "shown":
             COUNTER.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha, "kind": kind,
@@ -1738,6 +1777,44 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
         if kind == "not-fixed":
             print("failure on the base:\n" + clean((before_out or "").strip()[-400:], 400))
     sys.exit(0 if result == "shown" else 1)
+
+
+def records_verdict() -> dict:
+    """What the records for exactly this code support. Commands wrote these records; no text of an agent is read.
+
+    FAIL: a check that passes on the base fails on this code (a `regression` counterexample). In our measurement on
+    42 patches, each of the 3 such counterexamples was on a wrong patch, and the verdicts of the evaluator did not
+    separate wrong from correct patches. SUPPORTED: the gate passed and a reproduction is verified. This is support
+    and not proof: 2 of 3 verified reproductions were on wrong patches. UNKNOWN: the rest."""
+    cx, gate, repro, mut = counterexample_fresh(), gate_fresh(), repro_fresh(), mutants_state()
+    records = {"gate": "pass" if gate else ("none" if gate is None else "no pass"), "reproduction": "verified" if repro else "none",
+               "counterexample": (cx or {}).get("kind") or "none", "mutation": mut or "not run"}
+    if cx and cx.get("kind") == "regression":
+        return {"verdict": "FAIL", "why": f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`", "records": records}
+    missing = [w for w, ok in (("a gate pass", bool(gate)), ("a verified reproduction", repro)) if not ok]
+    notes = []
+    if cx:
+        notes.append(f"a check fails on this code ({cx.get('kind')}): alone, this type does not decide")
+    if mut == "fail":
+        notes.append("the mutation check did not pass")
+    if missing or mut == "fail":
+        why = "; ".join((["no record of " + " and ".join(missing)] if missing else []) + notes)
+        return {"verdict": "UNKNOWN", "why": why, "records": records}
+    return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
+            "records": records}
+
+
+def cmd_verdict(a: argparse.Namespace) -> None:
+    """Print what the records support for this code. Exit code: 0 SUPPORTED, 1 FAIL, 3 UNKNOWN."""
+    ensure()
+    v = records_verdict()
+    log_event("verdict", result=v["verdict"], id=a.id, **{k: val for k, val in v["records"].items()})
+    if a.json:
+        print(json.dumps(v, indent=2))
+    else:
+        print(f"verdict: {v['verdict']} ({v['why']})")
+        print("records for this code: " + ", ".join(f"{k} {val}" for k, val in v["records"].items()))
+    sys.exit({"SUPPORTED": 0, "FAIL": 1}.get(v["verdict"], 3))
 
 
 def verdict_evidence_problem(verdict: str) -> str:
@@ -1830,6 +1907,9 @@ def cmd_repro(a: argparse.Namespace) -> None:
 
     if before == 0:
         result, why = "not-reproduced", "the test passes on the base: it does not show the problem"
+        if after == 0 and base_seen(a.test, a.test_file, sha, rel, a.timeout, a.base) is False:
+            why += (". The run on the base did not load the source files that the change touched: the test imports the code from "
+                    "another place (an absolute path, an installed package). Import the code relative to the current directory")
     elif before is None:
         result, why = "base-timeout", f"the test did not finish on the base ({a.timeout}s)"
     elif a.expect and a.expect not in before_out:
@@ -1979,7 +2059,8 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     counter = counterexample_fresh()
     if counter:
         what = {"regression": "it passes on the base: the change broke it",
-                "not-fixed": "it fails on the base too: the change does not fix it"}.get(counter.get("kind"), "the base did not give a result")
+                "not-fixed": "it fails on the base too: the change does not fix it",
+                "base-not-seen": "the check did not load the code of the base"}.get(counter.get("kind"), "the base did not give a result")
         lines.append(f"- Counterexample: SHOWN, `{clean(counter.get('test', '?'), 100)}` fails on this code ({what})")
         gaps.append("a recorded check fails on this code (see Counterexample)")
     if GATE.exists():
@@ -2953,6 +3034,10 @@ def main() -> None:
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a counterexample was shown for this workspace")
     s.set_defaults(fn=cmd_counterexample)
+    s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED, FAIL or UNKNOWN (no text of an agent is read)")
+    s.add_argument("--id", help="the feature that the verdict is for (for the run log)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_verdict)
     s = sub.add_parser("mutants", help="run the project's mutation tool (\"mutation_command\" in gate.json) on the changed lines")
     s.add_argument("--base", help="ref to compare with (default: the ref of the gate)")
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the tool passed for this workspace")

@@ -770,6 +770,61 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(m("mutants", "--check").returncode, 0)
             self.assertEqual(self._events(root, "mutants")[-1]["result"], "pass")
 
+    def test_counterexample_says_when_the_check_does_not_load_the_code_of_the_base(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)                                    # calc.add is `a - b` on the base
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # the change
+            check = "import calc, sys\nsys.exit(0 if calc.add(2, 3) == 5 else 1)\n"                    # fails before and after
+            (root / "probe_rel.py").write_text(check, encoding="utf-8")
+            r = m("counterexample", "--test", f'"{self.py}" probe_rel.py', "--test-file", "probe_rel.py")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("counterexample SHOWN (not-fixed)", r.stdout)
+            self.assertIn("the check loads the code of the base", r.stdout)
+            # the same check with the code from an absolute path: the run on the base uses the current code
+            (root / "probe_abs.py").write_text(f"import sys\nsys.path.insert(0, r'{root.as_posix()}')\n" + check, encoding="utf-8")
+            r = m("counterexample", "--test", f'"{self.py}" -I probe_abs.py', "--test-file", "probe_abs.py")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("counterexample SHOWN (base-not-seen)", r.stdout)
+            self.assertIn("says nothing about the base", r.stdout)
+            self.assertEqual(self._events(root, "counterexample")[-1]["kind"], "base-not-seen")
+            self.assertIn("the check did not load the code of the base", m("evidence").stdout)
+            # a reproduction with the same fault: the test passes in the two runs, and the reason is given
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
+            r = m("repro", "--test", f'"{self.py}" -I probe_abs.py', "--test-file", "probe_abs.py")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("repro NOT-REPRODUCED", r.stdout)
+            self.assertIn("did not load the source files that the change touched", r.stdout)
+            self.assertEqual((root / "calc.py").read_text(encoding="utf-8"), "def add(a, b):\n    return a + b\n")  # the probe changed no file here
+
+    def test_verdict_comes_from_the_records_and_not_from_a_text(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            test = f'"{self.py}" test_calc.py'                      # add(2, 2) == 4
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
+            r = m("verdict")
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # nothing is recorded
+            self.assertIn("verdict: UNKNOWN (no record of a gate pass and a verified reproduction)", r.stdout)
+            (root / "probe.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 0) == 2 else 1)\n", encoding="utf-8")
+            (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # breaks add(2, 0)
+            self.assertEqual(m("counterexample", "--test", f'"{self.py}" probe.py', "--test-file", "probe.py").returncode, 0)
+            r = m("verdict", "--json")
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            v = json.loads(r.stdout)
+            self.assertEqual((v["verdict"], v["records"]["counterexample"]), ("FAIL", "regression"))
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
+            self.assertEqual(m("verdict").returncode, 3)            # the counterexample was for other code
+            self.assertEqual(self._repro(root).returncode, 0)
+            self.assertEqual(m("verdict").returncode, 3)            # a reproduction and no gate pass
+            self.assertEqual(m("gate").returncode, 0)
+            r = m("verdict")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("verdict: SUPPORTED", r.stdout)
+            self.assertIn("This is support, not proof", r.stdout)
+            self.assertIn("records for this code: gate pass, reproduction verified, counterexample none, mutation not run", r.stdout)
+            self.assertEqual(self._events(root, "verdict")[-1]["result"], "SUPPORTED")
+
     def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)

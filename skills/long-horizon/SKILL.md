@@ -45,6 +45,7 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 ## 4. Done
 0. If the gate reports a risk rule (`risk rule ... matched`), tell the user which lines matched. Do not try to waive it: a person runs `memory.py risk waive` after the review.
 0. If `gate.json` has a `"mutation_command"`, run `memory.py mutants` before you ask for the evaluator: a mutant that lives is a wrong version of your change that your tests accept. Add the test that catches it.
+0. A check for `memory.py repro` or `memory.py counterexample` must import the code relative to the current directory. A check with an absolute path to the code, or with an installed copy of the package, tests the current code in the two runs.
 0. Run the completion gate: `memory.py gate` (commands in `.agent-memory/gate.json`; it is skipped when nothing changed since the last pass; it fails when the file has no commands, because nothing was checked). In Claude Code an optional Stop hook enforces it.
 1. Run the `evaluator` skill (separate context). Only the evaluator, a human or CI marks a feature as passing:
    `memory.py feature pass --id F-003 --evidence "<tests/commands seen>" --verified-by evaluator`
