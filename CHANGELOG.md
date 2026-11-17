@@ -2,15 +2,17 @@
 
 ## Unreleased
 
-Five corrections from the second use on a real project (a Rust application, 2026-11-17).
+Corrections from the second use on a real project (a Rust application, 2026-11-17).
 
 - **Fix: `repro` did not name a shared build directory.** With `CARGO_TARGET_DIR` set to a directory outside the repository, the run on the current code used the test program that the base compiled, and `repro` printed `STILL-FAILING` for a correct fix. The note of version 0.8.0 for this case compared the last lines of the two outputs, and with the real tool they are not the same text (times, ports). Now `repro` finds the cause: when `CARGO_TARGET_DIR` or `CARGO_BUILD_TARGET_DIR` points outside the repository and the base has no directory of its own, the result says that it is not reliable and gives the option to use. The comparison of text stays for other tools, and it ignores numbers.
 - **`repro --expect` shows the lines around the expected text.** The end of the output of a build tool can be build lines only.
 - **`task open --id` says that the id is not used.** The pack gives the id of a new task; before, an id on the command line was dropped with no message.
 - **The gate names an old open task that sets the comparison.** A task that stays open after its work is merged keeps the comparison at its old base, and the gate reports the changes of other work as changes outside the scope (33 files in the real project). The gate now prints a warning with the task, the number of commits before HEAD and the command that closes it.
 - **`mutants` says when the command is on disk only.** The command comes from the committed gate file. With a `mutation_command` that is not committed, the message was "no mutation_command in gate.json", which is not true for the file on disk. The message now says that a person commits the gate file first.
+- **`--json` on `gate`, `repro`, `counterexample` and `evidence`.** One JSON object in place of the text, with the result from the record that the command wrote, not from the text. Before, only `verdict`, `triage` and `stats` had it, and a script had to read the lines of a terminal.
+- **The evidence block.** The change line counts the new files that git does not track yet. The risk line says "item(s) under Not verified" in place of "check(s) without a record", which did not say where to look. The warning for an old open task gives the options for one run (`gate --ref`, `evidence --base`).
 - `--base-env` with a real cargo project: checked. `repro` gave `VERIFIED` with a build directory of its own for the base.
-- 1 test, and 2 tests with more checks.
+- 2 tests, and 2 tests with more checks.
 
 ## 0.9.1 — 2026-11-17
 

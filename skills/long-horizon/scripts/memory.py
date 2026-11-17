@@ -1333,7 +1333,8 @@ def old_base_warning(best_tid: str, best_sha: str, candidates: List[Tuple[str, s
     behind = git("rev-list", "--count", f"{best_sha}..HEAD").strip() or "?"
     return [f"{len(candidates)} tasks are open, and the oldest base sets the comparison: task {best_tid}, {behind} commit(s) "
             f"before HEAD. If the work of {best_tid} is merged, close it (`memory.py task status --id {best_tid} --status done`): "
-            "the comparison then starts at the base of the next open task"]
+            "the comparison then starts at the base of the next open task. For one run, name the commit: `gate --ref <commit>`, "
+            "`evidence --base <commit>`"]
 
 
 def default_remote_ref() -> str:
@@ -2400,7 +2401,7 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
     if out_of_scope:
         medium.append(f"{len(out_of_scope)} file(s) changed outside the task scope")
     if gaps:
-        medium.append(f"{len(gaps)} check(s) without a record")
+        medium.append(f"{len(gaps)} item(s) under \"Not verified\"")
     return ("HIGH", high) if high else ("MEDIUM", medium) if medium else ("LOW", ["small change, every check has a record"])
 
 
@@ -2537,7 +2538,10 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     if oos:
         lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
-    lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
+    new = [f for f in untracked_files() if not f.replace("\\", "/").startswith(ROOT.as_posix().rstrip("/") + "/")]
+    lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}"
+                 + (f"; {len(new)} new file(s) that git does not track yet ({', '.join(clean(p, 80) for p in new[:6])}"
+                    + (" ..." if len(new) > 6 else "") + ")" if new else ""))
     made = untracked_files(generated=True)
     if made:
         lines.append(f"- Generated files: {len(made)} file(s) that git does not track and does not ignore (`__pycache__`, `.pyc`). "
@@ -2559,11 +2563,45 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     return "\n".join(lines), gaps, warnings, risk
 
 
+JSON_SCHEMA = 1  # of the `--json` output of gate, repro, counterexample and evidence. A new key is not a new number;
+# a key that goes away or changes its meaning is
+
+
+def run_as_json(a: argparse.Namespace) -> None:
+    """`--json` for a command that prints text for a person: the command runs as it is, and one JSON object goes to
+    stdout in place of the text. The result comes from the record that the command wrote in the run log, not from
+    the text. The exit code does not change. A script or another agent reads this, not the lines of a terminal."""
+    import io as _io
+    name = a.cmd
+    before = len(read_jsonl(EVENTS)) if EVENTS.exists() else 0
+    buf, code = _io.StringIO(), 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            a.fn(a)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
+    events = read_jsonl(EVENTS)[before:] if EVENTS.exists() else []
+    record = next((e for e in reversed(events) if e.get("ev") == name), None)
+    keep = ("result", "kind", "failed", "commands", "seconds", "warnings", "test", "base", "recorded_test", "timed_out", "policy", "id")
+    out = {"schema": JSON_SCHEMA, "command": name, "exit": code,
+           "result": (record or {}).get("result") or ("ok" if code == 0 else "no-record"),
+           "record": {k: record[k] for k in keep if record and record.get(k) is not None} or None,
+           "output": buf.getvalue()[-6000:]}
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    sys.exit(code)
+
+
 def cmd_evidence(a: argparse.Namespace) -> None:
     """What was verified for exactly this code, as Markdown for a pull request or a final report."""
     ensure()
     ref, _, ref_warnings = resolve_gate_ref(a.base)
-    text, gaps, warnings, _ = evidence_report(ref, a.cost_usd, ref_warnings)
+    text, gaps, warnings, risk = evidence_report(ref, a.cost_usd, ref_warnings)
+    if getattr(a, "json", False):
+        v = records_verdict()
+        print(json.dumps({"schema": JSON_SCHEMA, "command": "evidence", "exit": 1 if a.strict and (gaps or warnings) else 0,
+                          "ref": ref, "risk": risk, "verdict": v["verdict"], "records": v["records"],
+                          "not_verified": gaps, "warnings": warnings, "markdown": text}, indent=2, ensure_ascii=False))
+        sys.exit(1 if a.strict and (gaps or warnings) else 0)
     print(text)
     if a.strict and (gaps or warnings):
         sys.exit(1)
@@ -2663,7 +2701,7 @@ def cmd_pr(a: argparse.Namespace) -> None:
         with contextlib.suppress(OSError):
             os.unlink(fh.name)
     log_event("pr", result="opened", risk=risk, gaps=len(gaps), url=clean(url.splitlines()[-1] if url else "", 200))
-    print(f"pr: draft pull request opened ({risk} review risk, {len(gaps)} check(s) without a record): {url.splitlines()[-1] if url else ''}")
+    print(f"pr: draft pull request opened ({risk} review risk, {len(gaps)} item(s) not verified): {url.splitlines()[-1] if url else ''}")
 
 
 # ---------------------------------------------------------------- triage (is the requirement ready for work?)
@@ -3457,6 +3495,7 @@ def main() -> None:
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if the gate passed for exactly this workspace")
     s.add_argument("--ref", help="git ref whose gate.json counts, and against which test changes are reported "
                                  "(default: AGENT_GATE_REF, else earliest active task base, origin default merge-base, or HEAD)")
+    s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_gate)
     s = sub.add_parser("gated-run", help="run an agent command, then the gate; a red gate goes back to the agent "
                                          "(for unattended runs, where hooks may not run)")
@@ -3479,6 +3518,7 @@ def main() -> None:
                    help="variable for the run on the base only (for example a build directory of its own)")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
+    s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_repro)
     s = sub.add_parser("counterexample", help="show a defect: a command that fails on the current code; the base says if the change broke it")
     s.add_argument("--test", help="shell command that fails when the defect is there")
@@ -3492,6 +3532,7 @@ def main() -> None:
                    help="variable for the run on the base only (for example a build directory of its own)")
     s.add_argument("--timeout", type=int, default=600)
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a counterexample was shown for this workspace")
+    s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_counterexample)
     s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED, FAIL or UNKNOWN (no text of an agent is read)")
     s.add_argument("--id", help="the feature that the verdict is for (for the run log)")
@@ -3506,6 +3547,7 @@ def main() -> None:
     s.add_argument("--base", default=None, help="ref to compare with (default: active task base, origin default merge-base, or HEAD)")
     s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--strict", action="store_true", help="exit 1 when something is not verified or a warning exists")
+    s.add_argument("--json", action="store_true", help="one JSON object: risk, verdict, records, what is not verified, and the Markdown")
     s.set_defaults(fn=cmd_evidence)
     s = sub.add_parser("pr", help="open a draft pull request with the evidence block, only after a green gate; it never merges")
     s.add_argument("--title", required=True)
@@ -3575,6 +3617,8 @@ def main() -> None:
     sub.metavar = "{" + ",".join(c.dest for c in sub._choices_actions) + ",...}"
     a = p.parse_args()
     enter_project_root()
+    if getattr(a, "json", False) and a.cmd in ("gate", "repro", "counterexample"):
+        run_as_json(a)
     a.fn(a)
 
 

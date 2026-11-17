@@ -807,6 +807,44 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "read it", "--verified-by", "human").returncode, 0)
 
+    def test_json_output_of_the_evidence_commands_comes_from_the_records(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)                                    # calc.add is `a - b` on the base
+            test = f'"{self.py}" test_calc.py'
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [test]}), encoding="utf-8")
+            r = m("gate", "--json")                                 # the defect is there: the gate fails
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            d = json.loads(r.stdout)                                # stdout is one JSON object, with no text around it
+            self.assertEqual((d["schema"], d["command"], d["exit"], d["result"]), (1, "gate", 1, "fail"))
+            self.assertIn("test_calc.py", d["record"]["failed"])
+            self.assertIn("gate FAILED", d["output"])
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
+            d = json.loads(m("gate", "--json").stdout)
+            self.assertEqual((d["exit"], d["result"], d["record"]["commands"]), (0, "pass", 1))
+            d = json.loads(m("gate", "--json").stdout)              # no change since the pass
+            self.assertEqual((d["exit"], d["result"]), (0, "skipped"))
+            r = m("repro", "--test", test, "--test-file", "test_calc.py", "--json")
+            d = json.loads(r.stdout)
+            self.assertEqual((r.returncode, d["result"], d["record"]["recorded_test"]), (0, "verified", False))
+            self.assertEqual(len(d["record"]["base"]), 12)
+            r = m("counterexample", "--test", test, "--json")       # the test passes now: it shows no defect
+            d = json.loads(r.stdout)
+            self.assertEqual((r.returncode, d["command"], d["result"]), (1, "counterexample", "not-shown"))
+            r = m("repro", "--json")                                # a usage error: exit 2, and stdout is still JSON
+            d = json.loads(r.stdout)
+            self.assertEqual((r.returncode, d["exit"], d["result"], d["record"]), (2, 2, "no-record", None))
+            self.assertIn("repro needs --test", r.stderr)
+            d = json.loads(m("evidence", "--json").stdout)
+            self.assertEqual((d["command"], d["verdict"], d["records"]["gate"]), ("evidence", "UNKNOWN", "pass"))
+            self.assertIn("## Verification evidence", d["markdown"])
+            self.assertTrue(d["not_verified"])
+            self.assertEqual(m("evidence", "--json", "--strict").returncode, 1)
+            # the text of the block: the files that git does not track are in the change line, and the risk names its part
+            text = m("evidence").stdout
+            self.assertIn("new file(s) that git does not track yet (test_calc.py)", text)
+            self.assertNotIn("check(s) without a record", text)
+
     def test_gate_names_an_old_open_task_that_sets_the_comparison(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
@@ -826,6 +864,7 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn(f"2 tasks are open, and the oldest base sets the comparison: task {old}, 1 commit(s) before HEAD", r.stdout)
             self.assertIn(f"task status --id {old} --status done", r.stdout)
+            self.assertIn("`evidence --base <commit>`", r.stdout)
             self.assertIn("changed outside the task scope: other.py", r.stdout)   # the noise that the old task makes
             self.assertEqual(m("task", "status", "--id", old, "--status", "done").returncode, 0)
             r = m("gate", "--force")
@@ -2600,7 +2639,7 @@ class SecurityTests(unittest.TestCase):
             (root / ".git/info/exclude").write_text("evidence.md\n", encoding="utf-8")
             r = run([MEM, "pr", "--title", "Fix add", "--issue", "12", "--base", "origin/main", "--evidence-file", "evidence.md"], root, env=helper.env)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("draft pull request opened (LOW review risk, 1 check(s) without a record)", r.stdout)
+            self.assertIn("draft pull request opened (LOW review risk, 1 item(s) not verified)", r.stdout)
             self.assertIn("Review risk: LOW", (helper.tools / "pr_body.md").read_text(encoding="utf-8"))
             self.assertFalse(any(e.get("ev") == "gate" for e in
                                  map(json.loads, (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8").splitlines())))
