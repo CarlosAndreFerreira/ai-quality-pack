@@ -818,6 +818,13 @@ class EvolutionTests(unittest.TestCase):
             d = json.loads(r.stdout)                                # stdout is one JSON object, with no text around it
             self.assertEqual((d["schema"], d["command"], d["exit"], d["result"]), (1, "gate", 1, "fail"))
             self.assertIn("test_calc.py", d["record"]["failed"])
+            self.assertIn("test_calc.py", d["why"])
+            # the keys are a contract: docs/JSON.md names each of them, and a key that goes away needs a new schema number
+            doc = (PACK / "docs/JSON.md").read_text(encoding="utf-8")
+            self.assertEqual(set(d), {"schema", "command", "exit", "result", "why", "record", "output"})
+            for key in d:
+                self.assertIn(f"`{key}`", doc)
+            self.assertIn(f"`schema` is {d['schema']}", doc)
             self.assertIn("gate FAILED", d["output"])
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
             d = json.loads(m("gate", "--json").stdout)
@@ -827,16 +834,21 @@ class EvolutionTests(unittest.TestCase):
             r = m("repro", "--test", test, "--test-file", "test_calc.py", "--json")
             d = json.loads(r.stdout)
             self.assertEqual((r.returncode, d["result"], d["record"]["recorded_test"]), (0, "verified", False))
+            self.assertIn("the test fails on the base and passes on the current code", d["why"])   # the reason, not only the word
             self.assertEqual(len(d["record"]["base"]), 12)
             r = m("counterexample", "--test", test, "--json")       # the test passes now: it shows no defect
             d = json.loads(r.stdout)
             self.assertEqual((r.returncode, d["command"], d["result"]), (1, "counterexample", "not-shown"))
+            self.assertIn("it shows no defect", d["why"])
             r = m("repro", "--json")                                # a usage error: exit 2, and stdout is still JSON
             d = json.loads(r.stdout)
             self.assertEqual((r.returncode, d["exit"], d["result"], d["record"]), (2, 2, "no-record", None))
             self.assertIn("repro needs --test", r.stderr)
             d = json.loads(m("evidence", "--json").stdout)
             self.assertEqual((d["command"], d["verdict"], d["records"]["gate"]), ("evidence", "UNKNOWN", "pass"))
+            self.assertEqual(set(d), {"schema", "command", "exit", "ref", "risk", "verdict", "records", "not_verified", "warnings", "markdown"})
+            for key in d:
+                self.assertIn(f"`{key}`", doc)
             self.assertIn("## Verification evidence", d["markdown"])
             self.assertTrue(d["not_verified"])
             self.assertEqual(m("evidence", "--json", "--strict").returncode, 1)
@@ -858,6 +870,7 @@ class EvolutionTests(unittest.TestCase):
             self._git(root, "commit", "-q", "-m", "merged work")
             r = m("gate")
             self.assertNotIn("tasks are open", r.stdout)            # one open task: nothing to say
+            self.assertNotIn("tasks are open", m("start").stdout)
             new = m("task", "open", "--title", "new work", "--scope", "calc.py").stdout.strip()
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
             r = m("gate", "--force")
@@ -865,6 +878,9 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn(f"2 tasks are open, and the oldest base sets the comparison: task {old}, 1 commit(s) before HEAD", r.stdout)
             self.assertIn(f"task status --id {old} --status done", r.stdout)
             self.assertIn("`evidence --base <commit>`", r.stdout)
+            digest = m("start").stdout                              # the next session reads it before the work, one time
+            self.assertEqual(digest.count("tasks are open, and the oldest base sets the comparison"), 1, digest)
+            self.assertIn(f"task status --id {old} --status done", digest)
             self.assertIn("changed outside the task scope: other.py", r.stdout)   # the noise that the old task makes
             self.assertEqual(m("task", "status", "--id", old, "--status", "done").returncode, 0)
             r = m("gate", "--force")

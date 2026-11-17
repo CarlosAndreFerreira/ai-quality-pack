@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`why` in the JSON output.** `gate --json`, `repro --json` and `counterexample --json` have the reason of the result as a key. Before, the reason was only in the text of `output`.
+- **[docs/JSON.md](docs/JSON.md)** has each key of the JSON output and each value of `result`. A test fails when a key is not in the file, or when the set of keys changes.
+- **The old open task is in the session-start digest.** The warning for an old open task that sets the comparison of the gate was only in the gate output, after the work. The digest now has it before the work, one time.
+- 2 tests with more checks.
+
 ## 0.9.2 — 2026-11-17
 
 Corrections from the second use on a real project (a Rust application, 2026-11-17), and a JSON output for scripts. No default changed. The use is in [docs/RESULTS.md](docs/RESULTS.md): the default flow of version 0.9 ran from the test before the change to the verdict, and it showed 5 defects of the pack that the tests of the pack did not show.

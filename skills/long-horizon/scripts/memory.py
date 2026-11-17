@@ -656,8 +656,11 @@ def digest_attention(tasks: Dict[str, dict]) -> List[str]:
                           "Run `memory.py gate` and fix it before new work.")
             break
     last_gate = next((e for e in reversed(read_jsonl(EVENTS)) if e.get("ev") == "gate"), None)
-    for w in ((last_gate or {}).get("warnings") or [])[:5]:  # tests turned off or deleted, gate.json edited
-        broken.append(f"Gate warning: {clean(w, 200)}.")
+    gate_notes = list(((last_gate or {}).get("warnings") or [])[:5])  # tests turned off or deleted, gate.json edited
+    with contextlib.suppress(Exception):  # before the work, not after it: an old open task sets the comparison of the gate
+        gate_notes += [w for w in resolve_gate_ref(None)[2] if "tasks are open" in w and w not in gate_notes]
+    for w in gate_notes:
+        broken.append(f"Gate warning: {clean(w, 400 if 'tasks are open' in w else 200)}.")
     if not (human or stuck or broken):
         return []
     out = ["## ⚑ Needs you"] + [f"- {t['id']} {t['title']}: {t['notes'][-1] if t['notes'] else ''}" for t in human]
@@ -2023,6 +2026,7 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
         else:
             COUNTER.unlink()
     log_event("counterexample", result=result, kind=kind or None, id=a.id, test=safe_cmd(a.test), base=sha[:12])
+    _WHY["text"] = why
     print(f"counterexample {result.upper()}" + (f" ({kind})" if kind else "") + f": {why}")
     if result == "shown":
         print("failure on the current code:\n" + clean(after_out.strip()[-600:], 600))
@@ -2299,6 +2303,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
         else:
             REPRO.unlink()
     log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12], recorded_test=recorded_test if result == "verified" else None)
+    _WHY["text"] = why
     print(f"repro {result.upper()}: {why}")
     if before not in (0, None):
         print("failure on the base (check that it is the problem and not a missing dependency):\n"
@@ -2563,6 +2568,7 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     return "\n".join(lines), gaps, warnings, risk
 
 
+_WHY: Dict[str, str] = {}  # the reason that a command gave for its result, for the `--json` output
 JSON_SCHEMA = 1  # of the `--json` output of gate, repro, counterexample and evidence. A new key is not a new number;
 # a key that goes away or changes its meaning is
 
@@ -2585,6 +2591,7 @@ def run_as_json(a: argparse.Namespace) -> None:
     keep = ("result", "kind", "failed", "commands", "seconds", "warnings", "test", "base", "recorded_test", "timed_out", "policy", "id")
     out = {"schema": JSON_SCHEMA, "command": name, "exit": code,
            "result": (record or {}).get("result") or ("ok" if code == 0 else "no-record"),
+           "why": _WHY.get("text") or ((record or {}).get("failed") and f"failed: {record['failed']}") or None,
            "record": {k: record[k] for k in keep if record and record.get(k) is not None} or None,
            "output": buf.getvalue()[-6000:]}
     print(json.dumps(out, indent=2, ensure_ascii=False))
