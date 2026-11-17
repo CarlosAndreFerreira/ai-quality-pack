@@ -1315,13 +1315,25 @@ def resolve_gate_ref(explicit_ref: Optional[str]) -> Tuple[str, str, List[str]]:
                     mb = git("merge-base", best_sha, sha)
                     if mb:
                         best_tid, best_sha = tid, mb
-            return best_sha, f"changes compared with {best_sha[:12]} (task {best_tid})", warnings
+            return best_sha, f"changes compared with {best_sha[:12]} (task {best_tid})", warnings + old_base_warning(best_tid, best_sha, candidates)
     remote_ref = default_remote_ref()
     if remote_ref:
         mb = git("merge-base", "HEAD", remote_ref)
         if mb:
             return mb, f"changes compared with {mb[:12]} ({remote_ref})", warnings
     return "HEAD", "", warnings
+
+
+def old_base_warning(best_tid: str, best_sha: str, candidates: List[Tuple[str, str]]) -> List[str]:
+    """A task that stays open after its work is merged keeps the comparison at its old base: the gate then reports
+    the changes of other work as changes outside the scope. Seen in real use: 3 old tasks, 33 files in the warning."""
+    newer = [tid for tid, sha in candidates if sha != best_sha]
+    if not newer:
+        return []
+    behind = git("rev-list", "--count", f"{best_sha}..HEAD").strip() or "?"
+    return [f"{len(candidates)} tasks are open, and the oldest base sets the comparison: task {best_tid}, {behind} commit(s) "
+            f"before HEAD. If the work of {best_tid} is merged, close it (`memory.py task status --id {best_tid} --status done`): "
+            "the comparison then starts at the base of the next open task"]
 
 
 def default_remote_ref() -> str:
@@ -2141,6 +2153,12 @@ def cmd_mutants(a: argparse.Namespace) -> None:
     cfg = gate_config(ref)[0] if GATE.exists() else {}
     cmd = str(cfg.get("mutation_command") or "")
     if not cmd:
+        on_disk = ""
+        with contextlib.suppress(OSError, ValueError):
+            on_disk = str(json.loads(GATE.read_text(encoding="utf-8")).get("mutation_command") or "")
+        if on_disk:  # the same rule as for the gate commands: an edit that is not committed does not count
+            die(f'{GATE.as_posix()} on disk has a "mutation_command", and the version of {ref[:12]} has none. The command comes '
+                "from the committed gate file, as the gate commands do. A person reviews and commits the gate file; then run again")
         die(f'no "mutation_command" in {GATE.as_posix()}. Example for Rust: "cargo mutants --in-diff {{diff}}"')
     diff = subprocess.run(["git", "diff", "--no-renames", ref, "--", ".", f":(exclude){ROOT.as_posix()}"],
                           capture_output=True, timeout=60).stdout

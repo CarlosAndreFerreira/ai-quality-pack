@@ -807,6 +807,32 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "read it", "--verified-by", "human").returncode, 0)
 
+    def test_gate_names_an_old_open_task_that_sets_the_comparison(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"']}), encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "gate")
+            old = m("task", "open", "--title", "old work", "--scope", "calc.py").stdout.strip()
+            (root / "other.py").write_text("x = 1\n", encoding="utf-8")   # the old work, and other work, are merged
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "merged work")
+            r = m("gate")
+            self.assertNotIn("tasks are open", r.stdout)            # one open task: nothing to say
+            new = m("task", "open", "--title", "new work", "--scope", "calc.py").stdout.strip()
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            r = m("gate", "--force")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(f"2 tasks are open, and the oldest base sets the comparison: task {old}, 1 commit(s) before HEAD", r.stdout)
+            self.assertIn(f"task status --id {old} --status done", r.stdout)
+            self.assertIn("changed outside the task scope: other.py", r.stdout)   # the noise that the old task makes
+            self.assertEqual(m("task", "status", "--id", old, "--status", "done").returncode, 0)
+            r = m("gate", "--force")
+            self.assertNotIn("tasks are open", r.stdout)
+            self.assertNotIn("outside the task scope", r.stdout)
+            self.assertIn(f"(task {new})", r.stdout)
+
     def test_mutants_runs_the_mutation_tool_of_the_project_on_the_change(self):
         tool = ("import sys\n"
                 "diff = open(sys.argv[1], encoding='utf-8').read()\n"
@@ -826,6 +852,10 @@ class EvolutionTests(unittest.TestCase):
             self.assertNotIn("Mutation check", m("evidence").stdout)
             gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"'],
                                         "mutation_command": f'"{self.py}" tool.py {{diff}}'}), encoding="utf-8")
+            r = m("mutants")                                        # on disk and not committed: the message says which it is
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('on disk has a "mutation_command"', r.stderr)
+            self.assertIn("A person reviews and commits the gate file", r.stderr)
             self._git(root, "commit", "-q", "-am", "mutation tool")
             r = m("mutants")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
