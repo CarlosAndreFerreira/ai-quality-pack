@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 — 2026-11-17
+
+Two reports say more, and one more measurement is in [docs/RESULTS.md](docs/RESULTS.md). No default changed.
+
+- **Measured: a test from the issue as a guide for the author.** With the test of the `criteria` subagent in the repository, the bare agent resolved 20 of 40 hard issues, against 21 without it. The test costs little and makes the session shorter; it did not make the author correct more frequently.
+
+Checked: 157 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS.
 
 - **`skill-eval` says when the tasks cannot show the effect.** In our measurements, 23 of 25 tasks were at the ceiling and measured nothing, and the report did not say it. Each report of `run`, `ablate` and `calibrate` now has a `task signal` line and a `task_signal` record: the tasks with a failed run and a passed run, the tasks at the ceiling (each run passed) and the tasks at the floor (each run failed).
   - `run`: when the baseline passes each run of each task, or each run of each task fails, the verdict is `INCONCLUSIVE` and the reason says that the task set cannot show the effect.

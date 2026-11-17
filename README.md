@@ -2,7 +2,7 @@
 
 A portable quality layer for AI coding agents (Claude Code, Google Antigravity, Codex, OpenCode, and any [Agent Skills](https://agentskills.io/specification) client). It covers deterministic gates, minimal rules, long-horizon memory, an independent evaluator, learning from mistakes, and **measured**, human-approved skill evolution.
 
-> Status: v0.9.0, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
+> Status: v0.9.1, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
 
 ## Why
 
