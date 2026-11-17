@@ -468,8 +468,8 @@ def signal_guard(per_task: Dict[str, dict], a: str, b: str, v: str, reasons: Lis
     n = len(per_task)
     if v.startswith("REGRESSES"):
         return v, reasons, sig
-    if len(sig["floor"]) == n:
-        return "NO-SIGNAL", reasons + ["each run of each task failed in the two variants: these tasks cannot show a "
+    if len(sig["floor"]) == n:  # `run` keeps its own name for "no measured gain"; an ablation must not say PRUNABLE
+        return "NO-SIGNAL" if mode == "ablate" else "INCONCLUSIVE", reasons + ["each run of each task failed in the two variants: these tasks cannot show a "
                                        "difference. Use tasks that the agent can do"], sig
     if len(sig["ceiling"]) == n:
         if mode == "ablate":  # true for these tasks, and no more than that

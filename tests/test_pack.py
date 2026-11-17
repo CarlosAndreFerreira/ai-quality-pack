@@ -282,7 +282,8 @@ class SkillEvalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             root, py = self._repo(t)
             results = root / ".agent-memory/evals/results"
-            last = lambda: json.loads(sorted(results.glob("*.json"))[-1].read_text(encoding="utf-8"))
+            # the report of this run, from its own output: two reports in one second do not sort by time
+            last = lambda: json.loads((root / re.search(r"(?m)^report: (.+)$", r.stdout).group(1).strip()).read_text(encoding="utf-8"))
             head = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
             # ceiling: the baseline passes each run, so a change cannot show a gain
             p = self._proposal(root, "- harmless line")
@@ -292,6 +293,7 @@ class SkillEvalTests(unittest.TestCase):
             self.assertIn("task signal: 0 of 2 tasks had a failed run and a passed run; 2 at the ceiling", r.stdout)
             self.assertIn("this task set cannot show a gain", r.stdout)
             rep = last()
+            self.assertTrue(results.is_dir())
             self.assertEqual(rep["task_signal"], {"ceiling": ["TASK-A", "TASK-B"], "floor": [], "mixed": []})
             self.assertEqual(rep["commit"], head)
             self.assertIs(rep["dirty"], False)
@@ -302,6 +304,10 @@ class SkillEvalTests(unittest.TestCase):
             self.assertNotIn("VERDICT: PRUNABLE", r.stdout)
             self.assertIn("2 at the floor", r.stdout)
             self.assertEqual(last()["task_signal"]["floor"], ["TASK-A", "TASK-B"])
+            # floor in `run`: INCONCLUSIVE, the name that `run` has for "no measured gain", with the reason
+            r = self.ev(root, "run", "--proposal", p, "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py marker')
+            self.assertIn("VERDICT: INCONCLUSIVE", r.stdout)
+            self.assertIn("these tasks cannot show a difference", r.stdout)
             # ceiling in an ablation: true for these tasks, and the report says that it is no more than that
             r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("VERDICT: PRUNABLE", r.stdout)

@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **`skill-eval` says when the tasks cannot show the effect.** In our measurements, 23 of 25 tasks were at the ceiling and measured nothing, and the report did not say it. Each report of `run`, `ablate` and `calibrate` now has a `task signal` line and a `task_signal` record: the tasks with a failed run and a passed run, the tasks at the ceiling (each run passed) and the tasks at the floor (each run failed).
-  - `run`: when the baseline passes each run of each task, the verdict is `INCONCLUSIVE` and the reason says that the task set cannot show a gain.
+  - `run`: when the baseline passes each run of each task, or each run of each task fails, the verdict is `INCONCLUSIVE` and the reason says that the task set cannot show the effect.
   - `ablate`: when each run of each task fails with and without the skill, the verdict is `NO-SIGNAL`, not `PRUNABLE`. `PRUNABLE` on tasks at the ceiling stays, with a reason that says it is for those tasks only.
   - `calibrate` prints a warning for a task set at the ceiling or at the floor.
 - **Each `skill-eval` report has its commit.** The reports of `run`, `ablate` and `judge` and the noise file have `commit`, `dirty` (a tracked file has an uncommitted change), the Python version and the platform. A run uses the commit and the skills folder on disk, and the report says so when `dirty` is true. A report without a commit is not written.
