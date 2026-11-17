@@ -2495,6 +2495,19 @@ def gh(*args: str, check: bool = True) -> str:
     return r.stdout
 
 
+def pr_needs_a_clean_tree() -> None:
+    """A pull request holds commits: work that is not committed stops it. Generated files that git does not track
+    (bytecode) do not stop it; they are named, because they are not in the pull request."""
+    dirty = [l for l in git("status", "--porcelain").splitlines()
+             if l.strip() and not (l.startswith("?? ") and GENERATED_RE.search(l[3:].strip().strip('"').replace("\\", "/")))]
+    if dirty:
+        die("there are changes that are not committed: commit the work first, the pull request holds commits")
+    made = untracked_files(generated=True)
+    if made:
+        print(f"pr: {len(made)} generated file(s) that git does not track are not in the pull request "
+              "(`__pycache__`, `.pyc`). Put them in .gitignore")
+
+
 def cmd_pr(a: argparse.Namespace) -> None:
     """Open a draft pull request with the evidence block, only after a green gate. It never merges.
 
@@ -2506,13 +2519,7 @@ def cmd_pr(a: argparse.Namespace) -> None:
     base_name = base.split("/", 1)[1] if base.startswith("origin/") else base
     if not branch or branch in ("HEAD", base_name, "main", "master"):
         die(f"the work is on `{branch or '?'}`: put it on its own branch first (one issue, one branch, one pull request)")
-    dirty = [l for l in git("status", "--porcelain").splitlines()
-             if l.strip() and not (l.startswith("?? ") and GENERATED_RE.search(l[3:].strip().strip('"').replace("\\", "/")))]
-    if dirty:
-        die("there are changes that are not committed: commit the work first, the pull request holds commits")
-    if untracked_files(generated=True):
-        print(f"pr: {len(untracked_files(generated=True))} generated file(s) that git does not track are not in the pull request "
-              "(`__pycache__`, `.pyc`). Put them in .gitignore")
+    pr_needs_a_clean_tree()
     if not git("log", "--oneline", f"{base}..HEAD").strip():
         die(f"`{branch}` has no commit that `{base}` does not have")
     if a.evidence_file:
