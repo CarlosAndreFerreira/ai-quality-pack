@@ -789,6 +789,45 @@ def cmd_compact(a: argparse.Namespace) -> None:
     print(f"archived {len(starts) - a.keep} entries to {ARCHIVE}")
 
 
+# Files that a run of the code writes, not a person: Python bytecode. When git does not track them and does not ignore
+# them, they are not changes of the project. A file of this type that git tracks is not hidden: it is in `git diff`.
+GENERATED_RE = re.compile(r"(^|/)__pycache__(/|$)|\.py[co]$")
+
+
+def untracked_files(generated: bool = False) -> List[str]:
+    """Files that git does not track and does not ignore. `generated=True` gives the generated files only."""
+    out = []
+    for f in git("ls-files", "-o", "--exclude-standard").splitlines():
+        if bool(GENERATED_RE.search(f.replace("\\", "/"))) == generated:
+            out.append(f)
+    return out
+
+
+_PYCACHE_DIR = ""
+
+
+def check_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Environment of a check command that the pack runs (gate, repro, counterexample, base tests).
+
+    Python gets a bytecode directory of its own for this run of the pack (PYTHONPYCACHEPREFIX), removed at the end.
+    Two reasons. A check must not write `__pycache__` files into the project: they changed the workspace hash and
+    looked like changes outside the scope. And Python accepts an old bytecode file when the source has the same size
+    and the same second of modification: after a quick edit, a check ran the old code. With a new directory no old
+    file is read. A value that the user set stays. `python -I` and `-E` do not read the variable."""
+    global _PYCACHE_DIR
+    env = dict(os.environ)
+    if not env.get("PYTHONPYCACHEPREFIX"):
+        if not _PYCACHE_DIR:
+            import atexit
+            import shutil
+            import tempfile
+            _PYCACHE_DIR = tempfile.mkdtemp(prefix="aqp-pycache-")
+            atexit.register(shutil.rmtree, _PYCACHE_DIR, True)
+        env["PYTHONPYCACHEPREFIX"] = _PYCACHE_DIR
+    env.update(extra or {})
+    return env
+
+
 def code_state_hash() -> str:
     """Hash of workspace files outside .agent-memory/ and .git/ so evaluator votes bind to exact code."""
     import hashlib
@@ -799,7 +838,7 @@ def code_state_hash() -> str:
         h.update(head.encode())
         h.update(b"\0")
         h.update(git("diff", "HEAD", "--", ".", f":(exclude){root_name}").encode())
-        for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
+        for f in sorted(untracked_files()):
             if f == root_name or f.startswith(root_name + "/"):
                 continue
             h.update(f.encode())
@@ -1211,7 +1250,7 @@ def workspace_hash() -> str:
     with contextlib.suppress(OSError):
         h.update(GATE.read_bytes())
     h.update(git("diff", "HEAD", "--", ".", f":(exclude){ROOT.as_posix()}").encode())
-    for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
+    for f in sorted(untracked_files()):
         if f.startswith(ROOT.as_posix() + "/"):
             continue
         h.update(f.encode())
@@ -1527,7 +1566,8 @@ def run_replay_base_tests(ref: str, cfg: dict, limit: int, timeout: int) -> Tupl
             p.write_bytes(data)
         _clear_pycache_for(list(base_bytes.keys()))
         try:
-            r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, env=check_env())
             ok = r.returncode == 0
             out = (r.stdout + r.stderr)[-limit:]
         except subprocess.TimeoutExpired:
@@ -1586,7 +1626,7 @@ def changed_repo_files(ref: str) -> List[str]:
     else:
         diff_lines = (git("diff", "--name-only", "--cached", "--", ".", f":(exclude){root_name}").splitlines()
                       + git("diff", "--name-only", "--", ".", f":(exclude){root_name}").splitlines())
-    for p in diff_lines + git("ls-files", "-o", "--exclude-standard").splitlines():
+    for p in diff_lines + untracked_files():
         norm = p.strip().replace("\\", "/")
         while norm.startswith("./"):  # not lstrip("./"): that removes the dot of `.github/` and of the memory directory
             norm = norm[2:]
@@ -1678,7 +1718,8 @@ def gate_checks(ref: str, cfg: dict, warnings: List[str], t0: float) -> None:
     for c in cfg.get("commands", []):
         timed_out = None
         try:
-            r = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            r = subprocess.run(c, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, env=check_env())
             ok, out = r.returncode == 0, (r.stdout + r.stderr)
         except subprocess.TimeoutExpired:
             ok, out, timed_out = False, f"timeout after {timeout}s", True
@@ -1834,7 +1875,7 @@ def run_check(test: str, cwd: Path, timeout: int, env: Optional[Dict[str, str]] 
     """(exit code or None for a timeout, output) of one check command."""
     try:
         r = subprocess.run(test, shell=True, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, env=dict(os.environ, **env) if env else None)
+                           errors="replace", timeout=timeout, env=check_env(env))
         return r.returncode, r.stdout + r.stderr
     except subprocess.TimeoutExpired:
         return None, f"timeout after {timeout}s"
@@ -2215,7 +2256,7 @@ def cmd_diff_view(a: argparse.Namespace) -> None:
             removed += 1
             continue
         out.append(line)
-    untracked = [f for f in git("ls-files", "-o", "--exclude-standard").splitlines() if not f.startswith(ROOT.as_posix() + "/")]
+    untracked = [f for f in untracked_files() if not f.startswith(ROOT.as_posix() + "/")]
     print("\n".join(out))
     for f in untracked[:50]:
         print(f"new file that git does not track (read it directly): {f}")
@@ -2409,6 +2450,10 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
         lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}")
+    made = untracked_files(generated=True)
+    if made:
+        lines.append(f"- Generated files: {len(made)} file(s) that git does not track and does not ignore (`__pycache__`, `.pyc`). "
+                     "They are not counted as changes. Put them in .gitignore")
     drift = base_drift()
     if drift and drift["behind"]:
         lines.append("- Base branch: " + drift_line(drift))
@@ -2461,8 +2506,13 @@ def cmd_pr(a: argparse.Namespace) -> None:
     base_name = base.split("/", 1)[1] if base.startswith("origin/") else base
     if not branch or branch in ("HEAD", base_name, "main", "master"):
         die(f"the work is on `{branch or '?'}`: put it on its own branch first (one issue, one branch, one pull request)")
-    if git("status", "--porcelain").strip():
+    dirty = [l for l in git("status", "--porcelain").splitlines()
+             if l.strip() and not (l.startswith("?? ") and GENERATED_RE.search(l[3:].strip().strip('"').replace("\\", "/")))]
+    if dirty:
         die("there are changes that are not committed: commit the work first, the pull request holds commits")
+    if untracked_files(generated=True):
+        print(f"pr: {len(untracked_files(generated=True))} generated file(s) that git does not track are not in the pull request "
+              "(`__pycache__`, `.pyc`). Put them in .gitignore")
     if not git("log", "--oneline", f"{base}..HEAD").strip():
         die(f"`{branch}` has no commit that `{base}` does not have")
     if a.evidence_file:
@@ -2818,7 +2868,7 @@ def added_lines(ref: str) -> Iterator[tuple]:
         elif line.startswith("+") and cur:
             yield cur, n, line[1:]
             n += 1
-    for f in sorted(git("ls-files", "-o", "--exclude-standard").splitlines()):
+    for f in sorted(untracked_files()):
         p = Path(f)
         if f.startswith(ROOT.as_posix() + "/") or not p.is_file() or p.stat().st_size > 1_000_000:
             continue
