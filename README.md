@@ -2,7 +2,7 @@
 
 A portable quality layer for AI coding agents (Claude Code, Google Antigravity, Codex, OpenCode, and any [Agent Skills](https://agentskills.io/specification) client). It covers deterministic gates, minimal rules, long-horizon memory, an independent evaluator, learning from mistakes, and **measured**, human-approved skill evolution.
 
-> Status: v0.8.0, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
+> Status: v0.9.0, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
 
 ## Why
 
@@ -10,14 +10,32 @@ Coding agents fail in predictable ways. They declare victory early, grade their 
 
 | Failure | Mechanism |
 |---|---|
-| "Done" without proof | Completion **gate** (lint/typecheck/tests) + optional Claude Code Stop hook |
-| Self-grading bias | Separate, skeptical **evaluator** (fresh context). It alone marks features as passing |
+| "Done" without a check | Completion **gate** (lint/typecheck/tests) + optional Claude Code Stop hook. A gate without commands fails |
+| Self-grading bias | A result from **records of commands** (gate, reproduction, counterexample). A separate **evaluator** (fresh context) looks for a counterexample; its text does not decide |
 | Vague scope | **Acceptance criteria** agreed before code; design review via Google's Elephant-Goldfish Model (optional) |
 | Lost context across sessions | File memory: tasks, features, progress, playbook, plus a session-start digest |
 | Repeated mistakes | **Playbook** of root-caused rules, de-duplicated, scored helpful/harmful |
 | Skill drift / overfitting | `skill-evolve` proposes a diff; `skill-eval` measures it (noise floor, guards, holdout); **a human approves** |
 | Insecure code | `security-review` mapped to OWASP Top 10:2025 and the OWASP LLM Top 10 2025 |
 | No record of what happened | Local **run log** (`events.jsonl`) + `memory.py stats`; eval transcripts with tokens and cost |
+
+## What the measurements show
+
+The numbers, with intervals, costs and limits, are in [docs/RESULTS.md](docs/RESULTS.md). All agent runs used Claude Haiku as the author.
+
+What the pack does:
+- It stops a "done" that no command checked. In 40 agent runs on repositories without a gate file, the old gate (exit code 0) let the agent continue in each run. The gate now fails.
+- It records a regression that a command shows. Each of the 3 counterexamples of type `regression` was on a wrong patch. 3 is a small number.
+- It runs checks that do not use a model: secrets, risk rules of the project, changes outside the scope of the task, deleted or skipped tests.
+- In one use on a real project, the independent evaluator found a defect in new code that the tests of the author and the gate did not find. It is one case.
+
+What the pack does not do:
+- It does not tell you that a patch is correct. On 42 patches for hard issues, the evaluator did not separate wrong patches from correct patches, on Haiku or on Sonnet.
+- A green gate is not proof. Of 86 wrong patches, 9 broke an existing test of the project; the other 77 failed only tests that the agent did not have.
+- A green reproduction test is not proof. A test that the `criteria` subagent wrote from the issue alone rejected 0 of 19 wrong patches.
+- The full pack was never better than the core, thus a default install has the core only.
+
+Not measured: the new defaults against the bare agent, other models as the author, other agents than Claude Code, and macOS.
 
 ## Install
 

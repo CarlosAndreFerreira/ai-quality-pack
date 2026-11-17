@@ -126,6 +126,23 @@ The 42 SWE-bench patches again, with `"verdict_evidence": true` in each workspac
 - What this means for use: trust a `regression` counterexample. Do not read a `not-fixed` counterexample or a verified reproduction from the evaluator as a decision. Use `feature vote` or `feature pass`, which refuse a verdict without the record; a text of the evaluator does not.
 - Limits: 3, 6 and 3 runs are small numbers. One pass for each model. The baseline rows use the pack of version 0.6.0 and the rows with the option use the current pack with a gate file without commands; the text of the evaluator is the same, plus the paragraph of the option. Cost: 3.36 US dollars for the two passes.
 
+### What a gate with the existing tests of a project can find
+
+No agent ran for this number. It comes from the reports of the SWE-bench grader for the runs above. A wrong patch that breaks an existing test of the project (`PASS_TO_PASS`) makes a gate with those tests fail. A wrong patch that fails only the hidden tests (`FAIL_TO_PASS`) passes that gate.
+
+- Of 86 wrong patches on hard issues, 9 break an existing test (10%, 95% interval 6 to 19%). The other 77 fail hidden tests only. The 86 are 19 patches of the bare agent in the selection run, and 36 of the bare agent and 31 of the core pack in the comparison of version 0.6.0.
+- What this means for use: a gate with the tests of the project stops a "done" without a check, and it finds a regression. It does not find a patch that repairs the wrong thing. A green gate is not proof that a patch is correct.
+- Limits: hard issues only, and one model as the author. The gate also runs lint and type checks, which this number does not include.
+
+### One use on a real project
+
+A security fix in a Rust application of the author of the pack (2026-11-16), with the feature record, `repro`, the gate of the project and the independent evaluator in a separate context.
+
+- The reproduction test failed on the base and passed with the fix. The gate passed.
+- The evaluator gave FAIL in its first round, with a check of its own: a redirect with status 307 sent the credentials to a different host. The tests of the author and the gate did not find this. After the fix, the evaluator gave PASS.
+- A person then ran the application with a real session, with no failure.
+- Limits: this is one case, not a rate. The evaluator ran on a stronger model than Haiku. The use also showed three defects of the pack, corrected in version 0.8.0.
+
 ### A test written from the issue, before the fix
 
 The question: can a test that the `criteria` subagent writes from the text of the issue only replace the evaluator as the judge of a patch? The subagent wrote one test for each of the 42 hard issues, at the base commit, and saw no fix (Haiku, one pass, pack at commit `638c60f`). Then, with no model, each test ran on the base, on the base with the reference fix, and on the base with the patch of the bare agent (19 wrong patches, 23 correct patches). A test is valid when it fails on the base and passes on the reference fix.

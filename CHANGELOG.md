@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-17
+
+This release changes defaults, and it corrects version 0.8.0. A new install has the core only (3 skills). The result of a change comes from the records of commands, not from the text of the evaluator. The release also says what the measurements do not support: on hard issues, the evaluator, the existing tests of a project and a test written from the issue did not separate wrong patches from correct patches ([docs/RESULTS.md](docs/RESULTS.md)). Read "Changes that need attention in an upgrade" below.
+
+Checked: 156 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS. Not measured with an agent: the new defaults against the bare agent.
 
 - **The Stop hook keeps the answer to the task.** When the hook blocked a stop, the last message of the agent was about the gate only, and the answer to the task was lost. Seen on 2026-11-17: a session that had to write a test and give its command ended with text about the gate file. Now each block message tells the agent to give the complete answer again. A gate without commands has its own message with two cases: code changed (write the gate file), or nothing that a command can check (do not write a gate file, say that no gate ran). The gate itself did not change: without commands it fails. The effect on an agent is not measured.
 
