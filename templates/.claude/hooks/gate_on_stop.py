@@ -4,6 +4,8 @@
 - Runs `memory.py gate` (commands from .agent-memory/gate.json).
 - Skipped when the workspace is unchanged since the last pass (cheap for Q&A turns).
 - On failure: exit 2 with bounded output on stderr, so the agent keeps working on it.
+- The message of a block tells the agent to give the answer to the task again in its last message. Without that,
+  the last message is about the gate only and the answer to the task is lost (seen in a run on 2026-11-17).
 - Never loops: if this stop was already triggered by the hook (stop_hook_active), it lets the agent stop.
   That release is written to the run log (`released-red` unless the gate passed for exactly the code
   that the agent leaves), and the next
@@ -45,6 +47,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+KEEP_ANSWER = ("This stop check does not change your task. After you act on it, give the complete answer to the "
+               "task again in your last message: the user reads only that message.\n")
+NOTHING_CHECKED = ("The completion gate has no commands, so it checked nothing. Do one of these:\n"
+                   "- You changed code or tests: put the test and lint commands of this project in the gate file "
+                   "(see below) and run the gate.\n"
+                   "- The task changed nothing that a command can check (a question, a plan, a review): do not "
+                   "write a gate file. Say in one line that no completion gate ran.\n")
 MEM = Path(".agents/skills/long-horizon/scripts/memory.py")
 # a plugin install has no copy in the project: the script is in the plugin, three folders above this file
 PLUGIN_MEM = Path(__file__).resolve().parents[3] / "skills" / "long-horizon" / "scripts" / "memory.py"
@@ -115,14 +124,18 @@ def main() -> int:
     except subprocess.TimeoutExpired:
         record("blocked-timeout", env)
         sys.stderr.write(f"Completion gate did not finish within {budget}s. Treat this as a failure: "
-                         "fix the hanging command, or explain to the user why the gate cannot pass.\n")
+                         "fix the hanging command, or explain to the user why the gate cannot pass.\n" + KEEP_ANSWER)
         return 2
     except Exception:
         return 0
     if r.returncode == 1:
         record("blocked", env)
-        sys.stderr.write("Completion gate failed. Fix this before finishing, or explain to the user why it cannot pass:\n"
-                         + (r.stdout + r.stderr)[-3000:])
+        out = (r.stdout + r.stderr)[-3000:].rstrip("\n") + "\n"
+        if "Nothing was checked" in out:  # no gate file, or a gate file without commands: not a failed check
+            sys.stderr.write(NOTHING_CHECKED + out + KEEP_ANSWER)
+        else:
+            sys.stderr.write("Completion gate failed. Fix this before finishing, or explain to the user why it "
+                             "cannot pass:\n" + out + KEEP_ANSWER)
         return 2
     return 0
 

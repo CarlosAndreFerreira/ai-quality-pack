@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The Stop hook keeps the answer to the task.** When the hook blocked a stop, the last message of the agent was about the gate only, and the answer to the task was lost. Seen on 2026-11-17: a session that had to write a test and give its command ended with text about the gate file. Now each block message tells the agent to give the complete answer again. A gate without commands has its own message with two cases: code changed (write the gate file), or nothing that a command can check (do not write a gate file, say that no gate ran). The gate itself did not change: without commands it fails. The effect on an agent is not measured.
+
 - **Fix: Python bytecode files.** In a project that does not ignore `__pycache__`, a check of the pack wrote bytecode files into the project. They changed the workspace hash, showed as changes outside the scope in the evidence block, and stopped `memory.py pr` ("changes that are not committed"). Python also accepts an old bytecode file when the source has the same size and the same second of modification: after a quick edit, a check ran the old code.
   - The commands that the pack runs (gate, `repro`, `counterexample`, base tests) get a bytecode directory of their own (`PYTHONPYCACHEPREFIX`), removed at the end. A value that you set stays. `python -I` and `-E` do not read it.
   - `__pycache__` and `.pyc` files that git does not track and does not ignore are not counted as changes. The evidence block has a line for them, and `pr` names them. A file of this type that git tracks is not hidden.

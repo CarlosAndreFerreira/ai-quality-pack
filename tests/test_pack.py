@@ -982,6 +982,19 @@ class EvolutionTests(unittest.TestCase):
             r = run([hook], root, stdin="{}", env=env)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("no .agent-memory/gate.json", r.stderr)
+            # not a failed check: the agent gets the two cases, and is told to give the answer to the task again
+            self.assertIn("checked nothing", r.stderr)
+            self.assertIn("do not write a gate file", r.stderr)
+            self.assertNotIn("Completion gate failed", r.stderr)
+            self.assertIn("give the complete answer to the task again", r.stderr)
+            (root / ".agent-memory/gate.json").write_text(
+                json.dumps({"commands": [f'"{sys.executable}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            r = run([hook], root, stdin="{}", env=env)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("Completion gate failed", r.stderr)  # a command that fails keeps the old message
+            self.assertNotIn("checked nothing", r.stderr)
+            self.assertIn("give the complete answer to the task again", r.stderr)
+            (root / ".agent-memory/gate.json").unlink()
             r = run([hook], root, stdin=json.dumps({"stop_hook_active": True}), env=env)
             self.assertEqual(r.returncode, 0, r.stderr)  # blocks one time, then the release is in the run log
             self.assertIn("released-red", (root / ".agent-memory/events.jsonl").read_text(encoding="utf-8"))
