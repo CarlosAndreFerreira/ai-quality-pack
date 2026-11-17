@@ -2058,7 +2058,22 @@ def records_verdict() -> dict:
         notes.append("the mutation check did not pass")
     if missing or mut == "fail" or (repro and not counts):
         why = "; ".join((["no record of " + " and ".join(missing)] if missing else []) + notes)
-        return {"verdict": "UNKNOWN", "why": why, "records": records}
+        # two different cases, with different next steps: nothing was run for this code, or a command ran and
+        # its record does not count. The first is work that is not done; the second is evidence that is weak
+        steps = []
+        if not gate:
+            steps.append("run `memory.py gate`")
+        if not repro:
+            steps.append('run `memory.py repro --test "<command>"` with a test that fails on the base')
+        elif not counts:
+            steps.append("record the tests with the criteria (`feature add --test-file`), before the work")
+        if mut == "fail":
+            steps.append("add a test that fails on the mutants that stayed alive, then run `memory.py mutants` again")
+        if cx and cx.get("kind") == "base-not-seen":
+            steps.append("the counterexample did not load the code of the base: make its check read the code of the "
+                         "workspace (no absolute path), then run `memory.py counterexample` again")
+        return {"verdict": "UNKNOWN", "why": why, "records": records,
+                "unknown": "no-evidence" if missing else "weak-evidence", "next": steps}
     return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
             "records": records}
 
@@ -2067,12 +2082,17 @@ def cmd_verdict(a: argparse.Namespace) -> None:
     """Print what the records support for this code. Exit code: 0 SUPPORTED, 1 FAIL, 3 UNKNOWN."""
     ensure()
     v = records_verdict()
-    log_event("verdict", result=v["verdict"], id=a.id, **{k: val for k, val in v["records"].items()})
+    log_event("verdict", result=v["verdict"], id=a.id, unknown=v.get("unknown"),
+              **{k: val for k, val in v["records"].items()})
     if a.json:
         print(json.dumps(v, indent=2))
     else:
         print(f"verdict: {v['verdict']} ({v['why']})")
         print("records for this code: " + ", ".join(f"{k} {val}" for k, val in v["records"].items()))
+        if v.get("unknown"):
+            what = ("no command gave a record for this code" if v["unknown"] == "no-evidence"
+                    else "a command ran, and its record does not count")
+            print(f"unknown: {v['unknown']} ({what}). Next: " + "; ".join(v["next"]))
     sys.exit({"SUPPORTED": 0, "FAIL": 1}.get(v["verdict"], 3))
 
 

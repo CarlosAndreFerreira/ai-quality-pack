@@ -7,7 +7,8 @@
   - `ablate`: when each run of each task fails with and without the skill, the verdict is `NO-SIGNAL`, not `PRUNABLE`. `PRUNABLE` on tasks at the ceiling stays, with a reason that says it is for those tasks only.
   - `calibrate` prints a warning for a task set at the ceiling or at the floor.
 - **Each `skill-eval` report has its commit.** The reports of `run`, `ablate` and `judge` and the noise file have `commit`, `dirty` (a tracked file has an uncommitted change), the Python version and the platform. A run uses the commit and the skills folder on disk, and the report says so when `dirty` is true. A report without a commit is not written.
-- 1 test.
+- **`memory.py verdict` says which type of `UNKNOWN` it is, and the next step.** `no-evidence`: no command gave a record for this code. `weak-evidence`: a command ran, and its record does not count (a reproduction with a test from after the change, a mutation check that did not pass, a counterexample that did not load the code of the base). The two types were one line before, and they need different actions. `--json` has `unknown` and `next`, and the run log has `unknown`.
+- 1 test, and 1 test with more checks.
 
 ## 0.9.0 — 2026-11-17
 

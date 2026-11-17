@@ -885,6 +885,9 @@ class EvolutionTests(unittest.TestCase):
             r = m("verdict")
             self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # nothing is recorded
             self.assertIn("verdict: UNKNOWN (no record of a gate pass and a verified reproduction)", r.stdout)
+            # nothing was run: this is not the same as a record that does not count, and the next step differs
+            self.assertIn("unknown: no-evidence (no command gave a record for this code). Next: run `memory.py gate`; "
+                          "run `memory.py repro --test", r.stdout)
             (root / "probe.py").write_text("import calc, sys\nsys.exit(0 if calc.add(2, 0) == 2 else 1)\n", encoding="utf-8")
             (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # breaks add(2, 0)
             self.assertEqual(m("counterexample", "--test", f'"{self.py}" probe.py', "--test-file", "probe.py").returncode, 0)
@@ -901,10 +904,16 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # the reproduction test is from after the change
             self.assertIn("verdict: UNKNOWN (the reproduction test was not recorded before the change", r.stdout)
             self.assertIn('"accept_later_tests": true', r.stdout)
+            self.assertIn("unknown: weak-evidence (a command ran, and its record does not count). Next: record the tests "
+                          "with the criteria", r.stdout)
+            v = json.loads(m("verdict", "--json").stdout)
+            self.assertEqual((v["unknown"], len(v["next"])), ("weak-evidence", 1))
+            self.assertEqual(self._events(root, "verdict")[-1]["unknown"], "weak-evidence")
             accept_later_tests(root)
             r = m("verdict")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("verdict: SUPPORTED", r.stdout)
+            self.assertNotIn("unknown:", r.stdout)
             self.assertIn("This is support, not proof", r.stdout)
             self.assertIn("records for this code: gate pass, reproduction verified, reproduction_test not recorded before the change, "
                           "counterexample none, mutation not run", r.stdout)
