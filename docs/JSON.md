@@ -35,7 +35,7 @@ Only `repro` with `verified` shows a fix, and only `counterexample` with `shown`
 | `ref` | text | The commit that the change is compared with |
 | `risk` | text | `LOW`, `MEDIUM` or `HIGH` |
 | `verdict` | text | `SUPPORTED`, `FAIL` or `UNKNOWN`, as `memory.py verdict` gives it |
-| `records` | object | `gate`, `reproduction`, `reproduction_test`, `counterexample`, `mutation` |
+| `records` | object | `gate`, `reproduction`, `reproduction_test`, `counterexample`, `mutation`, `tests_confirmed` (`by a person`, `no`, or `none` when no reproduction with a recorded test is there) |
 | `not_verified` | list of text | Each item of the "Not verified" part of the block |
 | `warnings` | list of text | The warnings of the block |
 | `markdown` | text | The block for a pull request |

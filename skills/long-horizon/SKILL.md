@@ -31,6 +31,7 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 2. If it is a feature, it must have acceptance criteria agreed **before** coding (the "sprint contract"):
    `memory.py feature add --id F-003 --desc "..." --criterion "POST /refresh returns 401 for reused token" --criterion "..." --test-file tests/test_refresh.py`
    Record the tests of the criteria now, with `--test-file`, before the work. Only a reproduction with a recorded test that did not change supports the result (`memory.py verdict`).
+   Give each thing that the tests assume and the requirement does not say with `--assumption "..."`. Then show the user the output of `memory.py feature review --id F-003`, and ask the user to run `memory.py feature confirm --id F-003` in a terminal. You cannot confirm the tests: a person does it. Without the confirmation the work continues, and the evidence says that no person confirmed the tests.
    A criterion says what a user or a test can observe. Do not name files or functions: "the write is atomic in `db.rs`" passes with a write that loses data. If `feature add` gives the warning "names code", write the criterion again.
    Open the task with the files of the feature: `memory.py task open --title "..." --feature F-003 --scope "src/auth/**"`. The evidence then shows which changed files the feature covers. Do not present the PASS of one feature as an approval of the complete change.
    Criteria state *what* must be true, not *how* to build it.

@@ -5,7 +5,13 @@
 - **`why` in the JSON output.** `gate --json`, `repro --json` and `counterexample --json` have the reason of the result as a key. Before, the reason was only in the text of `output`.
 - **[docs/JSON.md](docs/JSON.md)** has each key of the JSON output and each value of `result`. A test fails when a key is not in the file, or when the set of keys changes.
 - **The old open task is in the session-start digest.** The warning for an old open task that sets the comparison of the gate was only in the gate output, after the work. The digest now has it before the work, one time.
-- 2 tests with more checks.
+- **A person confirms the tests of the criteria (`feature review`, `feature confirm`).** The tests of the `criteria` subagent come from the requirement alone, and in our measurement 19 of 42 such tests failed on the correct fix. The published work that we read has gains with tests that a person wrote, not with tests from the issue alone.
+  - `feature add --assumption "..."` records what the tests take as true and the requirement does not say. The `criteria` subagent now lists these.
+  - `feature review --id F` prints a sheet for a person: the assumptions first, then the criteria and the test files.
+  - `feature confirm --id F` is for a person in a terminal. An agent cannot confirm (the same rule as for a lesson).
+  - The result of `verdict` does not change. The verdict has a record `tests_confirmed` and a note, and the evidence block says "A person confirmed the test" or "No person confirmed the test". A test file that changes after the confirmation is not confirmed.
+  - Not measured: how many wrong tests a person finds with this sheet.
+- 1 test, and 2 tests with more checks.
 
 ## 0.9.2 — 2026-11-17
 

@@ -486,7 +486,7 @@ def load_features() -> List[dict]:
         cur = by_id.setdefault(fid, {"id": fid, "description": "", "criteria": [], "passes": False,
                                      "evidence": "", "verified_by": "", "votes": [], "updated": e.get("updated", "")})
         for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated", "votes", "vote_summary",
-                  "recorded_tests"):
+                  "recorded_tests", "test_files", "assumptions", "tests_confirmed"):
             if k in e:
                 cur[k] = e[k]
     return list(by_id.values())
@@ -926,7 +926,8 @@ def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -
         die(f"feature {a.id} exists; features are never rewritten")
     if not a.criterion:
         die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
-    guard_secrets(a.desc, *a.criterion)
+    assumptions = [s.strip() for s in (a.assumption or []) if s.strip()]
+    guard_secrets(a.desc, *a.criterion, *assumptions)
     patches = [patch_digest(f) for f in list(a.test_file or []) + list(a.test_patch or [])]
     if not all(patches):
         die("feature add: a --test-file or --test-patch file cannot be read")
@@ -934,11 +935,17 @@ def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -
            "evidence": "", "verified_by": "", "votes": [], "updated": now()}
     if patches:  # tests from the time of the criteria: `repro` with the same files counts as a test written before the change
         rec["recorded_tests"] = patches
+        rec["test_files"] = [str(f).replace("\\", "/") for f in list(a.test_file or []) + list(a.test_patch or [])]
+    if assumptions:  # what the tests take as true and the requirement does not say: a person reads these first
+        rec["assumptions"] = assumptions
     fs.append(rec)
     save_features(fs, dict(rec, ev="add"))
     named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
     log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
     print(f"added {a.id} with {len(a.criterion)} criteria" + (f" and {len(patches)} test file(s) recorded" if patches else ""))
+    if patches:
+        print(f"No person confirmed these tests. Show the user `memory.py feature review --id {a.id}`; the user then runs "
+              f"`memory.py feature confirm --id {a.id}` in a terminal. A test from the requirement alone can read it wrong")
     for i, terms in named:
         print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
               "Write what a user or a test can observe, not how the code does it: "
@@ -1028,6 +1035,54 @@ def feature_show(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) 
     print(json.dumps(by_id[a.id], indent=2, ensure_ascii=False))
 
 
+def tests_confirmed(f: dict) -> bool:
+    """A person confirmed the tests of this feature as they are recorded now."""
+    c = f.get("tests_confirmed") or {}
+    return bool(f.get("recorded_tests")) and sorted(c.get("tests") or []) == sorted(f.get("recorded_tests") or [])
+
+
+def feature_review(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """The sheet that a person reads before the work: what the tests assume first, then what they check.
+    In our measurement, 19 of 42 tests that a model wrote from the requirement alone failed on the correct fix, and
+    3 had the same wrong reading of the requirement as the wrong patch. A person finds these before the work."""
+    if a.id not in by_id:
+        die(f"unknown feature {a.id}")
+    f = by_id[a.id]
+    out = [f"# {f['id']}: {clean(f.get('description', ''), 200)}", ""]
+    out += ["## Assumed, not in the requirement (read these first)"]
+    out += [f"- {clean(s, 300)}" for s in f.get("assumptions") or []] or ["- none was recorded. This does not show that the tests assume nothing"]
+    out += ["", "## What must be true (the acceptance criteria)"] + [f"{i}. {clean(c, 300)}" for i, c in enumerate(f.get("criteria") or [], 1)]
+    out += ["", "## Test files, recorded before the work"]
+    out += [f"- {clean(p, 200)}" for p in f.get("test_files") or []] or ["- none: this feature has no recorded test"]
+    c = f.get("tests_confirmed") or {}
+    out += ["", "## State"]
+    if tests_confirmed(f):
+        out.append(f"- confirmed by a person at {c.get('at', '?')}" + (f": {clean(c['note'], 200)}" if c.get("note") else ""))
+    elif f.get("recorded_tests"):
+        out.append(f"- not confirmed by a person. A person runs in a terminal: memory.py feature confirm --id {f['id']}")
+    else:
+        out.append("- nothing to confirm")
+    print("\n".join(out))
+
+
+def feature_confirm(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """A person says that the recorded tests check what the requirement means. The result of `verdict` does not change:
+    the evidence and the verdict then say that a person confirmed the tests."""
+    if a.id not in by_id:
+        die(f"unknown feature {a.id}")
+    f = by_id[a.id]
+    if not f.get("recorded_tests"):
+        die(f"{a.id} has no recorded test (`feature add --test-file`): there is nothing to confirm")
+    if not is_human():
+        die("a person confirms the tests, in a terminal. Show the user `memory.py feature review --id " + a.id
+            + "`, then tell the user to run: memory.py feature confirm --id " + a.id)
+    f["tests_confirmed"] = {"at": now(), "tests": list(f["recorded_tests"]), **({"note": clean(a.evidence, 300)} if a.evidence else {})}
+    f["updated"] = now()
+    save_features(fs, dict(f, ev="confirm"))
+    log_event("feature", id=a.id, result="confirm")
+    print(f"{a.id}: the tests are confirmed by a person. The evidence block and `memory.py verdict` say so from now on")
+
+
 def feature_list(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
     for f in fs:
         print(f"[{'x' if f.get('passes') else ' '}] {f['id']}: {f['description']}  ({len(f.get('criteria', []))} criteria)")
@@ -1044,8 +1099,8 @@ def cmd_feature(a: argparse.Namespace) -> None:
             feature_grade(a, fs, by_id)
         elif a.action == "vote":
             feature_vote(a, fs, by_id)
-        elif a.action == "show":
-            feature_show(a, fs, by_id)
+        elif a.action in ("show", "review", "confirm"):
+            {"show": feature_show, "review": feature_review, "confirm": feature_confirm}[a.action](a, fs, by_id)
         else:
             feature_list(a, fs, by_id)
 
@@ -1861,6 +1916,17 @@ def repro_before_change() -> bool:
     return rec.get("hash") == workspace_hash() and bool(rec.get("recorded_test"))
 
 
+def repro_confirmed() -> bool:
+    """True when each test of the verified reproduction is one that a person confirmed (`feature confirm`)."""
+    try:
+        rec = json.loads(REPRO.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    ok = {h for f in load_features() if tests_confirmed(f) for h in f["tests_confirmed"]["tests"]}
+    used = rec.get("tests") or []
+    return rec.get("hash") == workspace_hash() and bool(used) and all(h in ok for h in used)
+
+
 def repro_fresh() -> bool:
     """True when a reproduction was verified for exactly this workspace."""
     try:
@@ -2069,6 +2135,16 @@ def unknown_fields(missing: list, gate, repro, counts, mut: Optional[str], cx: O
     return {"unknown": "no-evidence" if missing else "weak-evidence", "next": steps}
 
 
+def confirmation_record(before) -> tuple:
+    """(value for the records, notes): did a person confirm the tests of the reproduction? It does not change the verdict."""
+    if not before:
+        return "none", []
+    if repro_confirmed():
+        return "by a person", []
+    return "no", ["no person confirmed the tests (`feature review`, then `feature confirm`): a test from the requirement "
+                  "alone can read it wrong"]
+
+
 def records_verdict() -> dict:
     """What the records for exactly this code support. Commands wrote these records; no text of an agent is read.
 
@@ -2081,6 +2157,7 @@ def records_verdict() -> dict:
     records = {"gate": "pass" if gate else ("none" if gate is None else "no pass"), "reproduction": "verified" if repro else "none",
                "reproduction_test": ("recorded before the change" if before else "not recorded before the change") if repro else "none",
                "counterexample": (cx or {}).get("kind") or "none", "mutation": mut or "not run"}
+    records["tests_confirmed"], confirm_note = confirmation_record(before)
     if cx and cx.get("kind") == "regression":
         return {"verdict": "FAIL", "why": f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`", "records": records}
     counts = repro and (before or later_tests_accepted())
@@ -2090,6 +2167,7 @@ def records_verdict() -> dict:
         notes.append("the reproduction test was not recorded before the change: such a test can agree with a wrong change"
                      + ("" if counts else ". Record the tests with the criteria (`feature add --test-file`); "
                         'a person accepts later tests with `"accept_later_tests": true` in config.json'))
+    notes += confirm_note
     if cx:
         notes.append(f"a check fails on this code ({cx.get('kind')}): alone, this type does not decide")
     if mut == "fail":
@@ -2299,7 +2377,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
     with contextlib.suppress(OSError):
         if result == "verified":
             REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha,
-                                         "recorded_test": recorded_test}) + "\n", encoding="utf-8")
+                                         "recorded_test": recorded_test, "tests": used}) + "\n", encoding="utf-8")
         else:
             REPRO.unlink()
     log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12], recorded_test=recorded_test if result == "verified" else None)
@@ -2432,7 +2510,9 @@ def evidence_checks(ref: str, lines: List[str], gaps: List[str]) -> None:
         rec = json.loads(REPRO.read_text(encoding="utf-8"))
         lines.append(f"- Reproduction: VERIFIED, `{clean(rec.get('test', '?'), 100)}` fails on {str(rec.get('base', '?'))[:12]} and passes on this code"
                      + (". The test was recorded with the criteria, before the change" if rec.get("recorded_test")
-                        else ". The test was not recorded before the change: it can agree with a wrong change"))
+                        else ". The test was not recorded before the change: it can agree with a wrong change")
+                     + ((". A person confirmed the test" if repro_confirmed() else ". No person confirmed the test")
+                        if rec.get("recorded_test") else ""))
     else:
         lines.append("- Reproduction: none verified for this code")
         gaps.append("no test was shown to fail before the change and pass after it")
@@ -3453,8 +3533,11 @@ def main() -> None:
     s.add_argument("--keep", type=int, default=20)
     s.set_defaults(fn=cmd_compact)
 
-    s = sub.add_parser("feature", help="features: add | pass | fail | vote | show | list")
-    s.add_argument("action", choices=["add", "pass", "fail", "vote", "show", "list"])
+    s = sub.add_parser("feature", help="features: add | pass | fail | vote | show | list | review | confirm")
+    s.add_argument("action", choices=["add", "pass", "fail", "vote", "show", "list", "review", "confirm"])
+    s.add_argument("--assumption", action="append", default=[],
+                   help="add: something that the tests take as true and the requirement does not say (repeatable). "
+                        "`feature review` shows these first to the person who confirms the tests")
     s.add_argument("--id")
     s.add_argument("--desc")
     s.add_argument("--criterion", action="append", help="testable acceptance criterion (repeatable)")

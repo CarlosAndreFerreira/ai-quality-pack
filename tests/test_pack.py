@@ -3748,6 +3748,55 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertTrue((root / ".github/workflows/quality-gate.yml").is_file())
             self.assertTrue((root / ".claude/hooks/guard_pack_files.py").is_file())
 
+    def test_a_person_confirms_the_tests_of_the_criteria_and_the_result_does_not_change(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)
+            person = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1", "AGENT_MEMORY_HUMAN": "1"})
+            r = m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) gives 4",
+                  "--test-file", "test_calc.py", "--assumption", "the result for two numbers is a number, not text")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("No person confirmed these tests", r.stdout)
+            self.assertIn("feature confirm --id F-1", r.stdout)
+            sheet = m("feature", "review", "--id", "F-1").stdout     # an agent can show the sheet; it cannot confirm
+            self.assertLess(sheet.index("Assumed, not in the requirement"), sheet.index("What must be true"))
+            self.assertIn("- the result for two numbers is a number, not text", sheet)
+            self.assertIn("1. add(2, 2) gives 4", sheet)
+            self.assertIn("- test_calc.py", sheet)
+            self.assertIn("not confirmed by a person", sheet)
+            r = m("feature", "confirm", "--id", "F-1")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("a person confirms the tests, in a terminal", r.stderr)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")  # the fix
+            self.assertEqual(m("repro", "--test", test, "--test-file", "test_calc.py").returncode, 0)
+            self.assertEqual(m("gate").returncode, 0)
+            v = m("verdict")
+            self.assertEqual(v.returncode, 0, v.stdout)              # not confirmed: the result is the same, with a note
+            self.assertIn("verdict: SUPPORTED", v.stdout)
+            self.assertIn("no person confirmed the tests", v.stdout)
+            self.assertIn("tests_confirmed no", v.stdout)
+            self.assertIn("No person confirmed the test", m("evidence").stdout)
+            r = person("feature", "confirm", "--id", "F-1", "--evidence", "read the sheet")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            v = m("verdict", "--json")
+            d = json.loads(v.stdout)
+            self.assertEqual((v.returncode, d["verdict"], d["records"]["tests_confirmed"]), (0, "SUPPORTED", "by a person"))
+            self.assertNotIn("no person confirmed", d["why"])
+            self.assertIn("A person confirmed the test", m("evidence").stdout)
+            self.assertIn("confirmed by a person at", m("feature", "review", "--id", "F-1").stdout)
+            self.assertEqual(self._events(root, "feature")[-1]["result"], "confirm") if hasattr(self, "_events") else None
+            # a feature without a recorded test has nothing to confirm
+            m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c")
+            r = person("feature", "confirm", "--id", "F-2")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("nothing to confirm", r.stderr)
+            # the test file changes after the confirmation: it is another test, and the confirmation is not for it
+            (root / "test_calc.py").write_text("import calc, sys\nsys.exit(0 if calc.add(1, 1) == 2 else 1)\n", encoding="utf-8")
+            self.assertEqual(m("repro", "--test", test, "--test-file", "test_calc.py").returncode, 0)
+            m("gate")
+            v = m("verdict")
+            self.assertEqual(v.returncode, 3, v.stdout)
+            self.assertIn("tests_confirmed none", v.stdout)
+
     def test_a_test_recorded_with_the_criteria_counts_as_written_before_the_change(self):
         with tempfile.TemporaryDirectory() as t:
             root, test, m = self._calc(t)
