@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 — 2026-11-17
 
-Corrections from the second use on a real project (a Rust application, 2026-11-17).
+Corrections from the second use on a real project (a Rust application, 2026-11-17), and a JSON output for scripts. No default changed. The use is in [docs/RESULTS.md](docs/RESULTS.md): the default flow of version 0.9 ran from the test before the change to the verdict, and it showed 5 defects of the pack that the tests of the pack did not show.
+
+Checked: 159 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS. Not run on a real project: `memory.py mutants` (the mutation tool ran directly), and the JSON output in a CI system.
 
 - **Fix: `repro` did not name a shared build directory.** With `CARGO_TARGET_DIR` set to a directory outside the repository, the run on the current code used the test program that the base compiled, and `repro` printed `STILL-FAILING` for a correct fix. The note of version 0.8.0 for this case compared the last lines of the two outputs, and with the real tool they are not the same text (times, ports). Now `repro` finds the cause: when `CARGO_TARGET_DIR` or `CARGO_BUILD_TARGET_DIR` points outside the repository and the base has no directory of its own, the result says that it is not reliable and gives the option to use. The comparison of text stays for other tools, and it ignores numbers.
 - **`repro --expect` shows the lines around the expected text.** The end of the output of a build tool can be build lines only.
