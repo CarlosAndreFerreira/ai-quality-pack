@@ -434,9 +434,12 @@ The CI of this repository runs on a manual trigger. Run these three commands bef
 
 ```bash
 python -m unittest discover -s tests
+PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests
 python skills/skill-evolve/scripts/validate_skills.py skills --strict
 python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
 ```
+
+Run the tests two times: without `PYTHONDONTWRITEBYTECODE` (make sure that your shell does not set it) and with it. Version 0.8.0 was released after test runs that had this variable set in each environment, and 4 tests failed without it.
 
 ## Robustness
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).

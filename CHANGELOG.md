@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: Python bytecode files.** In a project that does not ignore `__pycache__`, a check of the pack wrote bytecode files into the project. They changed the workspace hash, showed as changes outside the scope in the evidence block, and stopped `memory.py pr` ("changes that are not committed"). Python also accepts an old bytecode file when the source has the same size and the same second of modification: after a quick edit, a check ran the old code.
+  - The commands that the pack runs (gate, `repro`, `counterexample`, base tests) get a bytecode directory of their own (`PYTHONPYCACHEPREFIX`), removed at the end. A value that you set stays. `python -I` and `-E` do not read it.
+  - `__pycache__` and `.pyc` files that git does not track and does not ignore are not counted as changes. The evidence block has a line for them, and `pr` names them. A file of this type that git tracks is not hidden.
+  - **Correction for version 0.8.0**: its notes say that the tests passed on Windows and on Linux. Each of those runs had `PYTHONDONTWRITEBYTECODE=1` set. Without it, 4 tests failed on Linux with Python 3.14. The tests now run in the two modes before a push.
+
 Two changes of defaults, from the results in [docs/RESULTS.md](docs/RESULTS.md): the full pack was never better than the core, and the verdicts of the evaluator did not separate wrong patches from correct patches while the records of commands did. Not measured: the effect of these two defaults, and the tests that the `criteria` subagent writes. The tests ran on Linux only (Python 3.14).
 
 - **`memory.py`: the large functions are split, with no change of behaviour.** The commands with actions (`feature`, `lesson`, `task`) have one function for each action; the gate has stages (warnings, changes that need a person, checks) and one function for a failure; the session digest and the evidence block have one function for each section; `stats` and `factory` compute and print in different functions. The most complex function went from 71 to 41 (our count of branches), the functions above 25 from 13 to 5, and the longest function from 130 to 69 lines. A test keeps these limits. The script is still one file with no local import: CI copies this one file from the base branch, and that is what stops a pull request from a change of its checker. `cmd_pr` is not split yet.

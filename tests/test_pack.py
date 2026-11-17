@@ -1958,6 +1958,59 @@ class GovernanceTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("gate FAILED: risk rules that need a person", r.stdout)
 
+    def test_checks_do_not_write_bytecode_into_the_project_and_do_not_read_old_bytecode(self):
+        if os.environ.get("PYTHONPYCACHEPREFIX"):
+            self.skipTest("PYTHONPYCACHEPREFIX is set: Python does not use the bytecode files of the project")
+        py = sys.executable.replace("\\", "/")
+        plain = {"PYTHONDONTWRITEBYTECODE": ""}             # bytecode files on, as in a shell without this variable
+        check = "import app, sys; sys.exit(0 if app.x == 2 else 1)"
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t, gate={"commands": [f'"{py}" -c "{check}"']})
+            # A check of the pack writes no bytecode file into the project.
+            (root / "app.py").write_text("x = 2\n", encoding="utf-8")
+            r = run([MEM, "gate"], root, stdin="", env=plain)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertFalse((root / "__pycache__").exists(), "the gate wrote bytecode into the project")
+            self.assertIn("workspace unchanged since last pass", run([MEM, "gate"], root, stdin="", env=plain).stdout)
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t, gate={"commands": [f'"{py}" -c "{check}"']})
+            # An old bytecode file: from `x = 1`. The source changes to `x = 2` with the same size and the same time,
+            # so Python accepts the old file. This is what a quick second edit gives.
+            subprocess.run([sys.executable, "-c", "import app"], cwd=root, check=True, env=dict(os.environ, **plain))
+            self.assertTrue(list((root / "__pycache__").glob("app.*.pyc")))
+            before = (root / "app.py").stat()
+            (root / "app.py").write_text("x = 2\n", encoding="utf-8")
+            os.utime(root / "app.py", ns=(before.st_atime_ns, before.st_mtime_ns))
+            old = subprocess.run([sys.executable, "-c", check], cwd=root, env=dict(os.environ, **plain))
+            if old.returncode == 0:
+                self.skipTest("this Python did not use the old bytecode file")
+            r = run([MEM, "gate"], root, stdin="", env=plain)
+            self.assertEqual(r.returncode, 0, r.stdout)   # the gate ran `x = 2`, not the old bytecode
+            self.assertIn("gate PASSED", r.stdout)
+
+    def test_generated_files_that_git_does_not_track_are_not_changes(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            self.assertEqual(m("gate").returncode, 0)
+            (root / "__pycache__").mkdir()
+            (root / "__pycache__/app.cpython-312.pyc").write_bytes(b"bytecode")
+            (root / "old.pyc").write_bytes(b"bytecode")
+            self.assertIn("workspace unchanged since last pass", m("gate").stdout)   # not a change of the project
+            ev = m("evidence").stdout
+            self.assertIn("- Generated files: 2 file(s) that git does not track", ev)
+            self.assertIn("no tracked changes", ev)
+            self.assertNotIn("Out of scope", ev)
+            (root / "notes.txt").write_text("a new file of a person\n", encoding="utf-8")
+            self.assertNotIn("unchanged", m("gate").stdout)                           # other new files are changes, as before
+            # a file of this type that git tracks is not hidden: its change is a change
+            self._git(root, "add", "-f", "old.pyc", "notes.txt")
+            self._git(root, "commit", "-q", "-m", "tracked bytecode")
+            self.assertEqual(m("gate").returncode, 0)
+            (root / "old.pyc").write_bytes(b"other bytecode")
+            self.assertNotIn("unchanged", m("gate").stdout)
+            self.assertIn("- Generated files: 1 file(s)", m("evidence").stdout)
+
     def test_gate_reads_command_output_and_diffs_that_are_not_in_the_ansi_code_page(self):
         with tempfile.TemporaryDirectory() as t:
             py = sys.executable.replace("\\", "/")
