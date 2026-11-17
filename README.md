@@ -32,7 +32,7 @@ What the pack does:
 What the pack does not do:
 - It does not tell you that a patch is correct. On 42 patches for hard issues, the evaluator did not separate wrong patches from correct patches, on Haiku or on Sonnet.
 - A green gate is not proof. Of 86 wrong patches, 9 broke an existing test of the project; the other 77 failed only tests that the agent did not have.
-- A green reproduction test is not proof. A test that the `criteria` subagent wrote from the issue alone rejected 0 of 19 wrong patches.
+- A green reproduction test is not proof. A test that the `criteria` subagent wrote from the issue alone rejected 0 of 19 wrong patches. With that test in the repository, the author resolved 20 of 40 issues, against 21 without it.
 - The full pack was never better than the core, thus a default install has the core only.
 
 Not measured: the new defaults against the bare agent, other models as the author, other agents than Claude Code, and macOS.

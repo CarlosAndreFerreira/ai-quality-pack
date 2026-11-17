@@ -166,6 +166,23 @@ The question: can a test that the `criteria` subagent writes from the text of th
 - What this means for use: a test before the change is a necessary check at a low cost. It is not a verdict. Do not show a green reproduction test as proof that a patch is correct.
 - Limits: one pass. The authors of the patches did not see the test. Thus the run measures the test as a judge, not as a guide for the author. The same model wrote the tests and the patches; a different model is not measured. Hard issues only.
 
+### The same test as a guide for the author
+
+The run above measured the test as a judge. This run gives the test to the author: the bare agent (Haiku) has the test file in the repository and its command in the prompt, with the instruction that the change must make the test pass and that the test files must not change. 40 issues with a test, one pass, official grading. The comparison is with the patches of the selection run for the same issues (bare agent, no test), issue by issue.
+
+| Group | Issues | Without the test | With the test | Wrong to resolved | Resolved to wrong |
+|---|---|---|---|---|---|
+| All | 40 | 21 (52%, 95% interval 37 to 67%) | 20 (50%, 95% interval 35 to 65%) | 1 | 2 |
+| Valid test | 19 | 13 | 14 | 1 | 0 |
+| Test that is not valid | 21 | 8 | 6 | 0 | 2 |
+
+- The result is neutral: 21 resolved issues without the test, 20 with it (McNemar test, p 1.00). The limit that we set before the run was a minimum of 28. 37 of 40 issues have the same result.
+- The 3 changes have the direction that we expected: the gain is on an issue with a valid test, and the 2 losses are on issues with a test that fails on the reference fix. 3 changes are in the noise between runs.
+- No agent changed the test. The runs with the test cost less: 0.57 US dollars and 46 minutes of agent time, against 0.81 US dollars and 72 minutes.
+- With the test, 9 sessions said that the work was not done, against 1 without it; 5 of the 9 had a correct patch. A part of this effect comes from the text of the prompt: some sessions read "do not change these test files" as "do not change a test".
+- What this means for use: a test from the issue did not make the author correct more frequently on hard issues. It costs little, and it makes the session shorter. A test that is not valid can do harm, thus a person reads the tests of the criteria before the work.
+- Limits: one pass. The comparison runs are from a different day, with the same model and the same harness. The same model wrote the tests and the patches. Hard issues only.
+
 ### More than one run of the evaluator (version 0.6.0)
 
 The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent runs for each patch (126 runs, Claude Haiku).
@@ -220,7 +237,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
-- The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, and the tests of the `criteria` subagent as a guide for the author. As a judge of a finished patch, such a test rejected no wrong patch (see above).
+- The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
