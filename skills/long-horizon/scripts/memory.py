@@ -2031,6 +2031,23 @@ def repro_supports() -> bool:
     return repro_fresh() and (repro_before_change() or later_tests_accepted())
 
 
+def unknown_next(gate: bool, repro: bool, counts: bool, mut: Optional[str], cx_kind: Optional[str]) -> List[str]:
+    """What moves an UNKNOWN: one step for each record that is missing or does not count."""
+    steps = []
+    if not gate:
+        steps.append("run `memory.py gate`")
+    if not repro:
+        steps.append('run `memory.py repro --test "<command>"` with a test that fails on the base')
+    elif not counts:
+        steps.append("record the tests with the criteria (`feature add --test-file`), before the work")
+    if mut == "fail":
+        steps.append("add a test that fails on the mutants that stayed alive, then run `memory.py mutants` again")
+    if cx_kind == "base-not-seen":
+        steps.append("the counterexample did not load the code of the base: make its check read the code of the "
+                     "workspace (no absolute path), then run `memory.py counterexample` again")
+    return steps
+
+
 def records_verdict() -> dict:
     """What the records for exactly this code support. Commands wrote these records; no text of an agent is read.
 
@@ -2060,20 +2077,8 @@ def records_verdict() -> dict:
         why = "; ".join((["no record of " + " and ".join(missing)] if missing else []) + notes)
         # two different cases, with different next steps: nothing was run for this code, or a command ran and
         # its record does not count. The first is work that is not done; the second is evidence that is weak
-        steps = []
-        if not gate:
-            steps.append("run `memory.py gate`")
-        if not repro:
-            steps.append('run `memory.py repro --test "<command>"` with a test that fails on the base')
-        elif not counts:
-            steps.append("record the tests with the criteria (`feature add --test-file`), before the work")
-        if mut == "fail":
-            steps.append("add a test that fails on the mutants that stayed alive, then run `memory.py mutants` again")
-        if cx and cx.get("kind") == "base-not-seen":
-            steps.append("the counterexample did not load the code of the base: make its check read the code of the "
-                         "workspace (no absolute path), then run `memory.py counterexample` again")
-        return {"verdict": "UNKNOWN", "why": why, "records": records,
-                "unknown": "no-evidence" if missing else "weak-evidence", "next": steps}
+        return {"verdict": "UNKNOWN", "why": why, "records": records, "unknown": "no-evidence" if missing else "weak-evidence",
+                "next": unknown_next(bool(gate), bool(repro), bool(counts), mut, (cx or {}).get("kind"))}
     return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
             "records": records}
 
