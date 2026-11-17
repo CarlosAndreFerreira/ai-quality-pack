@@ -2031,8 +2031,10 @@ def repro_supports() -> bool:
     return repro_fresh() and (repro_before_change() or later_tests_accepted())
 
 
-def unknown_next(gate: bool, repro: bool, counts: bool, mut: Optional[str], cx_kind: Optional[str]) -> List[str]:
-    """What moves an UNKNOWN: one step for each record that is missing or does not count."""
+def unknown_fields(missing: list, gate, repro, counts, mut: Optional[str], cx: Optional[dict]) -> dict:
+    """The type of an UNKNOWN, and what moves it: one step for each record that is missing or does not count.
+    `no-evidence`: no command gave a record for this code. `weak-evidence`: a command ran, and its record does not count."""
+    cx_kind = (cx or {}).get("kind")
     steps = []
     if not gate:
         steps.append("run `memory.py gate`")
@@ -2045,7 +2047,7 @@ def unknown_next(gate: bool, repro: bool, counts: bool, mut: Optional[str], cx_k
     if cx_kind == "base-not-seen":
         steps.append("the counterexample did not load the code of the base: make its check read the code of the "
                      "workspace (no absolute path), then run `memory.py counterexample` again")
-    return steps
+    return {"unknown": "no-evidence" if missing else "weak-evidence", "next": steps}
 
 
 def records_verdict() -> dict:
@@ -2077,8 +2079,7 @@ def records_verdict() -> dict:
         why = "; ".join((["no record of " + " and ".join(missing)] if missing else []) + notes)
         # two different cases, with different next steps: nothing was run for this code, or a command ran and
         # its record does not count. The first is work that is not done; the second is evidence that is weak
-        return {"verdict": "UNKNOWN", "why": why, "records": records, "unknown": "no-evidence" if missing else "weak-evidence",
-                "next": unknown_next(bool(gate), bool(repro), bool(counts), mut, (cx or {}).get("kind"))}
+        return {"verdict": "UNKNOWN", "why": why, "records": records, **unknown_fields(missing, gate, repro, counts, mut, cx)}
     return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
             "records": records}
 
