@@ -126,6 +126,29 @@ The 42 SWE-bench patches again, with `"verdict_evidence": true` in each workspac
 - What this means for use: trust a `regression` counterexample. Do not read a `not-fixed` counterexample or a verified reproduction from the evaluator as a decision. Use `feature vote` or `feature pass`, which refuse a verdict without the record; a text of the evaluator does not.
 - Limits: 3, 6 and 3 runs are small numbers. One pass for each model. The baseline rows use the pack of version 0.6.0 and the rows with the option use the current pack with a gate file without commands; the text of the evaluator is the same, plus the paragraph of the option. Cost: 3.36 US dollars for the two passes.
 
+### A test written from the issue, before the fix
+
+The question: can a test that the `criteria` subagent writes from the text of the issue only replace the evaluator as the judge of a patch? The subagent wrote one test for each of the 42 hard issues, at the base commit, and saw no fix (Haiku, one pass, pack at commit `638c60f`). Then, with no model, each test ran on the base, on the base with the reference fix, and on the base with the patch of the bare agent (19 wrong patches, 23 correct patches). A test is valid when it fails on the base and passes on the reference fix.
+
+| Measure | Result |
+|---|---|
+| Issues with a new test file and a command | 40 of 42 |
+| Tests that fail on the base | 38 of 40 |
+| Valid tests | 19 of 42 (45%, 95% interval 31 to 60%) |
+| Tests that fail on the reference fix also | 19 |
+| Wrong patches with a valid test: accepted | 6 of 6 (95% interval 61 to 100%) |
+| Correct patches with a valid test: rejected | 0 of 13 (95% interval 0 to 23%) |
+| Wrong patches rejected, of all 19 | 0 |
+| Cost | 0.72 US dollars, 63 minutes to write, 12 minutes to check |
+
+- The result is negative. No test rejected a wrong patch. The limit that we set before the run was a maximum of 6 of 19 wrong patches accepted. The run is at the limit only because 13 wrong patches have no valid test, thus no decision.
+- The result is the same for each test case. 13 of the 19 wrong patches have a minimum of one test case that fails on the base and passes on the reference fix. Not one of these cases fails on the wrong patch.
+- In 37 of 40 issues the patch and the reference fix have the same result. In the other 3, the wrong patch passes and the reference fix fails: the test has the same incorrect reading of the issue as the patch.
+- A possible cause: these wrong patches repair the symptom that the issue shows. They fail on behaviour that the issue does not describe and that only the hidden tests of the maintainers check. A test from the same text, by the same model, confirms the symptom only.
+- Half of the tests are not good criteria. 19 tests fail on the reference fix: they ask for more than the issue, or for an interface that the fix does not have. In a project, such a test stops a correct fix.
+- What this means for use: a test before the change is a necessary check at a low cost. It is not a verdict. Do not show a green reproduction test as proof that a patch is correct.
+- Limits: one pass. The authors of the patches did not see the test. Thus the run measures the test as a judge, not as a guide for the author. The same model wrote the tests and the patches; a different model is not measured. Hard issues only.
+
 ### More than one run of the evaluator (version 0.6.0)
 
 The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent runs for each patch (126 runs, Claude Haiku).
@@ -180,7 +203,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 - The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
-- The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, and the tests that the `criteria` subagent writes before the work (do they separate wrong changes better than tests that are written after?).
+- The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, and the tests of the `criteria` subagent as a guide for the author. As a judge of a finished patch, such a test rejected no wrong patch (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
