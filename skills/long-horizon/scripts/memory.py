@@ -1159,6 +1159,8 @@ def task_open(a: argparse.Namespace, tasks: Dict[str, dict]) -> None:
     scopes = [s.strip() for s in (a.scope or []) if s.strip()]
     guard_secrets(a.title, a.source or "", *scopes)
     tid = next_task_id(tasks)
+    if a.id and a.id != tid:  # seen in real use: the id of the command line was dropped, with no message
+        print(f"note: the pack gives the id of a new task. --id {clean(a.id, 40)} is not used: the task is {tid}", file=sys.stderr)
     base = git("rev-parse", "--verify", "HEAD") or None
     task_event(ev="open", id=tid, title=a.title, source=a.source, feature=a.feature, status="open",
                base=base, scope=scopes or None)
@@ -2173,6 +2175,34 @@ def mutants_state() -> str:
         return ""
 
 
+SHARED_BUILD_VARS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR")
+
+
+def shared_build_dir() -> str:
+    """The name of a variable that puts the compiled files outside the repository, or "". With it, the run on the
+    base and the run on the current code use the same compiled files, and the second run can use what the first
+    compiled. Seen with cargo on a real project: the outputs of the two runs were not the same text (ports, times),
+    so a comparison of the outputs did not find it."""
+    top = git("rev-parse", "--show-toplevel")
+    for name in SHARED_BUILD_VARS:
+        value = os.environ.get(name)
+        if not value:
+            continue
+        try:
+            inside = bool(top) and Path(value).resolve().is_relative_to(Path(top).resolve())
+        except (OSError, ValueError):
+            inside = False
+        if not inside:  # a directory inside the repository is not in the worktree of the base: each run has its own
+            return name
+    return ""
+
+
+def same_failure(before_out: str, after_out: str) -> bool:
+    """The last lines of the two outputs are the same when numbers (times, ports, ids) are left out."""
+    tail = lambda out: [re.sub(r"\d+", "N", l.strip()) for l in out.strip().splitlines() if l.strip()][-4:]
+    return bool(tail(before_out)) and tail(before_out) == tail(after_out)
+
+
 def repro_result(a: argparse.Namespace, sha: str, rel: Path, before, before_out: str, after, after_out: str) -> tuple:
     """(result, why) from the two runs of the test: on the base and on the current code. Only `verified` shows a fix."""
     if before == 0:
@@ -2186,8 +2216,12 @@ def repro_result(a: argparse.Namespace, sha: str, rel: Path, before, before_out:
         result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
     elif after != 0:
         result, why = "still-failing", "the test still fails on the current code"
-        tail = lambda out: [l.strip() for l in out.strip().splitlines() if l.strip()][-4:]
-        if after is not None and tail(before_out) and tail(before_out) == tail(after_out) and not _BASE_OPTS["env"]:
+        shared = "" if _BASE_OPTS["env"] else shared_build_dir()
+        if shared:
+            why += (f". This result is not reliable: {shared} is set to a directory outside the repository, so the two runs "
+                    "used the same compiled files, and the run on the current code can have used what the base compiled. "
+                    f"Run again and give the base its own directory: --base-env {shared}=<another directory>")
+        elif after is not None and not _BASE_OPTS["env"] and same_failure(before_out, after_out):
             why += (". The last lines of the two outputs are the same. If the project keeps compiled files outside the "
                     "repository (for example CARGO_TARGET_DIR, or a build directory that the two checkouts use), the run on the "
                     "current code can have used the files that the base compiled. Give the base its own directory, "
@@ -2195,6 +2229,16 @@ def repro_result(a: argparse.Namespace, sha: str, rel: Path, before, before_out:
     else:
         result, why = "verified", "the test fails on the base and passes on the current code"
     return result, why
+
+
+def failure_excerpt(out: str, expect: Optional[str]) -> str:
+    """The part of an output to show a person: the lines around the expected text when it is there, else the end.
+    The end of the output of a build tool can be build lines only, with the message of the failure far above."""
+    out = out.strip()
+    at = out.find(expect) if expect else -1
+    if at < 0:
+        return clean(out[-600:], 600)
+    return clean(out[max(0, at - 300):at + 300], 600)
 
 
 def cmd_repro(a: argparse.Namespace) -> None:
@@ -2239,7 +2283,7 @@ def cmd_repro(a: argparse.Namespace) -> None:
     print(f"repro {result.upper()}: {why}")
     if before not in (0, None):
         print("failure on the base (check that it is the problem and not a missing dependency):\n"
-              + clean(before_out.strip()[-600:], 600))
+              + failure_excerpt(before_out, a.expect))
     if result == "still-failing":
         print("output on the current code:\n" + clean(after_out.strip()[-600:], 600))
     sys.exit(0 if result == "verified" else 1)

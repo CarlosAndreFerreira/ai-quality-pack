@@ -968,6 +968,32 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("--base-env CARGO_TARGET_DIR=", r.stdout)
             r = self._repro(root)                                   # two different failures do not give the hint
             self.assertEqual(r.returncode, 0, r.stdout)
+            # real cargo output: the two runs differ in times and ports, and the cause is the same
+            noisy = (f'"{self.py}" -c "import os, time; print(\'Finished in\', time.time()); '
+                     f'print(\'port\', os.getpid()); print(\'error: test failed\'); raise SystemExit(1)"')
+            r = m("repro", "--test", noisy)
+            self.assertIn("The last lines of the two outputs are the same", r.stdout, r.stdout)
+            # a build directory outside the repository is named by its cause, with no comparison of text
+            outside = str(Path(t).parent / "aqp-shared-target")
+            diff = f'"{self.py}" -c "import os; print(os.getcwd()); raise SystemExit(1)"'
+            r = run([MEM, "repro", "--test", diff], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1", "CARGO_TARGET_DIR": outside})
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("This result is not reliable: CARGO_TARGET_DIR is set to a directory outside the repository", r.stdout)
+            self.assertIn("--base-env CARGO_TARGET_DIR=<another directory>", r.stdout)
+            r = run([MEM, "repro", "--test", diff], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1", "CARGO_TARGET_DIR": str(root / "target")})
+            self.assertNotIn("not reliable", r.stdout)              # inside the repository: each checkout has its own
+            r = run([MEM, "repro", "--test", diff, "--base-env", f"CARGO_TARGET_DIR={outside}-base"], root, stdin="",
+                    env={"PYTHONDONTWRITEBYTECODE": "1", "CARGO_TARGET_DIR": outside})
+            self.assertNotIn("not reliable", r.stdout)              # the base has its own directory
+            # the message of the failure is far above the end of the output: --expect finds the part to show
+            far = (f'"{self.py}" -c "print(\'assertion failed: the marker of the problem\'); '
+                   f'[print(\'   Compiling crate\', i) for i in range(80)]; raise SystemExit(1)"')
+            r = m("repro", "--test", far, "--expect", "marker of the problem")
+            self.assertIn("assertion failed: the marker of the problem", r.stdout.split("failure on the base")[1])
+            # an id on the command line of `task open` is not used, and the command says so
+            r = m("task", "open", "--id", "T-777", "--title", "a task")
+            self.assertIn("--id T-777 is not used", r.stderr)
+            self.assertNotIn("T-777", r.stdout)
 
     def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
         with tempfile.TemporaryDirectory() as t:
