@@ -143,6 +143,15 @@ A security fix in a Rust application of the author of the pack (2026-11-16), wit
 - A person then ran the application with a real session, with no failure.
 - Limits: this is one case, not a rate. The evaluator ran on a stronger model than Haiku. The use also showed three defects of the pack, corrected in version 0.8.0.
 
+### A second use on a real project
+
+A second security fix in the same Rust application (2026-11-17), with the defaults of version 0.9: the test recorded with the criteria before the change, and the result from the records.
+
+- The test failed on the base: a host that is not trusted received the request with the token of the session. `repro` with a build directory of its own for the base gave `VERIFIED`. The gate passed. `cargo-mutants` on the changed lines made 2 mutants, and the tests caught the 2. `memory.py verdict` gave `SUPPORTED`.
+- The independent evaluator ran 7 checks of its own (33 forms of the address, redirects, 2 controls) and found no counterexample. It listed 4 risks outside the criteria and 3 weak points of the tests of the author.
+- The use showed 5 defects of the pack, which the tests of the pack did not show. The most important: `repro` gave `STILL-FAILING` for a correct fix, because the two runs used one build directory, and the note for this case did not print with the output of the real tool. See the changelog.
+- Limits: one more case, not a rate. The evaluator ran on a stronger model than Haiku. `memory.py mutants` did not run: the project has no mutation command in its committed gate file, thus the tool ran directly.
+
 ### A test written from the issue, before the fix
 
 The question: can a test that the `criteria` subagent writes from the text of the issue only replace the evaluator as the judge of a patch? The subagent wrote one test for each of the 42 hard issues, at the base commit, and saw no fix (Haiku, one pass, pack at commit `638c60f`). Then, with no model, each test ran on the base, on the base with the reference fix, and on the base with the patch of the bare agent (19 wrong patches, 23 correct patches). A test is valid when it fails on the base and passes on the reference fix.
