@@ -142,7 +142,7 @@ python3 .agents/skills/skill-eval/scripts/skill_eval.py calibrate   # A/A run â†
 python3 .agents/skills/skill-eval/scripts/skill_eval.py run --proposal .agent-memory/proposals/<p>.md --annotate
 python3 .agents/skills/skill-eval/scripts/skill_eval.py ablate --skill <name>   # is this skill still worth it?
 ```
-Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `PRUNABLE`/`KEEP`, `NOT-USED`. Four guards block a change regardless of its headline gain:
+Verdicts: `IMPROVES`, `IMPROVES (weak evidence)`, `INCONCLUSIVE`, `REGRESSES`, `PRUNABLE`/`KEEP`, `NO-SIGNAL`, `NOT-USED`. Four guards block a change regardless of its headline gain:
 - a task the baseline always passed now fails;
 - protected test files were tampered with;
 - the holdout dropped beyond the noise band;

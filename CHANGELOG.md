@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`skill-eval` says when the tasks cannot show the effect.** In our measurements, 23 of 25 tasks were at the ceiling and measured nothing, and the report did not say it. Each report of `run`, `ablate` and `calibrate` now has a `task signal` line and a `task_signal` record: the tasks with a failed run and a passed run, the tasks at the ceiling (each run passed) and the tasks at the floor (each run failed).
+  - `run`: when the baseline passes each run of each task, the verdict is `INCONCLUSIVE` and the reason says that the task set cannot show a gain.
+  - `ablate`: when each run of each task fails with and without the skill, the verdict is `NO-SIGNAL`, not `PRUNABLE`. `PRUNABLE` on tasks at the ceiling stays, with a reason that says it is for those tasks only.
+  - `calibrate` prints a warning for a task set at the ceiling or at the floor.
+- **Each `skill-eval` report has its commit.** The reports of `run`, `ablate` and `judge` and the noise file have `commit`, `dirty` (a tracked file has an uncommitted change), the Python version and the platform. A run uses the commit and the skills folder on disk, and the report says so when `dirty` is true. A report without a commit is not written.
+- 1 test.
+
 ## 0.9.0 — 2026-11-17
 
 This release changes defaults, and it corrects version 0.8.0. A new install has the core only (3 skills). The result of a change comes from the records of commands, not from the text of the evaluator. The release also says what the measurements do not support: on hard issues, the evaluator, the existing tests of a project and a test written from the issue did not separate wrong patches from correct patches ([docs/RESULTS.md](docs/RESULTS.md)). Read "Changes that need attention in an upgrade" below.

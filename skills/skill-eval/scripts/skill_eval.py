@@ -445,6 +445,54 @@ def summarise(per_task: Dict[str, dict], a: str, b: str) -> dict:
     return out
 
 
+def task_signal(per_task: Dict[str, dict], a: str, b: str) -> dict:
+    """Which tasks can show a difference between the two variants. A task at the ceiling (each run of the two
+    variants passed) cannot show a gain. A task at the floor (each run failed) cannot show a loss."""
+    out = {"ceiling": [], "floor": [], "mixed": []}
+    for k, v in per_task.items():
+        runs = [r["passed"] for name in (a, b) for r in v[name]]
+        out["ceiling" if all(runs) else "floor" if not any(runs) else "mixed"].append(k)
+    return out
+
+
+def signal_line(sig: dict) -> str:
+    n = sum(len(x) for x in sig.values())
+    return (f"task signal: {len(sig['mixed'])} of {n} tasks had a failed run and a passed run; "
+            f"{len(sig['ceiling'])} at the ceiling (each run passed), {len(sig['floor'])} at the floor (each run failed)")
+
+
+def signal_guard(per_task: Dict[str, dict], a: str, b: str, v: str, reasons: List[str], mode: str) -> tuple:
+    """A task set that cannot show the effect is not evidence of no effect. Returns (verdict, reasons, signal)."""
+    sig = task_signal(per_task, a, b)
+    reasons.append(signal_line(sig))
+    n = len(per_task)
+    if v.startswith("REGRESSES"):
+        return v, reasons, sig
+    if len(sig["floor"]) == n:
+        return "NO-SIGNAL", reasons + ["each run of each task failed in the two variants: these tasks cannot show a "
+                                       "difference. Use tasks that the agent can do"], sig
+    if len(sig["ceiling"]) == n:
+        if mode == "ablate":  # true for these tasks, and no more than that
+            reasons.append("each run of each task passed with and without the skill: these tasks do not need the skill. "
+                           "The result is for these tasks only; a task that the agent fails without the skill would show its value")
+        else:
+            v = "INCONCLUSIVE"
+            reasons.append("the baseline passed each run of each task: this task set cannot show a gain. Add tasks that "
+                           "the baseline fails in a part of its runs")
+    return v, reasons, sig
+
+
+def provenance(repo: Path) -> dict:
+    """The commit that the runs used. The worktree of a run is HEAD plus the skills folder as it is on disk, so
+    uncommitted changes outside the skills folder are not in the measurement."""
+    head = git("rev-parse", "--short=12", "HEAD", cwd=repo)
+    if head.returncode != 0 or not head.stdout.strip():
+        die("cannot read the commit of this repository: a report without it cannot be compared with another")
+    status = git("status", "--porcelain", "--untracked-files=no", cwd=repo)
+    return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip()),
+            "python": "%d.%d" % sys.version_info[:2], "platform": sys.platform}
+
+
 def verdict(s: dict, noise: float, mode: str) -> tuple:
     ev = s.get("evolve") or s.get("holdout")
     reasons = []
@@ -504,7 +552,7 @@ def common_setup(a):
 def report(kind, label, s, v, reasons, noise, per_task, a, agent_cmd, extra=None) -> Path:
     rec = {"kind": kind, "subject": label, "date": dt.datetime.now().isoformat(timespec="seconds"),
            "agent_cmd": agent_cmd, "repeats": a.repeats, "noise_band": noise, "verdict": v, "reasons": reasons,
-           "summary": s, "per_task": per_task, **(extra or {})}
+           "summary": s, "per_task": per_task, **provenance(repo_root()), **(extra or {})}
     RESULTS.mkdir(parents=True, exist_ok=True)
     out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-{kind}-{re.sub(r'[^A-Za-z0-9_.-]', '_', Path(label).stem)}.json"
     out.write_text(json.dumps(rec, indent=2), encoding="utf-8")
@@ -518,6 +566,9 @@ def report(kind, label, s, v, reasons, noise, per_task, a, agent_cmd, extra=None
               f"tasks +{x['tasks_better']}/-{x['tasks_worse']}; p={x['sign_test_p']}; cost ×{x['cost_ratio']} ({x['cost_basis']})")
         for name in names[:2]:
             print(f"  reliability at cost, {reliability_line(name, x[name], x['cost_basis'], a.repeats)}")
+    if rec["dirty"]:
+        print(f"\nnote: commit {rec['commit']} has uncommitted changes. A run uses the commit and the skills folder on disk; "
+              "other uncommitted changes are not in this measurement")
     print(f"\nVERDICT: {v}\n  - " + "\n  - ".join(reasons) + f"\nreport: {out.as_posix()}"
           + (f"\ntranscripts: {extra['transcripts']}" if extra and extra.get("transcripts") else ""))
     return out
@@ -541,10 +592,18 @@ def cmd_calibrate(a) -> None:
     per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("replica", None)], logdir)
     deltas = [abs(rate(v["baseline"]) - rate(v["replica"])) for v in per_task.values()]
     band = round(max(a.min_band, sum(deltas) / len(deltas)), 3)
+    sig = task_signal(per_task, "baseline", "replica")
     EVALS.mkdir(parents=True, exist_ok=True)
     NOISE.write_text(json.dumps({"band": band, "date": dt.datetime.now().isoformat(timespec="seconds"),
-                                 "repeats": a.repeats, "tasks": len(tasks), "agent_cmd": agent_cmd}, indent=2), encoding="utf-8")
+                                 "repeats": a.repeats, "tasks": len(tasks), "agent_cmd": agent_cmd,
+                                 "task_signal": sig, **provenance(repo)}, indent=2), encoding="utf-8")
     print(f"noise band = ±{band:.0%} (mean A/A disagreement per task, floor {a.min_band:.0%}) → {NOISE}")
+    print(signal_line(sig))
+    if len(sig["ceiling"]) == len(per_task):
+        print("warn: each run of each task passed. A change of a skill cannot show a gain on these tasks: add tasks "
+              "that the agent fails in a part of its runs")
+    elif len(sig["floor"]) == len(per_task):
+        print("warn: each run of each task failed. These tasks cannot show a difference: use tasks that the agent can do")
 
 
 def cmd_run(a) -> None:
@@ -562,8 +621,9 @@ def cmd_run(a) -> None:
     per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("baseline", None), ("candidate", apply_diff(diff))], logdir)
     s = summarise(per_task, "baseline", "candidate")
     v, reasons = verdict(s, noise, "run")
+    v, reasons, sig = signal_guard(per_task, "baseline", "candidate", v, reasons, "run")
     m = re.search(r"\.agents/skills/([\w-]+)/", diff)
-    extra = {"transcripts": logdir.as_posix()}
+    extra = {"transcripts": logdir.as_posix(), "task_signal": sig}
     if a.max_cost_per_pass is not None and v.startswith("IMPROVES"):  # a limit that a person set: a gain above it is not a gain
         ev = s.get("evolve") or s.get("holdout")
         per = ev["candidate"]["per_pass"]
@@ -603,13 +663,14 @@ def cmd_ablate(a) -> None:
     per_task = measure(repo, skills, tasks, agent_cmd, a.repeats, a.timeout, [("with", None), ("without", remove_skill(a.skill))], logdir)
     s = summarise(per_task, "with", "without")
     v, reasons = verdict(s, noise, "ablate")
+    v, reasons, sig = signal_guard(per_task, "with", "without", v, reasons, "ablate")
     note, never = activation_note(per_task, "with", a.skill)
     reasons.append(note)
     if never:  # not "prunable because it has no effect": it never ran. The description may be the problem
         v = "NOT-USED"
         reasons.append("the agent never used the skill in the runs that had it: the comparison says nothing about what the skill "
                        "does. The agent chooses a skill from its description: improve the description, or remove the skill")
-    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix(), "activation": note})
+    out = report("ablation", a.skill, s, v, reasons, noise, per_task, a, agent_cmd, {"transcripts": logdir.as_posix(), "activation": note, "task_signal": sig})
     append_history({"date": dt.date.today().isoformat(), "skill": a.skill, "proposal": "ablation", "hypothesis": "skill still adds value",
                     "verdict": v, "delta": (s.get("evolve") or s.get("holdout"))["delta"], "report": out.as_posix(),
                     "decision": "pending-user"})
@@ -826,6 +887,7 @@ def cmd_judge(a) -> None:
         agg = judge_summary(per_case)
         ag_rate, kap = judge_agreement(per_case)
         report.update({"per_case": per_case, "aggregated": agg, "agreement_rate": ag_rate, "kappa": kap})
+    report.update(provenance(repo_root()))
     RESULTS.mkdir(parents=True, exist_ok=True)
     out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-judge.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")

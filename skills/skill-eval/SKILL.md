@@ -40,7 +40,10 @@ Runs = tasks × repeats × 2. Above 20 the script asks for `--yes`. **Ask the us
 | `IMPROVES (weak evidence)` | Gain above noise, sign test p > 0.1 | Present it with the numbers and the caveat |
 | `IMPROVES` | Gain above noise, p ≤ 0.1, no guard fired | Present it with the numbers |
 | `PRUNABLE` / `KEEP` (ablate) | Removing the skill changed nothing / hurt | Propose removal to the user / keep it |
+| `NO-SIGNAL` (run, ablate) | Each run of each task failed in the two variants | The tasks cannot show a difference. Use tasks that the agent can do. Do not propose removal |
 | `NOT-USED` (ablate) | The agent never used the skill in the runs that had it | The result says nothing about the skill. Improve its description, or propose removal |
+
+Each report has a `task signal` line: how many tasks had a failed run and a passed run, how many are at the ceiling (each run passed) and how many are at the floor (each run failed). A task at the ceiling cannot show a gain. When the baseline passes each run of each task, `run` gives `INCONCLUSIVE` and says that the task set cannot show a gain: add tasks that the baseline fails in a part of its runs. `PRUNABLE` on tasks at the ceiling is true for those tasks only. Each report also has the commit, and `dirty` when a tracked file has an uncommitted change: a run uses the commit and the skills folder on disk.
 
 When you present a measurement, quote the `reliability at cost` line of each variant: the share of tasks where each run passed, with its interval, and the cost for each passed run.
 

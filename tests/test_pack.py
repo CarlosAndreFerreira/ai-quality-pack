@@ -278,6 +278,50 @@ class SkillEvalTests(unittest.TestCase):
             r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("VERDICT: PRUNABLE", r.stdout)
 
+    def test_a_task_set_that_cannot_show_the_effect_is_said_and_reports_have_the_commit(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, py = self._repo(t)
+            results = root / ".agent-memory/evals/results"
+            last = lambda: json.loads(sorted(results.glob("*.json"))[-1].read_text(encoding="utf-8"))
+            head = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+            # ceiling: the baseline passes each run, so a change cannot show a gain
+            p = self._proposal(root, "- harmless line")
+            r = self.ev(root, "run", "--proposal", p, "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("VERDICT: INCONCLUSIVE", r.stdout)
+            self.assertIn("task signal: 0 of 2 tasks had a failed run and a passed run; 2 at the ceiling", r.stdout)
+            self.assertIn("this task set cannot show a gain", r.stdout)
+            rep = last()
+            self.assertEqual(rep["task_signal"], {"ceiling": ["TASK-A", "TASK-B"], "floor": [], "mixed": []})
+            self.assertEqual(rep["commit"], head)
+            self.assertIs(rep["dirty"], False)
+            self.assertIn("python", rep)
+            # floor: each run fails with and without the skill. That is not "the skill can go"
+            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py marker')
+            self.assertIn("VERDICT: NO-SIGNAL", r.stdout, r.stdout + r.stderr)
+            self.assertNotIn("VERDICT: PRUNABLE", r.stdout)
+            self.assertIn("2 at the floor", r.stdout)
+            self.assertEqual(last()["task_signal"]["floor"], ["TASK-A", "TASK-B"])
+            # ceiling in an ablation: true for these tasks, and the report says that it is no more than that
+            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            self.assertIn("VERDICT: PRUNABLE", r.stdout)
+            self.assertIn("these tasks do not need the skill", r.stdout)
+            # a real difference: the guard changes nothing
+            r = self.ev(root, "run", "--proposal", self._proposal(root, "- EVAL-MARKER: check this.", "q.md"), "--repeats", "1",
+                        "--agent-cmd", f'"{py}" fake_agent.py')
+            self.assertIn("VERDICT: IMPROVES", r.stdout)
+            self.assertIn("task signal: 2 of 2", r.stdout)
+            # calibration on tasks at the ceiling: the band says nothing about a gain
+            r = self.ev(root, "calibrate", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            self.assertIn("warn: each run of each task passed", r.stdout)
+            noise = json.loads((root / ".agent-memory/evals/noise.json").read_text(encoding="utf-8"))
+            self.assertEqual((noise["commit"], len(noise["task_signal"]["ceiling"])), (head, 2))
+            # a tracked file with an uncommitted change: the report says that the commit is not all of it
+            (root / "check.py").write_text((root / "check.py").read_text(encoding="utf-8") + "# edit\n", encoding="utf-8")
+            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            self.assertIn("has uncommitted changes", r.stdout)
+            self.assertIs(last()["dirty"], True)
+
 
 class GateTests(unittest.TestCase):
     def test_gate_skip_fail_and_stop_hook(self):
