@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A fourth use, on a Python project**, is in [docs/RESULTS.md](docs/RESULTS.md): the first use that is not on Rust, with the first `regression` counterexample in a real use. It names 3 points to change in the pack; none is changed.
+
 ## 0.9.4 — 2026-11-18
 
 Three changes from the third use on a real project, where the questions and the JSON output ran for the first time ([docs/RESULTS.md](docs/RESULTS.md) has the use), and a shorter README. No default changed, and no command changed.

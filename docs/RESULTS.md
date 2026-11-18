@@ -162,6 +162,17 @@ A third change in the same Rust application (2026-11-18): no request of the sess
 - The use showed 3 points to change in the pack: the evidence block did not show the answers, the sheet had 10 assumptions in no order, and an answer that permits a change of a test is not related to the warning for that change. The first two are changed. See the changelog.
 - Limits: one more case, in the same project. Nothing ran with the real service.
 
+### A fourth use, on a Python project
+
+The first use that is not on Rust (2026-11-18): a Python repository of tests, with `unittest`, that is not ours and is not named here. A code review of an open pull request had a finding with no need of hardware: a generator script stopped in a correct case. The flow of the pack ran on a copy with no remote. No commit and no pull request was made.
+
+- The pack ran with no change for Python. A subagent with only the requirement wrote 7 tests, 5 questions and 8 assumptions; it could run nothing, and it said correctly which test fails on the code of the pull request. `repro --json` gave `verified` in 1 second, with no build directory. `gate --json` passed with the 3 commands of the project that need no device.
+- The independent evaluator ran 13 checks of its own and compared the change with the code before it. It found that the fix accepted a case that gave an error before. `counterexample` recorded it as a `regression`, and `memory.py verdict` gave `FAIL`: the first `regression` counterexample in a real use, and it was correct.
+- The second version of the fix failed the gate: a check of the evaluator showed that it changed other behaviour. The third version passed, and the verdict was `SUPPORTED`.
+- The 5 questions had no answer, because the person who can answer them was not there. The evidence block shows them under "Not verified".
+- The use showed 3 points to change in the pack. (1) In a first use, the risk is HIGH each time, because the gate file is new and not committed, and the reason does not say "new gate file". (2) The pack runs the commands of a project with the PATH that it finds. This project sends commands to real devices, and the pack has no option to stop such a program; in this use, a script of ours replaced those programs with a command that fails. (3) The files of the evaluator count as changes outside the scope of the task.
+- Limits: one case, with no device, on Linux only. The fix was not sent to the project.
+
 ### A test written from the issue, before the fix
 
 The question: can a test that the `criteria` subagent writes from the text of the issue only replace the evaluator as the judge of a patch? The subagent wrote one test for each of the 42 hard issues, at the base commit, and saw no fix (Haiku, one pass, pack at commit `638c60f`). Then, with no model, each test ran on the base, on the base with the reference fix, and on the base with the patch of the bare agent (19 wrong patches, 23 correct patches). A test is valid when it fails on the base and passes on the reference fix.
