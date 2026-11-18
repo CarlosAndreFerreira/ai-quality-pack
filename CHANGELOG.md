@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: `install.py global --upgrade` replaces the README and the LICENSE of the Antigravity plugin.** It kept the copies of the first install, so an upgraded plugin had an old LICENSE (without the full name of the author). 1 test, which fails without the fix.
+
 ## 0.10.1 — 2026-11-18
 
 The repository is public. This release has no change of a command, a default or a check: it is about the repository and the license notice.

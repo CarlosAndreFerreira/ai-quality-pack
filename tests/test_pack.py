@@ -4069,6 +4069,19 @@ class CoreEverywhereTests(unittest.TestCase):
         for path in entry["skills"]:
             self.assertTrue((PACK / path / "SKILL.md").is_file(), path)
 
+    def test_global_upgrade_replaces_the_readme_and_license_of_the_antigravity_plugin(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "USERPROFILE": home}
+            self.assertEqual(run([INST, "global"], home, env=env).returncode, 0)
+            plugin = Path(home) / ".gemini/config/plugins/ai-quality-pack"
+            for doc in ("README.md", "LICENSE"):
+                (plugin / doc).write_text("an older copy\n", encoding="utf-8")
+            run([INST, "global"], home, env=env)
+            self.assertEqual((plugin / "LICENSE").read_text(encoding="utf-8"), "an older copy\n")  # never without --upgrade
+            self.assertEqual(run([INST, "global", "--upgrade"], home, env=env).returncode, 0)
+            for doc in ("README.md", "LICENSE"):
+                self.assertEqual((plugin / doc).read_bytes(), (PACK / doc).read_bytes(), doc)
+
     def test_global_install_of_the_core_writes_rules_without_skills_that_are_missing(self):
         with tempfile.TemporaryDirectory() as home:
             env = {"HOME": home, "USERPROFILE": home}

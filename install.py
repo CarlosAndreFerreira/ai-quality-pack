@@ -965,8 +965,14 @@ def main() -> None:
                     shutil.copy2(src_f, dst_f)
                 else:
                     add_if_absent(src_f, dst_f)
-        for doc in ("README.md", "LICENSE"):
-            if (PACK / doc).exists():
+        for doc in ("README.md", "LICENSE"):  # pack-owned, like plugin.json: --upgrade replaces an older copy
+            if not (PACK / doc).exists():
+                continue
+            if a.upgrade and (agy_plugin / doc).exists() and not DRY:
+                if (agy_plugin / doc).read_bytes() != (PACK / doc).read_bytes():
+                    shutil.copy2(PACK / doc, agy_plugin / doc)
+                    log(f"upgrade: {agy_plugin / doc}")
+            else:
                 add_if_absent(PACK / doc, agy_plugin / doc)
         for d in (home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
             install_pack_skills(d, a.upgrade)
