@@ -235,6 +235,20 @@ The same 42 SWE-bench patches, the evaluator of version 0.6.0, 3 independent run
 - Cost: 2.18 US dollars for 126 runs; one pass over the 42 patches took 141 to 168 minutes of agent time.
 - What this means for use: with 3 runs and this rule, a PASS is rare and is wrong less frequently, and a FAIL has no information. Do not block a merge on a FAIL of this evaluator on a large repository.
 
+### The review skills against the bare agent
+
+The question: do the `code-review`, `security-review` and `triage` skills make the agent find more defects than the bare agent?
+
+- **The cases.** A subagent that did not see the skills wrote small Python projects with seeded defects and an answer key. Each case also has code that looks wrong and is correct. Round 1 has 12 cases of about 80 lines. Round 2 has 4 cases of 540 to 740 lines in 7 files, and 3 of each 5 defects need two files.
+- **The arms.** The bare agent, the bare agent with one skill in `.claude/skills`, and (round 2) the same with a prompt that tells the agent to read the skill and obey it. The model is Claude Haiku.
+- **Round 1.** Code review: 12 of 12 defects found without the skill and 12 of 12 with it. Security review: 11 of 12 and 11 of 12. Triage: 4 of 4 correct decisions in each arm.
+- **Round 2.** Bare agent: 37 of 40 defects (92%, interval 80% to 97%). With the skill: 35 of 40. With the skill and the prompt that points to it: 37 of 40. Wrong findings: 1 of 41, 1 of 38 and 0 of 38.
+- **The review skills did not start.** The agent used `code-review` or `security-review` in 0 of 16 runs where the skill was only available. It used `triage` in 4 of 4 runs. With the prompt that points to the skill, it read the skill in 8 of 8 runs.
+- **Claude Code has its own skills with the names `code-review` and `security-review`.** They are in the skill list of the bare agent. We do not know which one a call by name gets.
+- **Conclusion.** On these cases the review skills do not change the number of defects found, because the bare agent is at the ceiling. The measurement says nothing about the form of the findings, about a large diff on a real project, or about a weaker model.
+- Cost: 0.47 US dollars for 48 runs.
+- Limits: seeded defects that a model wrote, one model, one or two repetitions, projects of 740 lines at most.
+
 ## 4. Deterministic checks
 
 | Check | Measured on | Result |
