@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-18
 
-Two changes from the fourth use on a real project.
+Two skills have new names, and two changes come from the fourth use on a real project. The number is 0.10.0 because a name changed: a prompt or a file that names `code-review` or `security-review` of the pack must use the new name. No command changed, and no default of the gate changed.
+
+Checked: 164 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS. Not measured: the effect of the new names on how often the agent starts the two skills.
 
 - **The review skills have new names: `aqp-code-review` and `aqp-security-review`.** Claude Code has skills of its own with the names `code-review` and `security-review`, so a call by name was ambiguous. `install.py --upgrade` moves a copy of the pack with the old name to the backup and installs the new name; `uninstall` removes it. A skill with one of the old names that the pack did not write stays. In a measurement on seeded defects, the two skills did not change the number of defects found, and the agent did not start them unless the prompt named them (docs/RESULTS.md).
 - **A new gate file is a state, not a risk of the change.** In a first use the gate file is new and not committed. The evidence block gave HIGH risk each time, with the reason "tests or the gate file changed", which was not the case; an alarm that is always on is not read. Now the block has a line "Gate file: not reviewed" and an item under "Not verified", and the risk line is about the change only. `evidence --strict` and the gate warning do not change. `memory.py verdict` adds a note to a `SUPPORTED`; its result does not change. An edit of a gate file that is committed is HIGH risk, as before.

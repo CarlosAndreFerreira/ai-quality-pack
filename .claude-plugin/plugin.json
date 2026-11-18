@@ -1,6 +1,6 @@
 {
   "name": "ai-quality-pack",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "Quality control for AI coding agents: a completion gate that runs the project's checks, a reproduction check, an independent evaluator, file memory for long work, and measured skill changes.",
   "author": {
     "name": "Carlos André Ferreira",
