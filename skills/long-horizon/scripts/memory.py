@@ -1071,13 +1071,21 @@ def feature_answer(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]
     if not is_human():
         die("a person answers a question about the requirement, in a terminal. Ask the user, then tell the user to run: "
             f"memory.py feature answer --id {a.id} --n {a.n} --evidence \"<answer>\"")
-    guard_secrets(a.evidence)
-    qs[a.n - 1].update(answer=clean(a.evidence, 400), at=now())
+    guard_secrets(a.evidence, a.by or "")
+    qs[a.n - 1].update(answer=clean(a.evidence, 400), at=now(), **({"by": clean(a.by, 60)} if a.by else {}))
     by_id[a.id]["updated"] = now()
     save_features(fs, dict(by_id[a.id], ev="answer"))
     log_event("feature", id=a.id, result="answer", open=len(open_questions(by_id[a.id])))
     left = len(open_questions(by_id[a.id]))
     print(f"{a.id}: question {a.n} has an answer; {left} question(s) without an answer")
+
+
+REVIEW_ASSUMPTIONS = 5  # seen in real use: a sheet with 10 assumptions, in no order, was not read
+
+
+def decided_by(rec: dict) -> str:
+    """Who decided and when, for a line of a sheet or of the evidence: `ana, 2026-11-18 09:46`."""
+    return ", ".join(x for x in (str(rec.get("by") or ""), str(rec.get("at") or "?")) if x)
 
 
 def tests_confirmed(f: dict) -> bool:
@@ -1096,18 +1104,21 @@ def feature_review(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]
     out = [f"# {f['id']}: {clean(f.get('description', ''), 200)}", ""]
     if f.get("questions"):
         out += ["## Questions that the requirement does not answer"]
-        out += [f"{i}. {clean(x.get('q', ''), 300)}" + (f"\n   Answer ({x.get('at', '?')}): {clean(x['answer'], 400)}" if x.get("answer")
+        out += [f"{i}. {clean(x.get('q', ''), 300)}" + (f"\n   Answer ({decided_by(x)}): {clean(x['answer'], 400)}" if x.get("answer")
                                                          else f"\n   No answer. A person runs: memory.py feature answer --id {f['id']} --n {i} --evidence \"<answer>\"")
                 for i, x in enumerate(f["questions"], 1)] + [""]
     out += ["## Assumed, not in the requirement (read these first)"]
-    out += [f"- {clean(s, 300)}" for s in f.get("assumptions") or []] or ["- none was recorded. This does not show that the tests assume nothing"]
+    assumed = f.get("assumptions") or []
+    out += [f"- {clean(s, 300)}" for s in assumed[:REVIEW_ASSUMPTIONS]] or ["- none was recorded. This does not show that the tests assume nothing"]
+    if len(assumed) > REVIEW_ASSUMPTIONS:  # a long list is not read: the author gives the most important first
+        out.append(f"- and {len(assumed) - REVIEW_ASSUMPTIONS} more, less important by the order of their author: memory.py feature show --id {f['id']}")
     out += ["", "## What must be true (the acceptance criteria)"] + [f"{i}. {clean(c, 300)}" for i, c in enumerate(f.get("criteria") or [], 1)]
     out += ["", "## Test files, recorded before the work"]
     out += [f"- {clean(p, 200)}" for p in f.get("test_files") or []] or ["- none: this feature has no recorded test"]
     c = f.get("tests_confirmed") or {}
     out += ["", "## State"]
     if tests_confirmed(f):
-        out.append(f"- confirmed by a person at {c.get('at', '?')}" + (f": {clean(c['note'], 200)}" if c.get("note") else ""))
+        out.append(f"- confirmed by a person ({decided_by(c)})" + (f": {clean(c['note'], 200)}" if c.get("note") else ""))
     elif f.get("recorded_tests"):
         out.append(f"- not confirmed by a person. A person runs in a terminal: memory.py feature confirm --id {f['id']}")
     else:
@@ -1129,7 +1140,8 @@ def feature_confirm(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict
     if not is_human():
         die("a person confirms the tests, in a terminal. Show the user `memory.py feature review --id " + a.id
             + "`, then tell the user to run: memory.py feature confirm --id " + a.id)
-    f["tests_confirmed"] = {"at": now(), "tests": list(f["recorded_tests"]), **({"note": clean(a.evidence, 300)} if a.evidence else {})}
+    f["tests_confirmed"] = {"at": now(), "tests": list(f["recorded_tests"]), **({"note": clean(a.evidence, 300)} if a.evidence else {}),
+                            **({"by": clean(a.by, 60)} if a.by else {})}
     f["updated"] = now()
     save_features(fs, dict(f, ev="confirm"))
     log_event("feature", id=a.id, result="confirm")
@@ -2638,6 +2650,31 @@ def evidence_questions(feats: List[dict], lines: List[str], gaps: List[str]) -> 
                 + ", ".join(f"`memory.py feature review --id {fid}`" for fid, _ in asked[:4]) + ")")
 
 
+def features_of_the_change(feats: List[dict]) -> List[dict]:
+    """The features that this change is about: the one whose recorded tests the verified reproduction used, and the
+    ones with a task that is not closed. The decisions of a feature from a year ago are not for this reviewer."""
+    used: set = set()
+    with contextlib.suppress(OSError, ValueError):
+        rec = json.loads(REPRO.read_text(encoding="utf-8"))
+        if rec.get("hash") == workspace_hash():
+            used = set(rec.get("tests") or [])
+    tasks = load_tasks() if TASKS.exists() else {}
+    active = {t.get("feature") for t in tasks.values() if t.get("status") not in ("done", "dropped") and t.get("feature")}
+    first = [f for f in feats if used & set(f.get("recorded_tests") or [])]
+    return first + [f for f in feats if f["id"] in active and f not in first]
+
+
+def evidence_decisions(feats: List[dict]) -> List[str]:
+    """The questions that the requirement did not answer, with the answer of a person: what a reviewer of the
+    change needs first, and what the author had to write by hand in the pull request before."""
+    out: List[str] = []
+    for f in features_of_the_change(feats):
+        for i, x in enumerate(f.get("questions") or [], 1):
+            if x.get("answer") and len(out) < 8:
+                out.append(f"- {f['id']}, question {i}: {clean(x.get('q', ''), 240)}\n  - Answer ({decided_by(x)}): {clean(x['answer'], 300)}")
+    return (["", "### Decisions about the requirement"] + out) if out else []
+
+
 def evidence_grades(ref: str, feats: List[dict], lines: List[str], gaps: List[str]) -> None:
     """Which features are graded as passing, by whom, and what weakens a grade."""
     req_runs = required_evaluator_runs(ref=ref)
@@ -2750,6 +2787,7 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     risk, reasons = change_risk(ref, gaps, warnings, out_of_scope=oos, rules=rules, drift=drift)
     lines.append(f"- Review risk: {risk} ({'; '.join(reasons)})")
     lines.append(f"- Cost: ${cost:.2f} (given by the caller)" if cost is not None else "- Cost: not recorded")
+    lines += evidence_decisions(feats)
     lines += ["", "### Not verified"] + ([f"- {g}" for g in gaps] if gaps else ["- nothing: every check above has a record for this code"])
     return "\n".join(lines), gaps, warnings, risk
 
@@ -3645,6 +3683,7 @@ def main() -> None:
                    help="add: something that the requirement does not decide and that changes the result (repeatable). "
                         "A person answers it with `feature answer`")
     s.add_argument("--n", type=int, help="answer: the number of the question, as `feature review` shows it")
+    s.add_argument("--by", dest="by", help="answer, confirm: the name of the person who decides. The sheet and the evidence show it")
     s.add_argument("--assumption", action="append", default=[],
                    help="add: something that the tests take as true and the requirement does not say (repeatable). "
                         "`feature review` shows these first to the person who confirms the tests")

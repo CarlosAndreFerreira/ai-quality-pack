@@ -152,6 +152,16 @@ A second security fix in the same Rust application (2026-11-17), with the defaul
 - The use showed 5 defects of the pack, which the tests of the pack did not show. The most important: `repro` gave `STILL-FAILING` for a correct fix, because the two runs used one build directory, and the note for this case did not print with the output of the real tool. See the changelog.
 - Limits: one more case, not a rate. The evaluator ran on a stronger model than Haiku. `memory.py mutants` did not run: the project has no mutation command in its committed gate file, thus the tool ran directly.
 
+### A third use on a real project
+
+A third change in the same Rust application (2026-11-18): no request of the session client goes to a host that is not trusted. It was the first use of the questions about the requirement, of the review sheet and of the JSON output.
+
+- A subagent that had only the requirement wrote 7 criteria, 9 tests, 3 questions and 10 assumptions. The tests compiled at the first try: 6 failed on the base and 3 passed, as the subagent said. The first question was a contradiction in the requirement, which the author of the requirement did not see: an existing test needed the behaviour that the requirement stops.
+- An agent could not answer the questions and could not confirm the tests. `repro --json` and `gate --json` gave the results without a read of terminal text. The independent evaluator ran 11 checks of its own and found no counterexample; it found a design defect (the refusal was read from the type of the error), which the author then corrected. `memory.py verdict` gave `SUPPORTED`, with the note that no person confirmed the tests.
+- What this use does not show: that a person finds wrong tests with the review sheet. The owner of the project told the agent to record its own recommendations as the answers, and did not confirm the tests.
+- The use showed 3 points to change in the pack: the evidence block did not show the answers, the sheet had 10 assumptions in no order, and an answer that permits a change of a test is not related to the warning for that change. The first two are changed. See the changelog.
+- Limits: one more case, in the same project. Nothing ran with the real service.
+
 ### A test written from the issue, before the fix
 
 The question: can a test that the `criteria` subagent writes from the text of the issue only replace the evaluator as the judge of a patch? The subagent wrote one test for each of the 42 hard issues, at the base commit, and saw no fix (Haiku, one pass, pack at commit `638c60f`). Then, with no model, each test ran on the base, on the base with the reference fix, and on the base with the patch of the bare agent (19 wrong patches, 23 correct patches). A test is valid when it fails on the base and passes on the reference fix.

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Three changes from the third use on a real project (2026-11-18), where the questions and the JSON output ran for the first time. [docs/RESULTS.md](docs/RESULTS.md) has the use.
+
+- **The evidence block shows the decisions about the requirement.** A new part, before "Not verified", has each question that a person answered and the answer, for the features of the change (the feature of the verified reproduction, and the features with a task that is not closed). In the real use, the author wrote these decisions by hand in the pull request.
+- **`feature answer --by NAME` and `feature confirm --by NAME`** record who decided. The review sheet and the evidence show the name with the time.
+- **The review sheet shows the first 5 assumptions**, and counts the others. The `criteria` subagent now gives the most important first. In the real use the sheet had 10 assumptions in no order.
+- 1 test with more checks.
+
 ## 0.9.3 — 2026-11-18
 
 A person decides what the requirement means: the pack records the questions that the requirement does not answer, and the tests that a person confirmed. Three smaller changes come with it. No default changed: without `--question` and without `feature confirm`, each result is the same as in version 0.9.2.

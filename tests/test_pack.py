@@ -3772,18 +3772,43 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertIn("a person answers a question about the requirement", r.stderr)
             self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "3", "--evidence", "x").returncode, 2)
             self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "1").returncode, 2)
-            r = person("feature", "answer", "--id", "F-1", "--n", "1", "--evidence", "a TypeError")
+            self.assertNotIn("Decisions about the requirement", m("evidence").stdout)   # no answer: no decision to show
+            r = person("feature", "answer", "--id", "F-1", "--n", "1", "--evidence", "a TypeError", "--by", "ana")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("1 question(s) without an answer", r.stdout)
             self.assertIn("- Requirement: 1 question(s) of F-1 without an answer", m("evidence").stdout)
             self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "2", "--evidence", "yes").returncode, 0)
             sheet = m("feature", "review", "--id", "F-1").stdout
             self.assertIn("): a TypeError", sheet)
+            self.assertIn("Answer (ana, ", sheet)                    # who decided, with the time
             self.assertNotIn("No answer", sheet)
             ev = m("evidence").stdout
             self.assertNotIn("- Requirement:", ev)
             self.assertNotIn("does not decide a part of the behaviour", ev)
-            self.assertEqual(person("feature", "confirm", "--id", "F-1").returncode, 0)
+            self.assertEqual(person("feature", "confirm", "--id", "F-1", "--by", "ana").returncode, 0)
+            self.assertIn("confirmed by a person (ana, ", m("feature", "review", "--id", "F-1").stdout)
+            # the decisions are in the evidence, before "Not verified", for the feature with a task that is not closed
+            self.assertNotIn("Decisions about the requirement", m("evidence").stdout)   # F-1 has no task and no reproduction
+            tid = m("task", "open", "--title", "sums", "--feature", "F-1", "--scope", "calc.py").stdout.strip()
+            ev = m("evidence").stdout
+            self.assertLess(ev.index("### Decisions about the requirement"), ev.index("### Not verified"))
+            self.assertIn("- F-1, question 1: What is the result for text and a number?", ev)
+            self.assertIn("  - Answer (ana, ", ev)
+            self.assertIn("): a TypeError", ev)
+            self.assertIn("- F-1, question 2: Is a float a valid input?", ev)
+            self.assertEqual(m("task", "status", "--id", tid, "--status", "done").returncode, 0)
+            self.assertNotIn("Decisions about the requirement", m("evidence").stdout)   # the task is closed: not this change
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")  # the fix, with its reproduction
+            self.assertEqual(m("repro", "--test", test, "--test-file", "test_calc.py").returncode, 0)
+            self.assertIn("- F-1, question 1:", m("evidence").stdout)   # the feature of the verified reproduction
+            # the sheet shows the 5 first assumptions, and counts the others
+            many = [x for i in range(1, 8) for x in ("--assumption", f"assumption number {i}")]
+            m("feature", "add", "--id", "F-3", "--desc", "d", "--criterion", "c", "--test-file", "test_calc.py", *many)
+            sheet = m("feature", "review", "--id", "F-3").stdout
+            self.assertIn("- assumption number 5", sheet)
+            self.assertNotIn("assumption number 6", sheet)
+            self.assertIn("- and 2 more, less important by the order of their author: memory.py feature show --id F-3", sheet)
+            self.assertIn("assumption number 7", m("feature", "show", "--id", "F-3").stdout)
             # a feature without questions: the evidence has no line about the requirement, as before
             m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c")
             self.assertNotIn("- Requirement:", m("evidence").stdout)
@@ -3867,7 +3892,7 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertEqual((v.returncode, d["verdict"], d["records"]["tests_confirmed"]), (0, "SUPPORTED", "by a person"))
             self.assertNotIn("no person confirmed", d["why"])
             self.assertIn("A person confirmed the test", m("evidence").stdout)
-            self.assertIn("confirmed by a person at", m("feature", "review", "--id", "F-1").stdout)
+            self.assertIn("confirmed by a person (", m("feature", "review", "--id", "F-1").stdout)
             self.assertEqual(self._events(root, "feature")[-1]["result"], "confirm") if hasattr(self, "_events") else None
             # a feature without a recorded test has nothing to confirm
             m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c")
