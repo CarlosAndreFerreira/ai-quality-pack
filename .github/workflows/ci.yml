@@ -1,11 +1,16 @@
 name: pack-ci
-# Manual trigger only: the account has no Actions budget, so jobs started by a push did not run and showed as failed.
-# Before a push, run the same three steps locally (see CONTRIBUTING notes in README: "Checks before a push").
-# To run on each pull request again, add `pull_request:` under `on:`.
+# Runs on each push to main and on each pull request, also from a fork. The job has read access only and uses no
+# secret, so the code of a pull request cannot write to the repository or read a credential.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:  # a new push to the same branch or pull request stops the run that it replaces
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     strategy:
@@ -20,5 +25,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"  # the tests must pass with and without bytecode files (see README)
       - run: python skills/skill-evolve/scripts/validate_skills.py skills --strict
       - run: python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
