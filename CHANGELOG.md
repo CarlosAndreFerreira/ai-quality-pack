@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.9.4 — 2026-11-18
 
-Three changes from the third use on a real project (2026-11-18), where the questions and the JSON output ran for the first time. [docs/RESULTS.md](docs/RESULTS.md) has the use.
+Three changes from the third use on a real project, where the questions and the JSON output ran for the first time ([docs/RESULTS.md](docs/RESULTS.md) has the use), and a shorter README. No default changed, and no command changed.
+
+Checked: 163 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS. The three changes ran on the records of the real project; no person read a review sheet in that use.
+
+- **The README has the parts with a use or a measurement.** 16 sections moved to [docs/REFERENCE.md](docs/REFERENCE.md), with no change of their text: the parts that were not used on a real project and not measured with an agent (`skill-eval` for changes of skills, the run log and `stats`, the draft pull request, triage, the factory report, merge readiness, risk rules, provenance and audit, lessons, complexity, the evals of the pack, the CI audit and the sandbox, Codex and OpenCode, the checks of the skills, unattended runs, robustness). The README has one line for each, with a link. The README went from 491 to 275 lines.
 
 - **The evidence block shows the decisions about the requirement.** A new part, before "Not verified", has each question that a person answered and the answer, for the features of the change (the feature of the verified reproduction, and the features with a task that is not closed). In the real use, the author wrote these decisions by hand in the pull request.
 - **`feature answer --by NAME` and `feature confirm --by NAME`** record who decided. The review sheet and the evidence show the name with the time.
