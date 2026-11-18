@@ -2618,6 +2618,15 @@ class EvaluatorCopiesTests(unittest.TestCase):
         self.assertIn("~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py", agy)
         self.assertNotIn("UNVERIFIABLE", agy)
 
+    def test_antigravity_evaluator_can_run_commands_but_not_edit_files(self):
+        # Without a tools: line Antigravity gives the subagent a read-only set, and every gate is UNKNOWN.
+        front = (PACK / "templates/antigravity/agents/evaluator.md").read_text(encoding="utf-8").split("---\n", 2)[1]
+        tools = re.findall(r"(?m)^  - (\S+)$", front.split("tools:\n", 1)[1]) if "tools:\n" in front else []
+        self.assertIn("run_command", tools)
+        self.assertIn("view_file", tools)
+        for edit in ("write_to_file", "replace_file_content", "multi_replace_file_content"):
+            self.assertNotIn(edit, tools)  # the evaluator does not edit source files
+
 
 class ReleaseTests(unittest.TestCase):
     def test_one_version_in_the_manifests_the_readme_and_the_changelog(self):
