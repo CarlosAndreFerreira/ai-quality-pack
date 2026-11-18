@@ -115,6 +115,40 @@ def copytree(src: Path, dst: Path) -> None:
 # core (docs/RESULTS.md), and each skill description costs context in each session. `--full` installs the others.
 CORE_SKILLS = ("long-horizon", "evaluator", "plan-before-code")
 FULL = False
+# Claude Code has skills of its own with the names `code-review` and `security-review`. The skills of the pack have
+# a prefix, so that a call by name is not ambiguous. The value is a text that only the old copy of the pack has.
+RENAMED_SKILLS = {"aqp-code-review": ("code-review", "Produces a ranked list of verified findings"),
+                  "aqp-security-review": ("security-review", "OWASP Top 10 for LLM Applications")}
+
+
+def old_pack_skill(dest: Path, new_name: str) -> "Path | None":
+    """The folder of this skill under its old name, when the pack put it there. A skill of the user or of another
+    source with the same name does not have the text of the pack, and stays."""
+    if new_name not in RENAMED_SKILLS:
+        return None
+    old, mark = RENAMED_SKILLS[new_name]
+    target = dest / old
+    doc = target / "SKILL.md"
+    if (target / ".upstream").exists() or not doc.is_file():
+        return None
+    text = doc.read_text(encoding="utf-8", errors="replace")
+    return target if f"name: {old}" in text and mark in text else None
+
+
+def move_old_name(dest: Path, src: Path, upgrade: bool, stamp: str) -> bool:
+    """True when an older install has this skill under its old name. With --upgrade the old folder goes to the backup."""
+    old = old_pack_skill(dest, src.name)
+    if old is None:
+        return False
+    if not upgrade:
+        log(f"NOTE: {old} is the old name of {src.name}; --upgrade replaces it")
+        return False
+    backup = dest / ".backup" / stamp / old.name
+    log(f"renamed: {old} → {dest / src.name} (backup → {backup})")
+    if not DRY:
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old), str(backup))
+    return True
 
 
 def install_pack_skills(dest: Path, upgrade: bool) -> None:
@@ -126,7 +160,8 @@ def install_pack_skills(dest: Path, upgrade: bool) -> None:
         if not src.is_dir():
             continue
         target = dest / src.name
-        if not FULL and src.name not in CORE_SKILLS and not target.exists():
+        had_old_name = move_old_name(dest, src, upgrade, stamp)
+        if not FULL and src.name not in CORE_SKILLS and not target.exists() and not had_old_name:
             left_out.append(src.name)  # a skill that an older install put there is still upgraded below
             continue
         if target.exists():
@@ -735,6 +770,8 @@ def remove_skills(dest: Path, force: bool) -> None:
         src = PACK / "skills" / target.name
         if (target / ".upstream").exists():
             remove(target)  # the marker says that the pack fetched it
+        elif any(old_pack_skill(dest, new) == target for new in RENAMED_SKILLS):
+            remove(target)  # a skill of the pack under its old name
         elif src.is_dir():
             if force or same_tree(src, target):
                 remove(target)

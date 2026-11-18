@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: aqp-code-review
 description: Use when asked to review a diff, PR, branch or file, or before declaring a non-trivial change done. Produces a ranked list of verified findings (bugs first, style last). Not for writing new features.
 license: MIT
 ---
@@ -13,7 +13,7 @@ license: MIT
 1. **Correctness** — wrong logic, off-by-one, wrong condition, unhandled None/null, wrong error swallowed, broken invariants.
 2. **Concurrency & state** — races, shared mutable state, non-idempotent retries, transactions not committed/rolled back, missing awaits.
 3. **Failure modes** — timeouts, partial failure, resource leaks (files, connections, locks), unbounded memory/queues.
-4. **Security** — injection, authz checks, secrets in code/logs, unsafe deserialisation, SSRF. (Use `security-review` skill for a deep pass.)
+4. **Security** — injection, authz checks, secrets in code/logs, unsafe deserialisation, SSRF. (Use `aqp-security-review` skill for a deep pass.)
 5. **Contracts** — public API/type/schema changes, backwards compatibility, migrations.
 6. **Performance** — N+1 queries, O(n²) on real sizes, sync I/O in async paths. Only when it matters at expected scale.
 7. **Maintainability** — naming, duplication, dead code, misleading comments.

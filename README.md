@@ -16,7 +16,7 @@ Coding agents fail in predictable ways. They declare victory early, grade their 
 | Lost context across sessions | File memory: tasks, features, progress, playbook, plus a session-start digest |
 | Repeated mistakes | **Playbook** of root-caused rules, de-duplicated, scored helpful/harmful |
 | Skill drift / overfitting | `skill-evolve` proposes a diff; `skill-eval` measures it (noise floor, guards, holdout); **a human approves** |
-| Insecure code | `security-review` mapped to OWASP Top 10:2025 and the OWASP LLM Top 10 2025 |
+| Insecure code | `aqp-security-review` mapped to OWASP Top 10:2025 and the OWASP LLM Top 10 2025 |
 | No record of what happened | Local **run log** (`events.jsonl`) + `memory.py stats`; eval transcripts with tokens and cost |
 
 ## What the measurements show
@@ -94,8 +94,8 @@ A default install has the core: `long-horizon`, `evaluator` and `plan-before-cod
 | `plan-before-code` | Routes small changes to an inline plan and large ones to EGM; always ends with testable acceptance criteria |
 | `tdd-loop` | Strict red → green → refactor |
 | `evaluator` | Independent, skeptical grading of each criterion against the running code |
-| `code-review` | Ranked findings, each with a concrete failure scenario |
-| `security-review` | OWASP Top 10:2025 (A01–A10) + OWASP LLM Top 10 (LLM01–LLM10) |
+| `aqp-code-review` | Ranked findings, each with a concrete failure scenario |
+| `aqp-security-review` | OWASP Top 10:2025 (A01–A10) + OWASP LLM Top 10 (LLM01–LLM10) |
 | `ui-ux-review` | Grades the running UI (WCAG 2.2 AA, heuristics, visual quality); optional pattern research with citations |
 | `learn-from-mistakes` | Turns mistakes and non-obvious wins into scored playbook rules |
 | `skill-evolve` | Curates the playbook; proposes skill diffs; protected core; never self-applies |

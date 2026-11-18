@@ -28,7 +28,7 @@ python3 .agents/skills/long-horizon/scripts/memory.py lesson candidates
 4. New skill, only for a new recurring task type, never for a single rule.
 
 Constraints:
-- **Protected core (never proposed for edit):** the AGENTS.md "Rules" section, `evaluator`, `security-review`, and the approval steps of this skill. The learning loop edits the layer around them.
+- **Protected core (never proposed for edit):** the AGENTS.md "Rules" section, `evaluator`, `aqp-security-review`, and the approval steps of this skill. The learning loop edits the layer around them.
 - Never remove or weaken safety, security, test-integrity or approval rules.
 - SKILL.md body under ~150 lines. Move long material to `references/` (one level deep).
 - Keep `description` accurate: it is what agents read to decide whether to load the skill.

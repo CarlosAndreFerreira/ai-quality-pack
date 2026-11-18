@@ -1,5 +1,5 @@
 ---
-name: security-review
+name: aqp-security-review
 description: Use when a change touches auth, user input, file/network I/O, secrets, serialisation, SQL, shell, dependencies, error handling, or LLM prompts/tools/agents; or when asked for a security audit. Maps findings to OWASP Top 10:2025 and OWASP Top 10 for LLM Applications 2025. Verified findings only.
 license: MIT
 metadata:
@@ -36,4 +36,4 @@ List the entry points in scope: HTTP routes, CLI args, queue consumers, uploads,
 Each finding needs an exploit sketch: attacker input → effect. No sketch → drop it or label it `PLAUSIBLE`. Cheap to confirm → confirm it with a test.
 
 ## 5. Output
-Same format as `code-review`, tagged with the category (e.g. `A03`, `LLM06`), ranked by impact × likelihood. End with the 1–3 changes that remove the most risk. For a full audit, reference OWASP ASVS 5 levels instead of this checklist.
+Same format as `aqp-code-review`, tagged with the category (e.g. `A03`, `LLM06`), ranked by impact × likelihood. End with the 1–3 changes that remove the most risk. For a full audit, reference OWASP ASVS 5 levels instead of this checklist.

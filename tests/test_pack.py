@@ -275,7 +275,7 @@ class SkillEvalTests(unittest.TestCase):
             self.assertTrue((root / ".agent-memory/evals/noise.json").exists())
             r = self.ev(root, "ablate", "--skill", "tdd-loop", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("VERDICT: REGRESSES", r.stdout)  # baseline always passed; without the skill it fails
-            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            r = self.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("VERDICT: PRUNABLE", r.stdout)
 
     def test_a_task_set_that_cannot_show_the_effect_is_said_and_reports_have_the_commit(self):
@@ -299,7 +299,7 @@ class SkillEvalTests(unittest.TestCase):
             self.assertIs(rep["dirty"], False)
             self.assertIn("python", rep)
             # floor: each run fails with and without the skill. That is not "the skill can go"
-            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py marker')
+            r = self.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py marker')
             self.assertIn("VERDICT: NO-SIGNAL", r.stdout, r.stdout + r.stderr)
             self.assertNotIn("VERDICT: PRUNABLE", r.stdout)
             self.assertIn("2 at the floor", r.stdout)
@@ -309,7 +309,7 @@ class SkillEvalTests(unittest.TestCase):
             self.assertIn("VERDICT: INCONCLUSIVE", r.stdout)
             self.assertIn("these tasks cannot show a difference", r.stdout)
             # ceiling in an ablation: true for these tasks, and the report says that it is no more than that
-            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            r = self.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("VERDICT: PRUNABLE", r.stdout)
             self.assertIn("these tasks do not need the skill", r.stdout)
             # a real difference: the guard changes nothing
@@ -324,7 +324,7 @@ class SkillEvalTests(unittest.TestCase):
             self.assertEqual((noise["commit"], len(noise["task_signal"]["ceiling"])), (head, 2))
             # a tracked file with an uncommitted change: the report says that the commit is not all of it
             (root / "check.py").write_text((root / "check.py").read_text(encoding="utf-8") + "# edit\n", encoding="utf-8")
-            r = self.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            r = self.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("has uncommitted changes", r.stdout)
             self.assertIs(last()["dirty"], True)
 
@@ -3706,11 +3706,11 @@ class SkillCheckTests(unittest.TestCase):
                 r = helper.ev(root, "ablate", "--skill", "tdd-loop", "--repeats", "1", "--agent-cmd", f'"{py}" transcript_agent.py {how}')
                 self.assertIn("activation of `tdd-loop`: used in 2 of 2 runs (with)", r.stdout, r.stdout + r.stderr)
                 self.assertIn("VERDICT: REGRESSES", r.stdout)         # used, and the work fails without it
-            r = helper.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" transcript_agent.py tool')
-            self.assertIn("activation of `code-review`: used in 0 of 2 runs (with)", r.stdout)
+            r = helper.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" transcript_agent.py tool')
+            self.assertIn("activation of `aqp-code-review`: used in 0 of 2 runs (with)", r.stdout)
             self.assertIn("VERDICT: NOT-USED", r.stdout)              # not PRUNABLE: nothing was measured about it
             self.assertIn("improve the description, or remove the skill", r.stdout)
-            r = helper.ev(root, "ablate", "--skill", "code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
+            r = helper.ev(root, "ablate", "--skill", "aqp-code-review", "--repeats", "1", "--agent-cmd", f'"{py}" fake_agent.py exists')
             self.assertIn("not observable", r.stdout)                 # an agent that prints no tool calls
             self.assertIn("VERDICT: PRUNABLE", r.stdout)
             report = json.loads(sorted((root / ".agent-memory/evals/results").glob("*.json"))[-1].read_text(encoding="utf-8"))
@@ -3775,8 +3775,29 @@ class CoreAndRecordsTests(unittest.TestCase):
             (skills / "tdd-loop/SKILL.md").write_text("old\n", encoding="utf-8")
             run([INST, "project", root, "--profile", "none", "--upgrade"], root)
             self.assertIn("name: tdd-loop", (skills / "tdd-loop/SKILL.md").read_text(encoding="utf-8"))
-            self.assertFalse((skills / "code-review").exists())
+            self.assertFalse((skills / "aqp-code-review").exists())
+            # an older install has the review skills under names that Claude Code also has. --upgrade moves them
+            old = skills / "code-review"
+            old.mkdir()
+            (old / "SKILL.md").write_text("---\nname: code-review\ndescription: Produces a ranked list of verified findings\n---\n", encoding="utf-8")
+            mine = skills / "security-review"       # not from the pack: it stays
+            mine.mkdir()
+            (mine / "SKILL.md").write_text("---\nname: security-review\ndescription: my own\n---\n", encoding="utf-8")
+            r = run([INST, "project", root, "--profile", "none"], root)
+            self.assertIn("is the old name of aqp-code-review; --upgrade replaces it", r.stdout)
+            self.assertTrue(old.exists())
+            r = run([INST, "project", root, "--profile", "none", "--upgrade"], root)
+            self.assertIn("renamed:", r.stdout)
+            self.assertFalse(old.exists())
+            self.assertIn("name: aqp-code-review", (skills / "aqp-code-review/SKILL.md").read_text(encoding="utf-8"))
+            self.assertFalse((skills / "aqp-security-review").exists())
+            self.assertIn("my own", (mine / "SKILL.md").read_text(encoding="utf-8"))
+            old.mkdir()                              # an old copy that no upgrade moved: uninstall removes it
+            (old / "SKILL.md").write_text("---\nname: code-review\ndescription: Produces a ranked list of verified findings\n---\n", encoding="utf-8")
             run([INST, "uninstall", root], root)
+            self.assertFalse(old.exists())
+            self.assertTrue(mine.exists())
+            (mine / "SKILL.md").unlink(); mine.rmdir()
             self.assertEqual([p.name for p in skills.iterdir()], [".backup"])  # only the backup of --upgrade stays
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)

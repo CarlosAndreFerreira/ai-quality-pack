@@ -11,7 +11,7 @@
   "repository": "https://github.com/CarlosAndreFerreira/ai-quality-pack",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Run code-review and security-review (OWASP 2025) on the current diff",
+    "Run aqp-code-review and aqp-security-review (OWASP 2025) on the current diff",
     "Plan this change with testable acceptance criteria (plan-before-code)",
     "Grade the running UI against WCAG 2.2 AA criteria (ui-ux-review)"
   ]
