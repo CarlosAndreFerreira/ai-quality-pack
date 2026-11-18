@@ -3748,6 +3748,91 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertTrue((root / ".github/workflows/quality-gate.yml").is_file())
             self.assertTrue((root / ".claude/hooks/guard_pack_files.py").is_file())
 
+    def test_questions_about_the_requirement_stay_in_the_evidence_until_a_person_answers(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)
+            person = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1", "AGENT_MEMORY_HUMAN": "1"})
+            r = m("feature", "add", "--id", "F-1", "--desc", "add sums", "--criterion", "add(2, 2) gives 4", "--test-file", "test_calc.py",
+                  "--question", "What is the result for text and a number?", "--question", "Is a float a valid input?")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("2 question(s) about the requirement have no answer", r.stdout)
+            self.assertIn("Do not answer them for the user", r.stdout)
+            sheet = m("feature", "review", "--id", "F-1").stdout
+            self.assertLess(sheet.index("Questions that the requirement does not answer"), sheet.index("Assumed, not in the requirement"))
+            self.assertIn("1. What is the result for text and a number?", sheet)
+            self.assertIn("feature answer --id F-1 --n 2", sheet)
+            ev = m("evidence").stdout
+            self.assertIn("- Requirement: 2 question(s) of F-1 without an answer", ev)
+            self.assertIn("the requirement does not decide a part of the behaviour, and no person answered", ev.split("### Not verified")[1])
+            r = person("feature", "confirm", "--id", "F-1")          # the tests are not correct while the requirement is open
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("2 question(s) about the requirement without an answer", r.stderr)
+            r = m("feature", "answer", "--id", "F-1", "--n", "1", "--evidence", "an error")
+            self.assertEqual(r.returncode, 2)                         # the author of the change does not answer
+            self.assertIn("a person answers a question about the requirement", r.stderr)
+            self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "3", "--evidence", "x").returncode, 2)
+            self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "1").returncode, 2)
+            r = person("feature", "answer", "--id", "F-1", "--n", "1", "--evidence", "a TypeError")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("1 question(s) without an answer", r.stdout)
+            self.assertIn("- Requirement: 1 question(s) of F-1 without an answer", m("evidence").stdout)
+            self.assertEqual(person("feature", "answer", "--id", "F-1", "--n", "2", "--evidence", "yes").returncode, 0)
+            sheet = m("feature", "review", "--id", "F-1").stdout
+            self.assertIn("): a TypeError", sheet)
+            self.assertNotIn("No answer", sheet)
+            ev = m("evidence").stdout
+            self.assertNotIn("- Requirement:", ev)
+            self.assertNotIn("does not decide a part of the behaviour", ev)
+            self.assertEqual(person("feature", "confirm", "--id", "F-1").returncode, 0)
+            # a feature without questions: the evidence has no line about the requirement, as before
+            m("feature", "add", "--id", "F-2", "--desc", "d", "--criterion", "c")
+            self.assertNotIn("- Requirement:", m("evidence").stdout)
+
+    def test_a_name_of_the_interface_in_a_criterion_is_not_a_name_of_code(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)
+            seen = ["the field page_size limits the list to 50 rows",
+                    "a request with page_size=0 returns 400",
+                    "the token does not reach another host through the custom_url of POST /api/taxes/download-proof",
+                    "the response has the header retry_after",
+                    "o campo data_inicio aceita uma data no formato ISO"]
+            code = ["the write is atomic in db.rs", "parse_config returns an error for an empty file",
+                    "Store::save_all() keeps the data and retry_count grows"]
+            args = [x for c in seen + code for x in ("--criterion", c)]
+            r = m("feature", "add", "--id", "F-1", "--desc", "d", *args)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for i in range(1, len(seen) + 1):                         # what a user or a test sees: no warning
+                self.assertNotIn(f"criterion {i} names code", r.stdout)
+            self.assertIn(f"criterion {len(seen) + 1} names code (db.rs)", r.stdout)
+            self.assertIn(f"criterion {len(seen) + 2} names code (parse_config)", r.stdout)
+            self.assertIn(f"criterion {len(seen) + 3} names code (Store::save_all, retry_count)", r.stdout)
+
+    def test_repro_names_a_build_directory_of_another_tool_that_the_two_runs_use(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, test, m = self._calc(t)                           # the defect stays: the test fails on the base and now
+            outside = (Path(t).parent / "aqp-shared-build").as_posix()
+            fail = f'"{self.py if hasattr(self, "py") else sys.executable.replace(chr(92), "/")}" -c "import os; print(os.getcwd()); raise SystemExit(1)"'
+            run_env = lambda cmd, **env: run([MEM, "repro", "--test", cmd], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1", **env})
+            # an option of the command with an absolute directory outside the repository (cmake, ctest, meson, bazel, dotnet)
+            r = run_env(f'{fail} --build "{outside}"')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("This result is not reliable: the option --build of the command is set to a directory outside the repository", r.stdout)
+            self.assertIn("use a directory in the repository, or a command that compiles again", r.stdout)
+            self.assertNotIn("not reliable", run_env(f"{fail} --build build").stdout)        # in the repository: each run has its own
+            self.assertNotIn("not reliable", run_env(f"{fail} -B {(root / 'out').as_posix()}").stdout)
+            # the file of cargo that names the directory
+            (root / ".cargo").mkdir()
+            (root / ".cargo/config.toml").write_text(f'[build]\ntarget-dir = "{outside}"\n', encoding="utf-8")
+            self.assertIn("not reliable: target-dir in .cargo/config.toml", run_env(fail).stdout)
+            (root / ".cargo/config.toml").write_text('[build]\ntarget-dir = "target"\n', encoding="utf-8")
+            self.assertNotIn("not reliable", run_env(fail).stdout)
+            # a variable of the project, named in config.json
+            self.assertNotIn("not reliable", run_env(fail, MY_BUILD_DIR=outside).stdout)
+            (root / ".agent-memory/config.json").write_text(json.dumps({"shared_build_env": ["MY_BUILD_DIR"]}), encoding="utf-8")
+            r = run_env(fail, MY_BUILD_DIR=outside)
+            self.assertIn("not reliable: MY_BUILD_DIR is set to a directory outside the repository", r.stdout)
+            self.assertIn("--base-env MY_BUILD_DIR=<another directory>", r.stdout)
+
     def test_a_person_confirms_the_tests_of_the_criteria_and_the_result_does_not_change(self):
         with tempfile.TemporaryDirectory() as t:
             root, test, m = self._calc(t)

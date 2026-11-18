@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.9.3 — 2026-11-18
+
+A person decides what the requirement means: the pack records the questions that the requirement does not answer, and the tests that a person confirmed. Three smaller changes come with it. No default changed: without `--question` and without `feature confirm`, each result is the same as in version 0.9.2.
+
+Checked: 163 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`. Not covered: macOS. Not used on a real project, and not measured with an agent: the questions, the confirmation of tests, and the build directories of tools other than cargo (these have tests with commands that we wrote, not with the real tools).
+
+- **Questions about the requirement (`feature add --question`, `feature answer`).** In our measurement, the wrong patches failed on behaviour that the issue did not describe, and a judge that reads only the issue has the same gap as the author.
+  - `feature add --question "..."` records what the requirement does not decide. The `criteria` subagent lists these questions, and now also writes the criteria for the part that is clear.
+  - `feature answer --id F --n 1 --evidence "..."` is for a person in a terminal. An agent cannot answer.
+  - While a question has no answer: `feature review` shows the questions first, the evidence block has a line "Requirement" and an item under "Not verified", and `feature confirm` refuses.
+  - The pack does not find the questions. A model or a person writes them.
+- **`repro` names a shared build directory of other tools.** Version 0.9.2 read the two variables of cargo. Now it reads also: `target-dir` in `.cargo/config.toml`; an option of the test command with an absolute directory outside the repository (`-B`, `-C`, `--build`, `--test-dir`, `--build-dir`, `--build-path`, `--target-dir`, `--output_base`, `--artifacts-path`); and the variables that the project names in `"shared_build_env"` of `.agent-memory/config.json`. Only the cargo variable was seen with the real tool.
+- **A name of the interface in a criterion is not a name of code.** The warning "names code" was given for `custom_url`, a field of a request, which a test can observe. A name with `_` gives no warning when the criterion says that it is a field, a header, an option, a column or the like, or gives it a value (`page_size=0`) or a route. A file name, `a::b` and `name()` give the warning as before.
+- 3 tests.
 
 - **`why` in the JSON output.** `gate --json`, `repro --json` and `counterexample --json` have the reason of the result as a key. Before, the reason was only in the text of `output`.
 - **[docs/JSON.md](docs/JSON.md)** has each key of the JSON output and each value of `result`. A test fails when a key is not in the file, or when the set of keys changes.

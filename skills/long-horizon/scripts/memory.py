@@ -83,7 +83,7 @@ RISK_WAIVERS = ROOT / "risk-waivers.jsonl"  # a person reviewed a risk-rule matc
 EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
 EVENTS_OLD = ROOT / "events.1.jsonl"
 EVENTS_LOCK = ROOT / ".events.lock"
-PACK_VERSION = "0.9.2"  # the same as .claude-plugin/plugin.json (a test checks it)
+PACK_VERSION = "0.9.3"  # the same as .claude-plugin/plugin.json (a test checks it)
 CHAIN_START = "0" * 32  # `prev` of the first event of a chain
 SESSION = ROOT / ".session"
 REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
@@ -486,7 +486,7 @@ def load_features() -> List[dict]:
         cur = by_id.setdefault(fid, {"id": fid, "description": "", "criteria": [], "passes": False,
                                      "evidence": "", "verified_by": "", "votes": [], "updated": e.get("updated", "")})
         for k in ("description", "criteria", "passes", "evidence", "verified_by", "fail_streak", "updated", "votes", "vote_summary",
-                  "recorded_tests", "test_files", "assumptions", "tests_confirmed"):
+                  "recorded_tests", "test_files", "assumptions", "tests_confirmed", "questions"):
             if k in e:
                 cur[k] = e[k]
     return list(by_id.values())
@@ -918,6 +918,29 @@ def aggregate_feature_votes(votes: List[dict], current_hash: str, req: int) -> d
             "total": len(valid), "stale": stale, "required": req, "valid": valid}
 
 
+def feature_extras(a: argparse.Namespace) -> dict:
+    """What a person reads before the work. `assumptions`: what the tests take as true and the requirement does not say.
+    `questions`: what the requirement does not decide; the work can go on, and the evidence says that no person answered."""
+    assumptions = [s.strip() for s in (a.assumption or []) if s.strip()]
+    questions = [s.strip() for s in (a.question or []) if s.strip()]
+    out: dict = {}
+    if assumptions:
+        out["assumptions"] = assumptions
+    if questions:
+        out["questions"] = [{"q": q} for q in questions]
+    return out
+
+
+def feature_person_notes(fid: str, questions: int, tests: bool) -> None:
+    """After `feature add`: what the agent must take to the user. An agent cannot do these steps."""
+    if questions:
+        print(f"{questions} question(s) about the requirement have no answer. Ask the user. The user answers in a terminal: "
+              f"memory.py feature answer --id {fid} --n 1 --evidence \"<answer>\". Do not answer them for the user")
+    if tests:
+        print(f"No person confirmed these tests. Show the user `memory.py feature review --id {fid}`; the user then runs "
+              f"`memory.py feature confirm --id {fid}` in a terminal. A test from the requirement alone can read it wrong")
+
+
 def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
     """Record a feature with its criteria, and the tests of the criteria. A feature is never rewritten."""
     if not a.id or not a.desc:
@@ -926,8 +949,8 @@ def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -
         die(f"feature {a.id} exists; features are never rewritten")
     if not a.criterion:
         die("feature add needs at least one --criterion (testable acceptance criterion, agreed before coding)")
-    assumptions = [s.strip() for s in (a.assumption or []) if s.strip()]
-    guard_secrets(a.desc, *a.criterion, *assumptions)
+    extras = feature_extras(a)
+    guard_secrets(a.desc, *a.criterion, *extras.get("assumptions", []), *[x["q"] for x in extras.get("questions", [])])
     patches = [patch_digest(f) for f in list(a.test_file or []) + list(a.test_patch or [])]
     if not all(patches):
         die("feature add: a --test-file or --test-patch file cannot be read")
@@ -936,16 +959,13 @@ def feature_add(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -
     if patches:  # tests from the time of the criteria: `repro` with the same files counts as a test written before the change
         rec["recorded_tests"] = patches
         rec["test_files"] = [str(f).replace("\\", "/") for f in list(a.test_file or []) + list(a.test_patch or [])]
-    if assumptions:  # what the tests take as true and the requirement does not say: a person reads these first
-        rec["assumptions"] = assumptions
+    rec.update(extras)
     fs.append(rec)
     save_features(fs, dict(rec, ev="add"))
     named = [(i, impl_terms(c)) for i, c in enumerate(a.criterion, 1) if impl_terms(c)]
     log_event("feature", id=a.id, result="add", criteria=len(a.criterion), criteria_naming_code=len(named) or None)
     print(f"added {a.id} with {len(a.criterion)} criteria" + (f" and {len(patches)} test file(s) recorded" if patches else ""))
-    if patches:
-        print(f"No person confirmed these tests. Show the user `memory.py feature review --id {a.id}`; the user then runs "
-              f"`memory.py feature confirm --id {a.id}` in a terminal. A test from the requirement alone can read it wrong")
+    feature_person_notes(a.id, len(extras.get("questions", [])), bool(patches))
     for i, terms in named:
         print(f"WARNING: criterion {i} names code ({', '.join(clean(t, 40) for t in terms[:4])}). "
               "Write what a user or a test can observe, not how the code does it: "
@@ -1035,6 +1055,31 @@ def feature_show(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) 
     print(json.dumps(by_id[a.id], indent=2, ensure_ascii=False))
 
 
+def open_questions(f: dict) -> List[str]:
+    """The questions about the requirement of this feature that no person answered."""
+    return [str(x.get("q", "")) for x in f.get("questions") or [] if not x.get("answer")]
+
+
+def feature_answer(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]) -> None:
+    """A person answers a question about the requirement. The author of a change does not decide what the
+    requirement means: in our measurement, the wrong patches failed on behaviour that the issue did not describe."""
+    if a.id not in by_id:
+        die(f"unknown feature {a.id}")
+    qs = by_id[a.id].get("questions") or []
+    if not a.n or a.n < 1 or a.n > len(qs) or not (a.evidence or "").strip():
+        die(f"feature answer needs --id, --n (1 to {len(qs)}) and --evidence \"<the answer>\"")
+    if not is_human():
+        die("a person answers a question about the requirement, in a terminal. Ask the user, then tell the user to run: "
+            f"memory.py feature answer --id {a.id} --n {a.n} --evidence \"<answer>\"")
+    guard_secrets(a.evidence)
+    qs[a.n - 1].update(answer=clean(a.evidence, 400), at=now())
+    by_id[a.id]["updated"] = now()
+    save_features(fs, dict(by_id[a.id], ev="answer"))
+    log_event("feature", id=a.id, result="answer", open=len(open_questions(by_id[a.id])))
+    left = len(open_questions(by_id[a.id]))
+    print(f"{a.id}: question {a.n} has an answer; {left} question(s) without an answer")
+
+
 def tests_confirmed(f: dict) -> bool:
     """A person confirmed the tests of this feature as they are recorded now."""
     c = f.get("tests_confirmed") or {}
@@ -1049,6 +1094,11 @@ def feature_review(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict]
         die(f"unknown feature {a.id}")
     f = by_id[a.id]
     out = [f"# {f['id']}: {clean(f.get('description', ''), 200)}", ""]
+    if f.get("questions"):
+        out += ["## Questions that the requirement does not answer"]
+        out += [f"{i}. {clean(x.get('q', ''), 300)}" + (f"\n   Answer ({x.get('at', '?')}): {clean(x['answer'], 400)}" if x.get("answer")
+                                                         else f"\n   No answer. A person runs: memory.py feature answer --id {f['id']} --n {i} --evidence \"<answer>\"")
+                for i, x in enumerate(f["questions"], 1)] + [""]
     out += ["## Assumed, not in the requirement (read these first)"]
     out += [f"- {clean(s, 300)}" for s in f.get("assumptions") or []] or ["- none was recorded. This does not show that the tests assume nothing"]
     out += ["", "## What must be true (the acceptance criteria)"] + [f"{i}. {clean(c, 300)}" for i, c in enumerate(f.get("criteria") or [], 1)]
@@ -1073,6 +1123,9 @@ def feature_confirm(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict
     f = by_id[a.id]
     if not f.get("recorded_tests"):
         die(f"{a.id} has no recorded test (`feature add --test-file`): there is nothing to confirm")
+    if open_questions(f):  # a test cannot be confirmed as correct while what it must check is not decided
+        die(f"{a.id} has {len(open_questions(f))} question(s) about the requirement without an answer (`feature review --id {a.id}`). "
+            "Answer them first: a test is not correct while the requirement is not decided")
     if not is_human():
         die("a person confirms the tests, in a terminal. Show the user `memory.py feature review --id " + a.id
             + "`, then tell the user to run: memory.py feature confirm --id " + a.id)
@@ -1099,8 +1152,8 @@ def cmd_feature(a: argparse.Namespace) -> None:
             feature_grade(a, fs, by_id)
         elif a.action == "vote":
             feature_vote(a, fs, by_id)
-        elif a.action in ("show", "review", "confirm"):
-            {"show": feature_show, "review": feature_review, "confirm": feature_confirm}[a.action](a, fs, by_id)
+        elif a.action in ("show", "review", "confirm", "answer"):
+            {"show": feature_show, "review": feature_review, "confirm": feature_confirm, "answer": feature_answer}[a.action](a, fs, by_id)
         else:
             feature_list(a, fs, by_id)
 
@@ -1436,12 +1489,35 @@ IMPL_TERM = re.compile(r"\b[\w/-]+\.(?:rs|py|js|jsx|ts|tsx|go|java|kt|c|h|cc|cpp
                        r"|\b\w+::\w+|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|\b[a-z][a-z0-9]*[A-Z]\w*\(\)")
 
 
+# A name with `_` can be a name that a user or a test sees: a field of a request, a header, a column, an option.
+# The criterion then says which it is, with one of these words next to the name, or with a route or a value.
+INTERFACE_WORD = (r"(?:field|fields|parameter|param|header|option|flag|key|column|property|attribute|argument|cookie|variable|"
+                  r"setting|campo|campos|par[aâ]metro|cabe[cç]alho|op[cç][aã]o|chave|coluna|propriedade|atributo|argumento|vari[aá]vel)")
+ROUTE = r"(?:(?:GET|POST|PUT|PATCH|DELETE)\s+)?/[\w.-]+(?:/[\w.{}:-]+)+"
+
+
+def interface_name(criterion: str, start: int, end: int) -> bool:
+    """True when the text next to a name with `_` says that it is a part of the interface, not of the code."""
+    before, after = criterion[max(0, start - 40):start], criterion[end:end + 60]
+    if re.search(INTERFACE_WORD + r"\W{1,3}(?:\w+\W{1,3}){0,1}$", before, re.I) or re.match(r"\W{0,3}" + INTERFACE_WORD + r"\b", after, re.I):
+        return True
+    if re.match(r"[\"'`]?\s*[=:]", after):  # a value: `page_size=50`, `"page_size": 50`
+        return True
+    return bool(re.match(r"[\"'`]?\s+(?:of|in|to|on|de|do|da|em|no|na|para)\s+[\"'`]?" + ROUTE, after))
+
+
 def impl_terms(criterion: str) -> List[str]:
-    """Names of code in a criterion (files, functions, identifiers). A criterion says what a user or a test can observe."""
+    """Names of code in a criterion (files, functions, identifiers). A criterion says what a user or a test can observe.
+    A name of a file, `a::b` and `name()` are names of code. A name with `_` is not one when the criterion says that it
+    is a field, a header, an option or the like, or gives it a value or a route (seen in real use: `custom_url` of a
+    request)."""
     seen: List[str] = []
     for m in IMPL_TERM.finditer(criterion):
-        if m.group(0) not in seen:
-            seen.append(m.group(0))
+        term = m.group(0)
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", term) and interface_name(criterion, m.start(), m.end()):
+            continue
+        if term not in seen:
+            seen.append(term)
     return seen
 
 
@@ -2277,24 +2353,41 @@ def mutants_state() -> str:
 
 
 SHARED_BUILD_VARS = ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR")
+# Options of build tools that take the directory of the compiled files: cmake -B / --build, ctest --test-dir,
+# meson -C, cargo --target-dir, swift --build-path, bazel --output_base, dotnet --artifacts-path
+BUILD_DIR_OPTION = re.compile(r"(?:^|\s)(-B|-C|--build|--test-dir|--build-dir|--build-path|--target-dir|--output_base|--artifacts-path)"
+                              r"(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)")
 
 
-def shared_build_dir() -> str:
-    """The name of a variable that puts the compiled files outside the repository, or "". With it, the run on the
-    base and the run on the current code use the same compiled files, and the second run can use what the first
-    compiled. Seen with cargo on a real project: the outputs of the two runs were not the same text (ports, times),
-    so a comparison of the outputs did not find it."""
+def outside_repo(value: str, top: str) -> bool:
+    """True for an absolute directory that is not in the repository. A relative directory, or one in the repository,
+    is not in the worktree of the base: each run then has its own."""
+    try:
+        p = Path(value.strip("\"'"))
+        return p.is_absolute() and not (bool(top) and p.resolve().is_relative_to(Path(top).resolve()))
+    except (OSError, ValueError):
+        return False
+
+
+def shared_build_dir(cmd: str = "") -> str:
+    """What makes the run on the base and the run on the current code use the same compiled files, or "": the
+    second run can then use what the first compiled. Seen with cargo on a real project: the outputs of the two runs
+    were not the same text (ports, times), so a comparison of the outputs did not find it. Three places are read:
+    a variable (cargo, and the names in `"shared_build_env"` of config.json), `.cargo/config.toml`, and an option of
+    the command with an absolute directory. Only the cargo variable was seen with the real tool."""
     top = git("rev-parse", "--show-toplevel")
-    for name in SHARED_BUILD_VARS:
-        value = os.environ.get(name)
-        if not value:
-            continue
-        try:
-            inside = bool(top) and Path(value).resolve().is_relative_to(Path(top).resolve())
-        except (OSError, ValueError):
-            inside = False
-        if not inside:  # a directory inside the repository is not in the worktree of the base: each run has its own
+    extra = [str(n) for n in (load_config().get("shared_build_env") or []) if isinstance(n, str)]
+    for name in list(SHARED_BUILD_VARS) + extra:
+        if os.environ.get(name) and outside_repo(os.environ[name], top):
             return name
+    with contextlib.suppress(OSError):  # cargo reads the directory from this file also
+        for cfg in (".cargo/config.toml", ".cargo/config"):
+            m = re.search(r'(?m)^\s*target-dir\s*=\s*["\']([^"\']+)["\']', Path(cfg).read_text(encoding="utf-8")) if Path(cfg).is_file() else None
+            if m and outside_repo(m.group(1), top):
+                return f"target-dir in {cfg}"
+    for m in BUILD_DIR_OPTION.finditer(cmd or ""):
+        if outside_repo(m.group(2), top):
+            return f"the option {m.group(1)} of the command"
     return ""
 
 
@@ -2317,11 +2410,13 @@ def repro_result(a: argparse.Namespace, sha: str, rel: Path, before, before_out:
         result, why = "wrong-failure", f"the test fails on the base, but its output does not contain {a.expect!r}"
     elif after != 0:
         result, why = "still-failing", "the test still fails on the current code"
-        shared = "" if _BASE_OPTS["env"] else shared_build_dir()
+        shared = "" if _BASE_OPTS["env"] else shared_build_dir(a.test)
         if shared:
+            fix = (f"--base-env {shared}=<another directory>" if re.fullmatch(r"\w+", shared)
+                   else "use a directory in the repository, or a command that compiles again")
             why += (f". This result is not reliable: {shared} is set to a directory outside the repository, so the two runs "
                     "used the same compiled files, and the run on the current code can have used what the base compiled. "
-                    f"Run again and give the base its own directory: --base-env {shared}=<another directory>")
+                    f"Run again and give the base its own directory: {fix}")
         elif after is not None and not _BASE_OPTS["env"] and same_failure(before_out, after_out):
             why += (". The last lines of the two outputs are the same. If the project keeps compiled files outside the "
                     "repository (for example CARGO_TARGET_DIR, or a build directory that the two checkouts use), the run on the "
@@ -2533,6 +2628,16 @@ def evidence_checks(ref: str, lines: List[str], gaps: List[str]) -> None:
                     gaps.append("the mutation check did not pass for this code: the tests can accept a wrong version of the change")
 
 
+def evidence_questions(feats: List[dict], lines: List[str], gaps: List[str]) -> None:
+    """The questions about the requirement that no person answered: the change can be correct only by chance there."""
+    asked = [(f["id"], len(open_questions(f))) for f in feats if open_questions(f)]
+    if not asked:
+        return
+    lines.append("- Requirement: " + ", ".join(f"{n} question(s) of {fid} without an answer" for fid, n in asked[:8]))
+    gaps.append("the requirement does not decide a part of the behaviour, and no person answered ("
+                + ", ".join(f"`memory.py feature review --id {fid}`" for fid, _ in asked[:4]) + ")")
+
+
 def evidence_grades(ref: str, feats: List[dict], lines: List[str], gaps: List[str]) -> None:
     """Which features are graded as passing, by whom, and what weakens a grade."""
     req_runs = required_evaluator_runs(ref=ref)
@@ -2548,6 +2653,7 @@ def evidence_grades(ref: str, feats: List[dict], lines: List[str], gaps: List[st
             graded_labels.append(f"{f['id']} by {ver}")
     lines.append(f"- Acceptance criteria: {len(graded)} of {len(feats)} features graded as passing"
                  + (" (" + ", ".join(graded_labels) + ")" if graded_labels else ""))
+    evidence_questions(feats, lines, gaps)
     open_ids = [f["id"] for f in feats if not f.get("passes")]
     if open_ids:
         gaps.append("features not graded as passing: " + ", ".join(open_ids[:8]))
@@ -3533,8 +3639,12 @@ def main() -> None:
     s.add_argument("--keep", type=int, default=20)
     s.set_defaults(fn=cmd_compact)
 
-    s = sub.add_parser("feature", help="features: add | pass | fail | vote | show | list | review | confirm")
-    s.add_argument("action", choices=["add", "pass", "fail", "vote", "show", "list", "review", "confirm"])
+    s = sub.add_parser("feature", help="features: add | pass | fail | vote | show | list | review | confirm | answer")
+    s.add_argument("action", choices=["add", "pass", "fail", "vote", "show", "list", "review", "confirm", "answer"])
+    s.add_argument("--question", action="append", default=[],
+                   help="add: something that the requirement does not decide and that changes the result (repeatable). "
+                        "A person answers it with `feature answer`")
+    s.add_argument("--n", type=int, help="answer: the number of the question, as `feature review` shows it")
     s.add_argument("--assumption", action="append", default=[],
                    help="add: something that the tests take as true and the requirement does not say (repeatable). "
                         "`feature review` shows these first to the person who confirms the tests")
