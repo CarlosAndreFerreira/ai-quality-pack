@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 — 2026-11-18
+
+The repository is public. This release has no change of a command, a default or a check: it is about the repository and the license notice.
+
+Checked: 164 tests in CI on Linux, macOS and Windows (Python 3.9 and 3.13), each with and without `PYTHONDONTWRITEBYTECODE`: the first CI run since 12 November, and the first one on macOS. Not measured: anything new.
 
 - **CI runs again on each push to `main` and each pull request**, also from a fork (read access, no secret), on Linux, macOS and Windows with Python 3.9 and 3.13. It also runs the tests with `PYTHONDONTWRITEBYTECODE=1`. A new push stops the run that it replaces.
 - **The files that the installer copies into a repository start with an SPDX MIT line and the copyright line** (the 3 hook scripts, the OpenCode plugin, the 2 CI workflows, `AGENTS.md`, the global Antigravity rules and the 4 subagents), so a copy keeps the notice that the MIT License asks for. The LICENSE names the full name of the author. The repository is public.
