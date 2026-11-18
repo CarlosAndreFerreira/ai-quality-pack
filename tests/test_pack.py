@@ -863,21 +863,29 @@ class EvolutionTests(unittest.TestCase):
             m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
             gate = root / ".agent-memory/gate.json"
             gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"']}), encoding="utf-8")
-            tid = m("task", "open", "--title", "fix add", "--scope", "calc.py").stdout.strip()
+            tid = m("task", "open", "--title", "fix add", "--scope", "calc.py", "--scope", "test_calc.py").stdout.strip()
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            self.assertEqual(m("gate").returncode, 0)                 # the gate ran and passed: what is left is its review
             ev = m("evidence").stdout
-            # a first use: the gate file is new. The reason says so; it is not "tests or the gate file changed"
-            self.assertIn("Review risk: HIGH (the gate file is new and not committed: no person reviewed its commands", ev)
+            # a first use: the gate file is new. It is a state with a line of its own, not a risk of the change
+            self.assertIn("- Gate file: not reviewed. .agent-memory/gate.json is not committed", ev)
+            self.assertIn("- the gate file is new and not committed: no person reviewed its commands", ev.split("### Not verified")[1])
+            self.assertNotIn("- Warning: .agent-memory/gate.json", ev)
             self.assertNotIn("tests or the gate file changed", ev)
+            self.assertNotIn("Review risk: HIGH", ev)
+            self.assertIn("Review risk: MEDIUM", ev)                 # there are items under "Not verified"
+            self.assertEqual(m("evidence", "--strict").returncode, 1)   # a script still stops on it
+            self.assertIn("gate WARNING: .agent-memory/gate.json is not committed", m("gate").stdout)   # and the gate still says it
             # the gate file and the work are committed; a new task starts from there: the gate was in its base
             self.assertEqual(m("task", "status", "--id", tid, "--status", "done").returncode, 0)
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "gate and fix")
             tid = m("task", "open", "--title", "next", "--scope", "calc.py").stdout.strip()
             self.assertNotIn("the gate file is new", m("evidence").stdout)
+            self.assertNotIn("Gate file: not reviewed", m("evidence").stdout)
             gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(2)"']}), encoding="utf-8")   # an edit of the committed gate
             ev = m("evidence").stdout
-            self.assertIn("tests or the gate file changed", ev)
+            self.assertIn("Review risk: HIGH (tests or the gate file changed", ev)   # an edit of a reviewed gate is a risk
             self.assertNotIn("the gate file is new", ev)
             self._git(root, "checkout", "--", ".agent-memory/gate.json")
             # a file of an independent evaluator: outside the scope until the scope gets wider, with a reason

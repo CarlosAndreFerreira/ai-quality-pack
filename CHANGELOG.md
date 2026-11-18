@@ -4,7 +4,7 @@
 
 Two changes from the fourth use on a real project.
 
-- **The risk line names a new gate file.** In a first use the gate file is new and not committed, and the risk is HIGH. The reason was "tests or the gate file changed", which is not the case. The reason is now "the gate file is new and not committed: no person reviewed its commands". The level does not change: it is HIGH until a person commits the gate file.
+- **A new gate file is a state, not a risk of the change.** In a first use the gate file is new and not committed. The evidence block gave HIGH risk each time, with the reason "tests or the gate file changed", which was not the case; an alarm that is always on is not read. Now the block has a line "Gate file: not reviewed" and an item under "Not verified", and the risk line is about the change only. `evidence --strict` and the gate warning do not change. `memory.py verdict` adds a note to a `SUPPORTED`; its result does not change. An edit of a gate file that is committed is HIGH risk, as before.
 - **`task scope --id T --scope GLOB --note "<why>"`** adds a glob to the scope of an open task, with a reason. The files that an independent evaluator wrote were reported as changes outside the scope. The scope of `task open` is not rewritten: the evidence block has a line for each glob that came later, with its reason, and the run log has the change.
 - 1 test.
 - **A fourth use, on a Python project**, is in [docs/RESULTS.md](docs/RESULTS.md): the first use that is not on Rust, with the first `regression` counterexample in a real use. It names 3 points to change in the pack; none is changed.

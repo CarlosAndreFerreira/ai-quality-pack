@@ -2284,8 +2284,8 @@ def records_verdict() -> dict:
         # two different cases, with different next steps: nothing was run for this code, or a command ran and
         # its record does not count. The first is work that is not done; the second is evidence that is weak
         return {"verdict": "UNKNOWN", "why": why, "records": records, **unknown_fields(missing, gate, repro, counts, mut, cx)}
-    return {"verdict": "SUPPORTED", "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes),
-            "records": records}
+    return {"verdict": "SUPPORTED", "records": records,
+            "why": "; ".join(["the gate passed and a reproduction is verified for this code. This is support, not proof"] + notes + gate_review_note())}
 
 
 def cmd_verdict(a: argparse.Namespace) -> None:
@@ -2594,11 +2594,8 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
     files, lines, paths = change_size(ref)
     high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
     high += [f"risk rule `{m['name']}`: {m['why']}" for m in (risk_matches(ref)[0] if rules is None else rules) if not m["waived"]]
-    new_gate = [w for w in warnings if NEW_GATE_NOTE in w]
-    if len(warnings) > len(new_gate):
+    if any(NEW_GATE_NOTE not in w for w in warnings):  # a new gate file is not a change of the gate: see evidence_gate_review
         high.append("tests or the gate file changed (see the warnings)")
-    if new_gate:  # the level stays: no person reviewed these commands. The reason says which case it is
-        high.append("the gate file is new and not committed: no person reviewed its commands")
     if any("gate did not pass" in g for g in gaps):
         high.append("the gate did not pass")
     if any("a recorded check fails on this code" in g for g in gaps):
@@ -2762,6 +2759,28 @@ def evidence_coverage(ref: str, feats: List[dict], lines: List[str], gaps: List[
                         + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
 
 
+GATE_NOT_REVIEWED = "the gate file is new and not committed: no person reviewed its commands"
+
+
+def evidence_gate_review(warnings: List[str], lines: List[str], gaps: List[str]) -> None:
+    """A gate file that is not committed is a state of the project, not a risk of this change: it is so in each
+    first use, and an alarm that is always on is not read. It has a line of its own and an item under "Not verified";
+    the risk line is about the change. The warning stays in the list that `--strict` and `pr` read."""
+    if not any(NEW_GATE_NOTE in w for w in warnings):
+        return
+    lines.append(f"- Gate file: not reviewed. {GATE.as_posix()} is not committed, so no person reviewed the commands of the gate. "
+                 "A person reviews and commits it")
+    gaps.append(GATE_NOT_REVIEWED)
+
+
+def gate_review_note() -> List[str]:
+    """For the verdict: the same state, as a note. The result of the verdict does not change."""
+    with contextlib.suppress(Exception):
+        if GATE.exists() and NEW_GATE_NOTE in (gate_config(resolve_gate_ref(None)[0])[1] or ""):
+            return [GATE_NOT_REVIEWED]
+    return []
+
+
 def evidence_wider_scope() -> List[str]:
     """One line for each glob that was added to the scope of an open task after `task open`, with its reason."""
     tasks = load_tasks() if TASKS.exists() else {}
@@ -2794,7 +2813,8 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     if GATE.exists():
         note = gate_config(ref)[1]
         warnings = ([note] if note else []) + warnings
-    for w in warnings[:10]:
+    evidence_gate_review(warnings, lines, gaps)
+    for w in [w for w in warnings if NEW_GATE_NOTE not in w][:10]:
         lines.append(f"- Warning: {clean(w, 200)}")
     oos = out_of_scope_files(ref)
     if oos:
