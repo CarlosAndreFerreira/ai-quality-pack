@@ -270,5 +270,8 @@ These parts are installed and have tests. None was used on a real project, and n
 
 Evaluated projects and why each was or was not adopted: [docs/extensions.md](docs/extensions.md).
 
+## Contributing
+Bug reports, results from your own use, measurements and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it has the checks to run and the rules for a change. Report a security problem in private, as [SECURITY.md](SECURITY.md) says.
+
 ## License
 MIT. Upstream skills keep their own licenses (copied into each folder with a `.upstream` provenance file).

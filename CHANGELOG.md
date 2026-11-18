@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **CONTRIBUTING.md**: how to report a bug, a real use or a measurement; the checks to run before a pull request; the rules for a change (no new dependency, `memory.py` stays one file, no claim in the results without data, do not weaken a check); and what a new adapter for another agent must do. The README links to it.
+- The history of the repository was rewritten: the author address of each commit and tag is now the GitHub noreply address. No file changed. Clones made before 2026-11-18 must be made again.
+
 ## 0.10.0 — 2026-11-18
 
 Two skills have new names, and two changes come from the fourth use on a real project. The number is 0.10.0 because a name changed: a prompt or a file that names `code-review` or `security-review` of the pack must use the new name. No command changed, and no default of the gate changed.
