@@ -857,6 +857,47 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("new file(s) that git does not track yet (test_calc.py)", text)
             self.assertNotIn("check(s) without a record", text)
 
+    def test_risk_names_a_new_gate_file_and_a_task_scope_can_get_wider_with_a_record(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)                                    # calc.add is `a - b` on the base
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+            gate = root / ".agent-memory/gate.json"
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(1)"']}), encoding="utf-8")
+            tid = m("task", "open", "--title", "fix add", "--scope", "calc.py").stdout.strip()
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            ev = m("evidence").stdout
+            # a first use: the gate file is new. The reason says so; it is not "tests or the gate file changed"
+            self.assertIn("Review risk: HIGH (the gate file is new and not committed: no person reviewed its commands", ev)
+            self.assertNotIn("tests or the gate file changed", ev)
+            # the gate file and the work are committed; a new task starts from there: the gate was in its base
+            self.assertEqual(m("task", "status", "--id", tid, "--status", "done").returncode, 0)
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "gate and fix")
+            tid = m("task", "open", "--title", "next", "--scope", "calc.py").stdout.strip()
+            self.assertNotIn("the gate file is new", m("evidence").stdout)
+            gate.write_text(json.dumps({"commands": [f'"{self.py}" -c "print(2)"']}), encoding="utf-8")   # an edit of the committed gate
+            ev = m("evidence").stdout
+            self.assertIn("tests or the gate file changed", ev)
+            self.assertNotIn("the gate file is new", ev)
+            self._git(root, "checkout", "--", ".agent-memory/gate.json")
+            # a file of an independent evaluator: outside the scope until the scope gets wider, with a reason
+            (root / "probe_evaluator.py").write_text("import calc\nassert calc.add(1, 1) == 2\n", encoding="utf-8")
+            self.assertIn("Out of scope: 1 file(s) (probe_evaluator.py)", m("evidence").stdout)
+            r = m("task", "scope", "--id", tid, "--scope", "probe_*.py")
+            self.assertEqual(r.returncode, 2)                         # no reason: no wider scope
+            self.assertIn("--note", r.stderr)
+            self.assertEqual(m("task", "scope", "--id", tid, "--scope", "calc.py", "--note", "x").returncode, 2)   # nothing new
+            r = m("task", "scope", "--id", tid, "--scope", "probe_*.py", "--note", "checks of the independent evaluator")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            ev = m("evidence").stdout
+            self.assertNotIn("Out of scope", ev)
+            self.assertIn(f"- Scope: `probe_*.py` was added to {tid} after the task was opened: checks of the independent evaluator", ev)
+            shown = json.loads(m("task", "show", "--id", tid).stdout)
+            self.assertEqual((shown["scope"], shown["scope_added"][0]["glob"]), (["calc.py", "probe_*.py"], "probe_*.py"))
+            self.assertEqual(self._events(root, "task")[-1]["scope_added"], ["probe_*.py"])
+            self.assertEqual(m("task", "status", "--id", tid, "--status", "done").returncode, 0)
+            self.assertNotIn("- Scope:", m("evidence").stdout)       # a closed task is not a part of this change
+
     def test_gate_names_an_old_open_task_that_sets_the_comparison(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)

@@ -568,6 +568,8 @@ def load_tasks() -> Dict[str, dict]:
             t.update({k: e[k] for k in ("title", "source", "feature", "base") if e.get(k)})
         if e.get("scope"):
             t["scope"] = list(e["scope"])
+        if e.get("scope_added"):  # globs that were added after the task was opened, with the reason
+            t.setdefault("scope_added", []).extend({"glob": g, "why": e.get("note") or "", "ts": e.get("ts")} for g in e["scope_added"])
         if e.get("status"):
             t["status"] = e["status"]
         if e.get("note"):
@@ -1307,6 +1309,19 @@ def task_status(a: argparse.Namespace, t: dict) -> None:
     print(f"{a.id} -> {a.status}")
 
 
+def task_scope(a: argparse.Namespace, t: dict) -> None:
+    """Add globs to the scope of a task that is open, with a reason. Seen in real use: the files of an independent
+    evaluator were reported as changes outside the scope. The scope of `task open` is not rewritten: the evidence
+    block shows each glob that came later, and why, so a wider scope is a thing that a reviewer sees."""
+    add = [s.strip() for s in (a.scope or []) if s.strip() and s.strip() not in (t.get("scope") or [])]
+    if not add or not (a.note or "").strip():
+        die('task scope needs --id, one or more new --scope GLOB, and --note "<why these files are a part of the task>"')
+    guard_secrets(a.note, *add)
+    task_event(ev="scope", id=t["id"], scope=list(t.get("scope") or []) + add, scope_added=add, note=clean(a.note, 300))
+    log_event("task", action="scope", id=t["id"], scope_added=add)
+    print(f"{t['id']}: the scope has {len(add)} more glob(s): {', '.join(add)}")
+
+
 def task_note(a: argparse.Namespace, t: dict) -> None:
     if not a.note:
         die("task note needs --note")
@@ -1355,6 +1370,8 @@ def cmd_task(a: argparse.Namespace) -> None:
         t = tasks[a.id]
         if a.action == "status":
             task_status(a, t)
+        elif a.action == "scope":
+            task_scope(a, t)
         elif a.action == "note":
             task_note(a, t)
         elif a.action == "link":  # chain of recall: lesson:key, commit:sha, pr:url, feature:F-001, task:T-0002
@@ -1559,6 +1576,9 @@ def feature_coverage(ref: str, feats: List[dict]) -> Optional[dict]:
             "pending": pending, "pending_features": sorted(waiting)}
 
 
+NEW_GATE_NOTE = "is not committed: the commands of the gate were not reviewed"
+
+
 def gate_config(ref: str) -> tuple:
     """(config, warning). The agent can write gate.json, so an edit that is not committed does not count:
     the gate runs the version of `ref`. A gate.json that git does not track at `ref` is used as it is."""
@@ -1571,8 +1591,7 @@ def gate_config(ref: str) -> tuple:
     if r.returncode != 0:  # git does not have the file at `ref`: no person reviewed these commands in a commit
         note = ""
         if git("rev-parse", "--is-inside-work-tree").strip() == "true":
-            note = (f"{GATE.as_posix()} is not committed: the commands of the gate were not reviewed. "
-                    "A person reviews and commits the gate file")
+            note = f"{GATE.as_posix()} {NEW_GATE_NOTE}. A person reviews and commits the gate file"
         return json.loads(text), note
     if r.stdout.replace("\r\n", "\n").strip() == text.replace("\r\n", "\n").strip():
         return json.loads(text), ""
@@ -2575,8 +2594,11 @@ def change_risk(ref: str, gaps: List[str], warnings: List[str], out_of_scope: Op
     files, lines, paths = change_size(ref)
     high = [why for rx, why in RISK_PATHS if any(rx.search(p) for p in paths)]
     high += [f"risk rule `{m['name']}`: {m['why']}" for m in (risk_matches(ref)[0] if rules is None else rules) if not m["waived"]]
-    if warnings:
+    new_gate = [w for w in warnings if NEW_GATE_NOTE in w]
+    if len(warnings) > len(new_gate):
         high.append("tests or the gate file changed (see the warnings)")
+    if new_gate:  # the level stays: no person reviewed these commands. The reason says which case it is
+        high.append("the gate file is new and not committed: no person reviewed its commands")
     if any("gate did not pass" in g for g in gaps):
         high.append("the gate did not pass")
     if any("a recorded check fails on this code" in g for g in gaps):
@@ -2740,6 +2762,18 @@ def evidence_coverage(ref: str, feats: List[dict], lines: List[str], gaps: List[
                         + ", ".join(clean(p, 80) for p in out[:10]) + (" ..." if len(out) > 10 else ""))
 
 
+def evidence_wider_scope() -> List[str]:
+    """One line for each glob that was added to the scope of an open task after `task open`, with its reason."""
+    tasks = load_tasks() if TASKS.exists() else {}
+    out = []
+    for t in tasks.values():
+        if t.get("status") in ("done", "dropped"):
+            continue
+        for x in (t.get("scope_added") or [])[:6]:
+            out.append(f"- Scope: `{clean(x['glob'], 80)}` was added to {t['id']} after the task was opened: {clean(x['why'], 200)}")
+    return out
+
+
 def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Optional[List[str]] = None) -> tuple:
     """(Markdown text, gaps, warnings, risk label) for exactly this code.
 
@@ -2765,6 +2799,7 @@ def evidence_report(ref: str, cost: Optional[float] = None, extra_warnings: Opti
     oos = out_of_scope_files(ref)
     if oos:
         lines.append(f"- Out of scope: {len(oos)} file(s) ({', '.join(clean(p, 80) for p in oos[:10])})")
+    lines += evidence_wider_scope()
     stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}")
     new = [f for f in untracked_files() if not f.replace("\\", "/").startswith(ROOT.as_posix().rstrip("/") + "/")]
     lines.append(f"- Change against {ref}: {stat.strip() or 'no tracked changes'}"
@@ -3716,8 +3751,8 @@ def main() -> None:
     s.add_argument("--force", action="store_true", help="add even if a similar lesson exists")
     s.set_defaults(fn=cmd_lesson)
 
-    s = sub.add_parser("task", help="work items: open | status | note | link | show | list | worktree")
-    s.add_argument("action", choices=["open", "status", "note", "link", "show", "list", "worktree"])
+    s = sub.add_parser("task", help="work items: open | status | scope | note | link | show | list | worktree")
+    s.add_argument("action", choices=["open", "status", "scope", "note", "link", "show", "list", "worktree"])
     s.add_argument("--id")
     s.add_argument("--title")
     s.add_argument("--source", help="where the request came from (issue #12, user chat, CI run…)")

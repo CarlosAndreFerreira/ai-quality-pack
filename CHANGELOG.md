@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Two changes from the fourth use on a real project.
+
+- **The risk line names a new gate file.** In a first use the gate file is new and not committed, and the risk is HIGH. The reason was "tests or the gate file changed", which is not the case. The reason is now "the gate file is new and not committed: no person reviewed its commands". The level does not change: it is HIGH until a person commits the gate file.
+- **`task scope --id T --scope GLOB --note "<why>"`** adds a glob to the scope of an open task, with a reason. The files that an independent evaluator wrote were reported as changes outside the scope. The scope of `task open` is not rewritten: the evidence block has a line for each glob that came later, with its reason, and the run log has the change.
+- 1 test.
 - **A fourth use, on a Python project**, is in [docs/RESULTS.md](docs/RESULTS.md): the first use that is not on Rust, with the first `regression` counterexample in a real use. It names 3 points to change in the pack; none is changed.
 
 ## 0.9.4 — 2026-11-18

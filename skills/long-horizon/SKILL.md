@@ -27,7 +27,7 @@ Script: `python3 .agents/skills/long-horizon/scripts/memory.py` — run `<comman
 5. Run the test suite. Red with no explanation in the digest → fix that first.
 
 ## 2. Pick and contract ONE unit of work
-1. `memory.py task open --title "..." --source "user chat|issue #12" [--feature F-003] [--scope "src/billing/**"]` → prints `T-000N`. When `--scope` is set, the gate warns on changes outside the allowed globs.
+1. `memory.py task open --title "..." --source "user chat|issue #12" [--feature F-003] [--scope "src/billing/**"]` → prints `T-000N`. When `--scope` is set, the gate warns on changes outside the allowed globs. If files of another author are a part of the task (for example the checks that the `evaluator` subagent wrote), add them with a reason: `memory.py task scope --id T-000N --scope "tests/probe_*.py" --note "checks of the evaluator"`. The evidence shows each glob that came after `task open`, with its reason. Do not make the scope wider to hide a change that the task did not ask for.
 2. If it is a feature, it must have acceptance criteria agreed **before** coding (the "sprint contract"):
    `memory.py feature add --id F-003 --desc "..." --criterion "POST /refresh returns 401 for reused token" --criterion "..." --test-file tests/test_refresh.py`
    Record the tests of the criteria now, with `--test-file`, before the work. Only a reproduction with a recorded test that did not change supports the result (`memory.py verdict`).
