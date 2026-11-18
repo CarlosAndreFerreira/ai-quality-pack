@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT. Copyright (c) 2026 Carlos André Ferreira. Part of the AI Quality Pack (https://github.com/CarlosAndreFerreira/ai-quality-pack), MIT License: keep this notice in copies. -->
 # AI Quality Pack — Global Engineering & Quality Rules
 
 ## Definition of Done

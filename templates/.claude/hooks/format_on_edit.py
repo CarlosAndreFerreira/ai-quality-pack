@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Carlos André Ferreira. Part of the AI Quality Pack (https://github.com/CarlosAndreFerreira/ai-quality-pack), MIT License: keep this notice in copies.
 """Claude Code PostToolUse hook: format the edited file with the project's formatter, if installed.
 
 Never blocks the agent: always exits 0. Stdlib only, cross-platform.

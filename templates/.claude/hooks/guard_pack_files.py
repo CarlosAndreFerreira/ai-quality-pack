@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Carlos André Ferreira. Part of the AI Quality Pack (https://github.com/CarlosAndreFerreira/ai-quality-pack), MIT License: keep this notice in copies.
 """Claude Code PreToolUse hook (opt-in): the agent may not change the files that check its work.
 
 Protected: `.claude/`, `.agents/`, `.codex/`, `.opencode/`, `.github/workflows/`, `.github/CODEOWNERS`, `.agent-memory/gate.json`,

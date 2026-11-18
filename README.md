@@ -65,7 +65,6 @@ claude plugin install ai-quality-pack@ai-quality-pack
 - Run `aqp-memory init` in a repository to start the memory. Add `.agent-memory/gate.json` with `{"commands": [...]}` to turn on the completion gate. Without this file, or with no commands in it, the gate fails and the Stop hook blocks one time: a gate that checks nothing is not a pass.
 - `aqp-memory` is `memory.py`. Use it where the instructions name `python3 .agents/skills/long-horizon/scripts/memory.py`.
 - The plugin does not add `AGENTS.md`, `CLAUDE.md`, the CI workflow or the language profiles. Use `install.py` for these. In a project that has the `install.py` hooks, the plugin's hooks do nothing.
-- This repository is private: `git` must have a stored credential for it (`gh auth login`, then `gh auth setup-git`).
 - Checked: `claude plugin validate --strict` passes. In two agent sessions on Linux, the three hooks ran, and the agent and the `evaluator` subagent used `aqp-memory`.
 - Limits: the hook launcher is a shell script, and it has not been run on Windows. Use `install.py` there.
 - `claude plugin uninstall ai-quality-pack` removes it.
@@ -274,4 +273,4 @@ Evaluated projects and why each was or was not adopted: [docs/extensions.md](doc
 Bug reports, results from your own use, measurements and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it has the checks to run and the rules for a change. Report a security problem in private, as [SECURITY.md](SECURITY.md) says.
 
 ## License
-MIT. Upstream skills keep their own licenses (copied into each folder with a `.upstream` provenance file).
+MIT, copyright Carlos André Ferreira. The files that the installer copies into your repository (hooks, subagents, CI workflows, `AGENTS.md`) start with the copyright line and the MIT reference: keep it in your copies, as the license asks. Upstream skills keep their own licenses (copied into each folder with a `.upstream` provenance file).

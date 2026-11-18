@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **The files that the installer copies into a repository start with an SPDX MIT line and the copyright line** (the 3 hook scripts, the OpenCode plugin, the 2 CI workflows, `AGENTS.md`, the global Antigravity rules and the 4 subagents), so a copy keeps the notice that the MIT License asks for. The LICENSE names the full name of the author. The repository is public.
 - **CONTRIBUTING.md**: how to report a bug, a real use or a measurement; the checks to run before a pull request; the rules for a change (no new dependency, `memory.py` stays one file, no claim in the results without data, do not weaken a check); and what a new adapter for another agent must do. The README links to it.
 - The history of the repository was rewritten: the author address of each commit and tag is now the GitHub noreply address. No file changed. Clones made before 2026-11-18 must be made again.
 

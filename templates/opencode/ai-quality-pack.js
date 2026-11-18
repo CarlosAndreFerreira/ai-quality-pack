@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Carlos André Ferreira. Part of the AI Quality Pack (https://github.com/CarlosAndreFerreira/ai-quality-pack), MIT License: keep this notice in copies.
 // AI Quality Pack: server plugin for OpenCode 2 (.opencode/plugins/ai-quality-pack.js).
 //
 // It connects OpenCode to the same scripts that the Claude Code hooks run:

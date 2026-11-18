@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Carlos André Ferreira. Part of the AI Quality Pack (https://github.com/CarlosAndreFerreira/ai-quality-pack), MIT License: keep this notice in copies.
 """Claude Code Stop hook (opt-in): the completion gate must pass before the agent may finish.
 
 - Runs `memory.py gate` (commands from .agent-memory/gate.json).
