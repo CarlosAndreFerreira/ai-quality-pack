@@ -217,7 +217,7 @@ The scripts need Python 3.9 or newer. If the project's `python` is older (3.6 to
 
 ### Checks before a push
 
-CI runs these commands on Linux, macOS and Windows (Python 3.9 and 3.13) for each push to `main` and each pull request. Run them before a push also:
+CI runs these commands on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14) for each push to `main` and each pull request. Run them before a push also:
 
 ```bash
 python -m unittest discover -s tests

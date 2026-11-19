@@ -34,7 +34,7 @@ python skills/ste-writing/scripts/ste_lint.py README.md --lang en --threshold 60
 
 If you have Claude Code, also run `claude plugin validate . --strict`.
 
-All four commands must pass. Say in the pull request which OS and Python version you used. CI runs Linux, macOS and Windows with Python 3.9 and 3.13.
+All four commands must pass. Say in the pull request which OS and Python version you used. CI runs Linux, macOS and Windows with Python 3.9, 3.13 and 3.14.
 
 ## Rules for changes
 

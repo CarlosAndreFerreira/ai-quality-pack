@@ -968,10 +968,11 @@ def main() -> None:
         for doc in ("README.md", "LICENSE"):  # pack-owned, like plugin.json: --upgrade replaces an older copy
             if not (PACK / doc).exists():
                 continue
-            if a.upgrade and (agy_plugin / doc).exists() and not DRY:
+            if a.upgrade and (agy_plugin / doc).exists():
                 if (agy_plugin / doc).read_bytes() != (PACK / doc).read_bytes():
-                    shutil.copy2(PACK / doc, agy_plugin / doc)
-                    log(f"upgrade: {agy_plugin / doc}")
+                    log(f"upgrade: {agy_plugin / doc}")  # also with --dry-run, which changes nothing
+                    if not DRY:
+                        shutil.copy2(PACK / doc, agy_plugin / doc)
             else:
                 add_if_absent(PACK / doc, agy_plugin / doc)
         for d in (home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):

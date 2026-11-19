@@ -239,4 +239,4 @@ python3 .agents/skills/long-horizon/scripts/memory.py gated-run \
 - Atomic writes plus a cross-process lock (tested with 16 concurrent writers).
 - Append-only logs with `merge=union`. Duplicates and conflict markers are folded on read, and task-id collisions after a merge are flagged.
 - The memory digest is sanitised and wrapped as data (`<project-memory>`). Obvious secrets are refused at write time.
-- `unittest` suite (installer, memory, gate, evals, concurrency). CI on Linux, macOS and Windows (Python 3.9 and 3.13).
+- `unittest` suite (installer, memory, gate, evals, concurrency). CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).

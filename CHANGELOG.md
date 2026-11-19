@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **CI also runs Python 3.14**, on Linux, macOS and Windows.
+- **Fix: `install.py global --upgrade --dry-run` names the README and the LICENSE that an upgrade replaces.** It said "skip (exists)". The test of the upgrade has one more check.
+- Checked, with no change of the pack: an install of the plugin from the public address loads version 0.10.2 with the 3 skills of the core and the 3 hooks; an install that version 0.6.0 made gets the two new skill names with `--upgrade`, with a backup of the old folders; a `code-review` skill that the pack did not write stays, also after `uninstall`. `claude plugin details` shows 0 agents for the plugin, and `claude plugin validate` lists the 3 agents: not checked in an agent session after a marketplace install.
+
 ## 0.10.2 — 2026-11-19
 
 Two corrections for the Antigravity plugin. No command changed, and no default changed.

@@ -4087,6 +4087,9 @@ class CoreEverywhereTests(unittest.TestCase):
                 (plugin / doc).write_text("an older copy\n", encoding="utf-8")
             run([INST, "global"], home, env=env)
             self.assertEqual((plugin / "LICENSE").read_text(encoding="utf-8"), "an older copy\n")  # never without --upgrade
+            dry = run([INST, "global", "--upgrade", "--dry-run"], home, env=env)   # says it, and changes nothing
+            self.assertIn("upgrade: " + str(plugin / "LICENSE"), dry.stdout)
+            self.assertEqual((plugin / "LICENSE").read_text(encoding="utf-8"), "an older copy\n")
             self.assertEqual(run([INST, "global", "--upgrade"], home, env=env).returncode, 0)
             for doc in ("README.md", "LICENSE"):
                 self.assertEqual((plugin / doc).read_bytes(), (PACK / doc).read_bytes(), doc)
