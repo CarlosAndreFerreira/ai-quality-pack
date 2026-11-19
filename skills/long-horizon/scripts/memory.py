@@ -2351,7 +2351,9 @@ def evaluator_state(feats: List[dict]) -> tuple:
 
 def cmd_evaluated(a: argparse.Namespace) -> None:
     """Did the evaluator pass a feature for exactly this code? Exit code: 0 yes, 4 no. `--if-required`: also 0 when
-    the gate file does not ask for it. `--is-required`: 0 when the gate file asks for it, 1 when not (no other check)."""
+    the gate file does not ask for it. `--is-required`: 0 when the gate file asks for it, 1 when not (no other check).
+    Also 0 when no file changed since the base of the comparison: a session that only answered a question has
+    nothing for the evaluator to grade (seen on 2026-11-19: the Stop hook blocked such a session 3 times)."""
     ensure()
     required = evaluator_required()
     if a.is_required:
@@ -2359,6 +2361,10 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
         sys.exit(0 if required else 1)
     if a.if_required and not required:
         print("evaluator: not required")
+        return
+    if not changed_repo_files(resolve_gate_ref(None)[0]):
+        log_event("evaluated", result="NOCHANGE", required=required)
+        print("evaluator: no file changed since the base of the comparison, so no verdict is necessary")
         return
     state, ids = evaluator_state(load_features())
     log_event("evaluated", result=state, id=",".join(ids) or None, required=required)

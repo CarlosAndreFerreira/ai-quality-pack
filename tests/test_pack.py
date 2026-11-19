@@ -657,6 +657,30 @@ class ObservabilityTests(unittest.TestCase):
             stops = [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
             self.assertEqual(stops, ["released-red", "released-green"])
 
+    def test_require_evaluator_does_not_ask_for_a_verdict_when_no_file_changed(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            gate = root / ".agent-memory/gate.json"
+            stop = lambda active: run([root / ".claude/hooks/gate_on_stop.py"], root,
+                                      stdin=json.dumps({"session_id": "s-1", "stop_hook_active": active}))
+            verdicts_without_records(root)
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(["git", "add", "-f", ".agent-memory/gate.json"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "all"], cwd=root, check=True)
+            # a session that changed no file (a question, a plan): the stop does not need the evaluator
+            r = run([MEM, "evaluated"], root, stdin="")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("no file changed since the base of the comparison", r.stdout)
+            r = stop(False)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual([e["result"] for e in self._events(root) if e["ev"] == "evaluated"][-1], "NOCHANGE")
+            # one changed file: the stop needs the evaluator again
+            (root / "edit.py").write_text("x = 1\n", encoding="utf-8")
+            r = stop(False)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("no verdict of the evaluator for this code", r.stderr)
+
     def test_require_evaluator_makes_the_stop_need_a_pass_of_the_evaluator_for_this_code(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
