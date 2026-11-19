@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.2 — 2026-11-19
+
+Two corrections for the Antigravity plugin. No command changed, and no default changed.
+
+Checked: 166 tests on Windows and on Linux (Python 3.9 and 3.14), each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9 and 3.13). Not tested: the plugin in a session of Antigravity.
 
 - **Fix: the Antigravity evaluator subagent can run commands.** Its frontmatter had no `tools:` line, so Antigravity gave it a read-only set without `run_command`: it could not run `memory.py`, the gates or the tests, and each check was UNKNOWN. It now has the read tools and `run_command`, and no tool that edits a file. 1 test, which fails without the fix. Not tested: a run of the subagent inside Antigravity (the test checks the file only).
 - **Fix: `install.py global --upgrade` replaces the README and the LICENSE of the Antigravity plugin.** It kept the copies of the first install, so an upgraded plugin had an old LICENSE (without the full name of the author). 1 test, which fails without the fix.
