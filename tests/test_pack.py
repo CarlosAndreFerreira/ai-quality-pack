@@ -657,6 +657,69 @@ class ObservabilityTests(unittest.TestCase):
             stops = [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
             self.assertEqual(stops, ["released-red", "released-green"])
 
+    def test_require_evaluator_makes_the_stop_need_a_pass_of_the_evaluator_for_this_code(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            hook, gate = root / ".claude/hooks/gate_on_stop.py", root / ".agent-memory/gate.json"
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            stop = lambda active: run([hook], root, stdin=json.dumps({"session_id": "s-1", "stop_hook_active": active}))
+            outcomes = lambda: [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
+            verdicts_without_records(root)
+            m("feature", "add", "--id", "F-1", "--desc", "x", "--criterion", "c1")
+            # without the option nothing changes: the gate passes and the agent stops
+            self.assertEqual(m("evaluated", "--is-required").returncode, 1)
+            self.assertEqual(m("evaluated", "--if-required").returncode, 0)
+            self.assertEqual(m("evaluated").returncode, 4)
+            self.assertEqual(stop(False).returncode, 0)
+            self.assertEqual(outcomes(), [])
+            # with the option, in the committed gate file
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
+            subprocess.run(["git", "add", "-f", ".agent-memory/gate.json"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gate"], cwd=root, check=True)
+            self.assertEqual(m("evaluated", "--is-required").returncode, 0)
+            r = stop(False)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("The completion gate passed. The stop also needs the evaluator", r.stderr)
+            self.assertIn("no verdict of the evaluator for this code", r.stderr)
+            self.assertIn("give the complete answer to the task again", r.stderr)
+            # the agent has work to do after a block: 3 blocks in one chain of stops, then a release that the log shows
+            self.assertEqual([stop(True).returncode for _ in range(3)], [2, 2, 0])
+            self.assertEqual(outcomes(), ["blocked-evaluator"] * 3 + ["released-red"])
+            self.assertFalse((root / ".agent-memory/.stop-chain").exists())
+            self.assertEqual(stop(False).returncode, 2)          # a new chain of stops blocks again
+            # an edit of the gate file that is not committed does not turn the check off
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=False)), encoding="utf-8")
+            self.assertEqual(m("evaluated", "--is-required").returncode, 0)
+            subprocess.run(["git", "checkout", "-q", "--", ".agent-memory/gate.json"], cwd=root, check=True)
+            # a grade of a person is not a verdict of the evaluator; a PASS of the evaluator for this code is
+            m("feature", "pass", "--id", "F-1", "--evidence", "read it", "--verified-by", "human")
+            self.assertEqual(m("evaluated").returncode, 4)
+            self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "ran the tests", "--verified-by", "evaluator").returncode, 0)
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("evaluator: PASS for this code (F-1)", r.stdout)
+            self.assertEqual(stop(False).returncode, 0)
+            self.assertEqual(stop(True).returncode, 0)
+            self.assertEqual(outcomes()[-1], "released-green")
+            # a change of the code after the verdict needs a new verdict
+            (root / "later_edit.py").write_text("x = 1\n", encoding="utf-8")
+            r = stop(False)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("no verdict of the evaluator for this code", r.stderr)
+            # a FAIL of the evaluator for this code: the agent corrects the code, or says that the work is not done
+            m("feature", "fail", "--id", "F-1")
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 4)
+            self.assertIn("the evaluator gave FAIL for this code (F-1)", r.stdout)
+            self.assertIn("say in your last message that the work is NOT done", r.stdout)
+            # a failed gate comes first, and counts in the same chain
+            (root / "ok.flag").unlink()
+            r = stop(False)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Completion gate failed", r.stderr)
+            self.assertEqual((root / ".agent-memory/.stop-chain").read_text(encoding="utf-8").strip(), "1")
+            self.assertIn(".stop-chain", (root / ".agent-memory/.gitignore").read_text(encoding="utf-8"))
+
     def test_init_keeps_a_gitignore_line_that_has_no_final_newline(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)

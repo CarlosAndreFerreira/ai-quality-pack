@@ -595,7 +595,7 @@ def task_event(**kw: object) -> None:
 
 
 GITIGNORE_ENTRIES = ("events.jsonl", "events.1.jsonl", ".events.lock", ".session", ".repro", ".replay-backup.json",
-                     ".counterexample", ".mutants")
+                     ".counterexample", ".mutants", ".stop-chain")
 
 
 def ensure_gitignore(create: bool = False) -> None:
@@ -999,7 +999,7 @@ def feature_grade(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict])
                     f"(has {agg['pass']} PASS, {agg['fail']} FAIL); use `feature vote`")
     streak = 0 if a.action == "pass" else f.get("fail_streak", 0) + 1
     f.update(passes=a.action == "pass", evidence=a.evidence or "", verified_by=a.verified_by or "",
-             fail_streak=streak, updated=now())
+             fail_streak=streak, updated=now(), graded_hash=cur_hash)
     save_features(fs, dict(f, ev=a.action))
     log_event("feature", id=a.id, result=a.action, verified_by=a.verified_by, fail_streak=streak,
               gate_fresh=gate_fresh())
@@ -2304,6 +2304,70 @@ def cmd_verdict(a: argparse.Namespace) -> None:
                     else "a command ran, and its record does not count")
             print(f"unknown: {v['unknown']} ({what}). Next: " + "; ".join(v["next"]))
     sys.exit({"SUPPORTED": 0, "FAIL": 1}.get(v["verdict"], 3))
+
+
+EVALUATOR_STATES = {"NONE": "no verdict of the evaluator for this code", "FAIL": "the evaluator gave FAIL for this code",
+                    "UNKNOWN": "the evaluator gave UNKNOWN for this code",
+                    "PENDING": "the runs of the evaluator for this code are not complete"}
+EVALUATOR_HELP = """The gate file asks for a verdict of the evaluator for the code that you leave ("require_evaluator": true).
+1. Record the acceptance criteria as a feature, if no feature has them: `memory.py feature add`.
+2. Start the `evaluator` subagent, in a separate context, with the requirement as the user wrote it and the feature id.
+   It records its verdict. Do not record a verdict for your own work.
+3. A change of the code after the verdict needs a new verdict.
+If the work cannot pass, do not say that it is done: say in your last message that the work is NOT done, and give the
+failures that the evaluator found."""
+
+
+def evaluator_required() -> bool:
+    """`"require_evaluator": true` in the gate file of the base ref. The gate reads the committed file, so an agent
+    cannot turn the check off in its session."""
+    if not GATE.exists():
+        return False
+    with contextlib.suppress(Exception):
+        return bool(gate_config(resolve_gate_ref(None)[0])[0].get("require_evaluator"))
+    return False
+
+
+def evaluator_state(feats: List[dict]) -> tuple:
+    """(state, feature ids): what the records say that the evaluator found for exactly this code. A grade or a vote
+    for other code does not count. One FAIL decides; a PASS needs that no feature of this code is open.
+    The pack cannot tell who wrote a record: with `verdict_evidence` (the default), a PASS also needs a reproduction
+    that a command verified."""
+    cur, states = code_state_hash(), {}
+    for f in feats:
+        vs = f.get("vote_summary") or {}
+        if vs.get("hash") == cur and vs.get("status") in ("PASS", "FAIL", "UNKNOWN", "PENDING"):
+            states[f["id"]] = vs["status"]
+        elif f.get("graded_hash") == cur and not f.get("passes"):
+            states[f["id"]] = "FAIL"
+        elif f.get("graded_hash") == cur and f.get("verified_by") == "evaluator":
+            states[f["id"]] = "PASS"
+    for state in ("FAIL", "UNKNOWN", "PENDING", "PASS"):
+        ids = sorted(i for i, s in states.items() if s == state)
+        if ids:
+            return state, ids
+    return "NONE", []
+
+
+def cmd_evaluated(a: argparse.Namespace) -> None:
+    """Did the evaluator pass a feature for exactly this code? Exit code: 0 yes, 4 no. `--if-required`: also 0 when
+    the gate file does not ask for it. `--is-required`: 0 when the gate file asks for it, 1 when not (no other check)."""
+    ensure()
+    required = evaluator_required()
+    if a.is_required:
+        print("evaluator: required" if required else "evaluator: not required")
+        sys.exit(0 if required else 1)
+    if a.if_required and not required:
+        print("evaluator: not required")
+        return
+    state, ids = evaluator_state(load_features())
+    log_event("evaluated", result=state, id=",".join(ids) or None, required=required)
+    if state == "PASS":
+        print(f"evaluator: PASS for this code ({', '.join(ids)})")
+        return
+    print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
+    print(EVALUATOR_HELP)
+    sys.exit(4)
 
 
 def verdict_evidence_problem(verdict: str) -> str:
@@ -3828,6 +3892,11 @@ def main() -> None:
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a counterexample was shown for this workspace")
     s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_counterexample)
+    s = sub.add_parser("evaluated", help="exit 0 when the evaluator passed a feature for exactly this code, 4 when not "
+                                         "(the Stop hook asks this when gate.json has \"require_evaluator\": true)")
+    s.add_argument("--if-required", action="store_true", help="exit 0 also when gate.json does not ask for the evaluator")
+    s.add_argument("--is-required", action="store_true", help="only say if gate.json asks for the evaluator: exit 0 yes, 1 no")
+    s.set_defaults(fn=cmd_evaluated)
     s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED, FAIL or UNKNOWN (no text of an agent is read)")
     s.add_argument("--id", help="the feature that the verdict is for (for the run log)")
     s.add_argument("--json", action="store_true")
