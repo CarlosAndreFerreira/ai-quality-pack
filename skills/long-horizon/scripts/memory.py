@@ -2313,7 +2313,9 @@ EVALUATOR_HELP = """The gate file asks for a verdict of the evaluator for the co
 1. Record the acceptance criteria as a feature, if no feature has them: `memory.py feature add`.
 2. Start the `evaluator` subagent, in a separate context, with the requirement as the user wrote it and the feature id.
    It records its verdict. Do not record a verdict for your own work.
-3. A change of the code after the verdict needs a new verdict.
+3. Wait for the verdict in this turn: do not stop while the evaluator runs. If the evaluator runs in the background,
+   run `memory.py evaluated --wait 100` again and again, until it prints a PASS, a FAIL or an UNKNOWN.
+4. A change of the code after the verdict needs a new verdict.
 If the work cannot pass, do not say that it is done: say in your last message that the work is NOT done, and give the
 failures that the evaluator found."""
 
@@ -2353,7 +2355,10 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
     """Did the evaluator pass a feature for exactly this code? Exit code: 0 yes, 4 no. `--if-required`: also 0 when
     the gate file does not ask for it. `--is-required`: 0 when the gate file asks for it, 1 when not (no other check).
     Also 0 when no file changed since the base of the comparison: a session that only answered a question has
-    nothing for the evaluator to grade (seen on 2026-11-19: the Stop hook blocked such a session 3 times)."""
+    nothing for the evaluator to grade (seen on 2026-11-19: the Stop hook blocked such a session 3 times).
+    `--wait SECONDS`: while no verdict is complete for this code, look again each 3 seconds, for SECONDS at most. An
+    agent whose evaluator runs in the background waits with this command (seen on 2026-11-19: in 3 of 3 sessions the
+    agent stopped before the verdict, and the Stop hook used its 3 blocks in 35 seconds)."""
     ensure()
     required = evaluator_required()
     if a.is_required:
@@ -2366,12 +2371,17 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
         log_event("evaluated", result="NOCHANGE", required=required)
         print("evaluator: no file changed since the base of the comparison, so no verdict is necessary")
         return
+    end = time.monotonic() + max(0, a.wait or 0)
     state, ids = evaluator_state(load_features())
-    log_event("evaluated", result=state, id=",".join(ids) or None, required=required)
+    while state in ("NONE", "PENDING") and time.monotonic() < end:
+        time.sleep(min(3.0, max(0.1, end - time.monotonic())))
+        state, ids = evaluator_state(load_features())
+    log_event("evaluated", result=state, id=",".join(ids) or None, required=required, waited=a.wait or None)
     if state == "PASS":
         print(f"evaluator: PASS for this code ({', '.join(ids)})")
         return
     print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
+    print(f"code: {code_state_hash()[:12]}")  # the Stop hook uses this text to know that nothing changed between two stops
     print(EVALUATOR_HELP)
     sys.exit(4)
 
@@ -3902,6 +3912,8 @@ def main() -> None:
                                          "(the Stop hook asks this when gate.json has \"require_evaluator\": true)")
     s.add_argument("--if-required", action="store_true", help="exit 0 also when gate.json does not ask for the evaluator")
     s.add_argument("--is-required", action="store_true", help="only say if gate.json asks for the evaluator: exit 0 yes, 1 no")
+    s.add_argument("--wait", type=int, default=0, metavar="SECONDS",
+                   help="wait for a complete verdict for this code, SECONDS at most (for an evaluator that runs in the background)")
     s.set_defaults(fn=cmd_evaluated)
     s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED, FAIL or UNKNOWN (no text of an agent is read)")
     s.add_argument("--id", help="the feature that the verdict is for (for the run log)")

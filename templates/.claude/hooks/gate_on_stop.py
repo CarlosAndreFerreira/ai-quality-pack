@@ -16,6 +16,12 @@
   evaluator for exactly this code (`memory.py evaluated`). The agent then has work to do after a block (start the
   evaluator, correct the code, evaluate again), so the hook can block up to MAX_CHAIN times in one chain of stops,
   and then lets the agent stop (`released-red`). Without the option, nothing changes: one block.
+  Two cases do not block (seen on 2026-11-19: the evaluator of Claude Code ran in the background, the agent stopped
+  to wait for it, and the 3 blocks were used in 35 seconds, before the verdict):
+  - the agent gives a list of its background tasks and an `evaluator` subagent runs: the stop goes on with
+    `waiting-evaluator` in the run log. The agent starts again when the subagent ends, and that stop is checked.
+  - a stop after a block for the evaluator, with the same code and the same state of the verdict: a second block
+    would say the same thing, so the agent stops (`released-red`).
 - A gate that times out counts as failed (fail closed); the hook's own timeout is sized from gate.json.
 Stdlib only; never blocks on its own errors.
 """
@@ -47,6 +53,7 @@ if sys.version_info < (3, 9):  # this block must parse and run on Python 3.6: re
              "Install one, or set AGENT_PACK_PYTHON to the path of one."
              % (os.path.basename(sys.argv[0]), sys.version_info[0], sys.version_info[1]))
 
+import hashlib
 import json
 import os
 import subprocess
@@ -62,6 +69,7 @@ NOTHING_CHECKED = ("The completion gate has no commands, so it checked nothing. 
                    "write a gate file. Say in one line that no completion gate ran.\n")
 CHAIN = Path(".agent-memory/.stop-chain")  # how many times this chain of stops was blocked (require_evaluator only)
 MAX_CHAIN = 3
+ENDED = {"completed", "complete", "done", "failed", "error", "killed", "stopped", "cancelled", "canceled"}
 MEM = Path(".agents/skills/long-horizon/scripts/memory.py")
 # a plugin install has no copy in the project: the script is in the plugin, three folders above this file
 PLUGIN_MEM = Path(__file__).resolve().parents[3] / "skills" / "long-horizon" / "scripts" / "memory.py"
@@ -102,28 +110,53 @@ def mem(args: list, env: dict, timeout: int = 120):
         return None
 
 
-def chain_count() -> int:
+def chain_read() -> tuple:
+    """(how many blocks this chain of stops has, the mark of the last block for the evaluator or "")."""
     try:
-        return int(CHAIN.read_text(encoding="utf-8").strip() or 0)
+        parts = CHAIN.read_text(encoding="utf-8").split()
+        return int(parts[0]), (parts[1] if len(parts) > 1 else "")
     except Exception:
-        return 0
+        return 0, ""
 
 
-def chain_set(n: int) -> None:
+def chain_count() -> int:
+    return chain_read()[0]
+
+
+def chain_set(n: int, mark: str = "") -> None:
     try:
         if n:
-            CHAIN.write_text(f"{n}\n", encoding="utf-8")
+            CHAIN.write_text(f"{n} {mark}\n", encoding="utf-8")
         elif CHAIN.exists():
             CHAIN.unlink()
     except Exception:
         pass
 
 
-def block(outcome: str, text: str, env: dict, required: bool) -> int:
+def mark_of(text: str) -> str:
+    """A short mark of what `memory.py evaluated` said: the state of the verdict, the features and the code."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def evaluator_runs(data: dict) -> bool:
+    """The agent says that an `evaluator` subagent runs in the background (Claude Code: `background_tasks` in the
+    input of the Stop hook). An agent that does not give the list gets False: the hook then blocks as before."""
+    tasks = data.get("background_tasks")
+    for task in tasks if isinstance(tasks, list) else []:
+        if not isinstance(task, dict):
+            continue
+        name = str(task.get("agent_type") or "")
+        ended = str(task.get("status") or "running").lower() in ENDED
+        if (name == "evaluator" or name.endswith(":evaluator")) and not ended:
+            return True
+    return False
+
+
+def block(outcome: str, text: str, env: dict, required: bool, mark: str = "") -> int:
     """Stop the agent from finishing, with `text` for it. With require_evaluator, count the block of this chain."""
     record(outcome, env)
     if required:
-        chain_set(chain_count() + 1)
+        chain_set(chain_count() + 1, mark)
     sys.stderr.write(text + KEEP_ANSWER)
     return 2
 
@@ -186,9 +219,17 @@ def main() -> int:
         return block("blocked", "Completion gate failed. Fix this before finishing, or explain to the user why it "
                      "cannot pass:\n" + out, env, required)
     missing = evaluator_missing(env, required) if r.returncode == 0 else ""
+    if missing and evaluator_runs(data):  # the agent stops to wait: it starts again when the evaluator ends
+        record("waiting-evaluator", env)
+        chain_set(0)
+        return 0
+    if missing and data.get("stop_hook_active") and chain_read()[1] == mark_of(missing):
+        record("released-red", env)  # the same code and the same state as at the last block: nothing new to say
+        chain_set(0)
+        return 0
     if missing:
         return block("blocked-evaluator", "The completion gate passed. The stop also needs the evaluator:\n" + missing,
-                     env, required)
+                     env, required, mark_of(missing))
     if data.get("stop_hook_active"):  # a stop after a block, and now each check passes for this code
         record("released-green", env)
     chain_set(0)

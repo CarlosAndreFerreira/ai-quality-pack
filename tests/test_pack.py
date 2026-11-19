@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -706,9 +707,18 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("The completion gate passed. The stop also needs the evaluator", r.stderr)
             self.assertIn("no verdict of the evaluator for this code", r.stderr)
             self.assertIn("give the complete answer to the task again", r.stderr)
-            # the agent has work to do after a block: 3 blocks in one chain of stops, then a release that the log shows
-            self.assertEqual([stop(True).returncode for _ in range(3)], [2, 2, 0])
-            self.assertEqual(outcomes(), ["blocked-evaluator"] * 3 + ["released-red"])
+            # the same code and the same state as at the block: a second block says nothing new, so the stop goes on
+            self.assertEqual(stop(True).returncode, 0)
+            self.assertEqual(outcomes(), ["blocked-evaluator", "released-red"])
+            self.assertFalse((root / ".agent-memory/.stop-chain").exists())
+            # the agent has work to do after a block: while the code changes, 3 blocks in one chain, then a release
+            self.assertEqual(stop(False).returncode, 2)
+            codes = []
+            for n in range(3):
+                (root / "edit.py").write_text(f"x = {n}\n", encoding="utf-8")
+                codes.append(stop(True).returncode)
+            self.assertEqual(codes, [2, 2, 0])
+            self.assertEqual(outcomes()[2:], ["blocked-evaluator"] * 3 + ["released-red"])
             self.assertFalse((root / ".agent-memory/.stop-chain").exists())
             self.assertEqual(stop(False).returncode, 2)          # a new chain of stops blocks again
             # an edit of the gate file that is not committed does not turn the check off
@@ -743,6 +753,51 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("Completion gate failed", r.stderr)
             self.assertEqual((root / ".agent-memory/.stop-chain").read_text(encoding="utf-8").strip(), "1")
             self.assertIn(".stop-chain", (root / ".agent-memory/.gitignore").read_text(encoding="utf-8"))
+
+    def test_require_evaluator_lets_the_agent_wait_for_an_evaluator_that_runs_in_the_background(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            hook, gate = root / ".claude/hooks/gate_on_stop.py", root / ".agent-memory/gate.json"
+            m = lambda *a: run([MEM, *a], root, stdin="")
+            outcomes = lambda: [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
+
+            def stop(active, **task):
+                tasks = [dict({"type": "subagent"}, **task)] if task else []
+                return run([hook], root, stdin=json.dumps({"session_id": "s-1", "stop_hook_active": active,
+                                                           "background_tasks": tasks}))
+            verdicts_without_records(root)
+            m("feature", "add", "--id", "F-1", "--desc", "x", "--criterion", "c1")
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
+            subprocess.run(["git", "add", "-f", ".agent-memory/gate.json"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gate"], cwd=root, check=True)
+            r = stop(False)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("Wait for the verdict in this turn", r.stderr)
+            self.assertIn("evaluated --wait", r.stderr)
+            # the evaluator runs in the background: the agent stops to wait, with no block, and the log shows it
+            self.assertEqual(stop(True, agent_type="evaluator", status="running").returncode, 0)
+            self.assertEqual(stop(False, agent_type="ai-quality-pack:evaluator").returncode, 0)
+            self.assertEqual(outcomes(), ["blocked-evaluator", "waiting-evaluator", "waiting-evaluator"])
+            self.assertFalse((root / ".agent-memory/.stop-chain").exists())
+            # an evaluator that ended, or a different subagent, is not a reason to wait
+            self.assertEqual(stop(False, agent_type="evaluator", status="completed").returncode, 2)
+            self.assertEqual(stop(False, agent_type="explorer", status="running").returncode, 2)
+            # `evaluated --wait` returns when the verdict comes, and at the end of the time when it does not come
+            start = time.monotonic()
+            r = m("evaluated", "--wait", "2")
+            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+            self.assertGreaterEqual(time.monotonic() - start, 2)
+            waiting = subprocess.Popen([sys.executable, str(MEM), "evaluated", "--wait", "120"], cwd=root, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+            try:
+                self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "ran the tests", "--verified-by", "evaluator").returncode, 0)
+                out = waiting.communicate(timeout=100)[0]
+            finally:
+                waiting.kill()
+            self.assertEqual(waiting.returncode, 0, out)
+            self.assertIn("evaluator: PASS for this code (F-1)", out)
+            self.assertEqual(stop(False).returncode, 0)
 
     def test_init_keeps_a_gitignore_line_that_has_no_final_newline(self):
         with tempfile.TemporaryDirectory() as t:
