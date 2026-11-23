@@ -26,6 +26,7 @@ Setup of all agent runs: Claude Haiku, Claude Code in headless mode, each run in
 | The same gate on 10 SWE-bench issues | 9 of 10 resolved at 2 times the cost; the evaluator approved one wrong fix | 1 run for each issue |
 | Bare agent against the gate on the 20 hard issues that the bare agent failed | Not finished: 4 of 80 runs | No result |
 | Bare agent against the core pack of version 0.6.0 on the same 20 hard issues, 2 runs for each issue and arm | Resolved: 4 of 40 with the pack, 2 of 40 without. False "done": 27 of 40 with the pack, 35 of 40 without | The gate had no commands, so it checked nothing. See below |
+| Bare agent against a gate with commands, and against that gate with a mandatory evaluator, on 40 hard issues, 2 runs for each issue and arm | False "done": 30 of 80 for the bare agent, 32 of 80 with the gate, 14 of 80 with the evaluator. Resolved: 46, 39 and 38 of 80 | With the evaluator, the agent said "not done" for 29 of 38 correct patches. See below |
 
 - Release check of version 0.5.0 (the 2 tasks where agents fail, 3 runs for each arm and task): the core pack with the Stop gate ended correct in 5 of 6 runs, the bare agent in 4 of 6. The pack arm cost 3.5 times more (0.14 against 0.04 US dollars) and took 8 times longer. 6 runs for each arm show that the pack arm works; they do not show a gain.
 - A defect that the measurement found: the hooks had relative paths, so the Stop gate did not run after the agent changed directory. It is fixed.
@@ -35,7 +36,43 @@ Setup of all agent runs: Claude Haiku, Claude Code in headless mode, each run in
   - Cost for each run: 0.030 US dollars with the pack, 0.019 without (1.6 times). Median time: 140 seconds against 69 seconds.
   - The gate checked nothing. These repositories have no `.agent-memory/gate.json`, and no agent wrote it. The gate printed "nothing to gate" in 30 runs and was not run in 10. The evaluator ran in 6 of 40 runs: this arm does not make it mandatory. Thus this comparison measures the instructions of the pack, not a gate.
   - After this result, the gate fails when it has no commands, and `memory.py stats` shows in how many sessions each control ran.
-- The complete pack with all the features, and a gate that has commands, were not measured against the bare agent on hard issues.
+- The complete pack with all the features was not measured against the bare agent on hard issues.
+
+### A gate that has commands, and a mandatory evaluator, against the bare agent
+
+The question: does a Stop gate that runs the tests of the project, or a Stop gate that also needs a PASS of the evaluator (`"require_evaluator": true`), make fewer false "done" than the bare agent?
+
+- **The cases.** The 40 hard SWE-bench Verified issues ("1 to 4 hours" and longer) that have a test command that passes on the base commit. 2 runs for each issue and arm: 240 runs. Claude Haiku is the author and the evaluator. The pack is at the commit after version 0.10.2 that has the option.
+- **The test command.** The test files of the project that the official test patch changes, as they are on the base commit. The hidden tests are not in it. The 3 arms get the same command, so the arms differ in the obligation and not in the information.
+- **The arms.** A0c: the bare agent, with the test command in the prompt. G: the core pack, with the command in a committed `gate.json` and the Stop gate. GE: G with `"require_evaluator": true`.
+- **The controls ran.** The gate ran its command in 80 of 80 runs of G and in 80 of 80 runs of GE. In GE the hook blocked for the evaluator in 74 of 80 runs, and 74 runs have a verdict.
+
+| | A0c | G | GE |
+|---|---|---|---|
+| Resolved (the hidden tests pass) | 46 of 80 (58%) | 39 of 80 (49%) | 38 of 80 (48%) |
+| The agent said "done" | 74 (92%) | 63 (79%) | 23 (29%) |
+| False "done", of all runs | 30 (38%) | 32 (40%) | 14 (18%) |
+| Correct patch, and the agent said "not done" | 2 (2%) | 8 (10%) | 29 (36%) |
+| Wrong answers among the answers "done" | 30 of 74 (41%) | 32 of 63 (51%) | 14 of 23 (61%) |
+| Runs that used the 30 minutes | 0 | 0 | 8 |
+| Mean cost of a run (US dollars) | 0.017 | 0.021 | 0.096 |
+| Mean time of the agent (seconds) | 85 | 173 | 831 |
+
+Differences in percentage points, with a 95% interval from a bootstrap over the issues (10,000 samples):
+
+- Resolved: G − A0c = −8.7 (−18.8 to 0.0). GE − A0c = −10.0 (−21.2 to −1.2).
+- False "done": G − A0c = +2.5 (−6.2 to +11.3). GE − A0c = −20.0 (−31.2 to −8.8).
+
+What the numbers say:
+
+- **The gate with the tests of the project did not change the number of false "done".** Its command failed in 4 of 80 runs and the hook blocked in 3. A wrong patch passes the existing tests in most cases, as the count above showed (9 of 86).
+- **The mandatory evaluator made fewer false "done", because the agent then said "not done" in most runs.** The evaluator gave FAIL to 32 of 37 correct patches (86%) and to 29 of 37 wrong patches (78%). It gave PASS to 5 correct patches and to 8 wrong patches. Thus it did not separate them.
+- **An answer "done" was not more reliable with the pack.** It was wrong in 61% of the cases in GE, in 51% in G and in 41% for the bare agent.
+- **The two pack arms resolved fewer issues than the bare agent.** For GE the interval does not include zero. The cause is not measured. In GE, 8 runs used the full 30 minutes; the harness counts them as "done" (5 wrong, 3 correct).
+- **Cost.** GE cost 5.6 times the bare agent and took 10 times longer.
+- What this means for use: do not turn on `require_evaluator` to make "done" reliable. It makes the agent say "not done" for correct work also. A gate with the tests of the project stops a "done" without a check and finds a regression; it does not find a patch that repairs the wrong thing.
+- Cost: 10.79 US dollars for 240 runs.
+- Limits: one model for the author and for the evaluator. The 2 runs of an issue are not independent. 68 runs ran one at a time and 172 ran 4 at a time, with the issues divided between the 4 processes. In 1 run of GE the agent changed `.agent-memory/gate.json`; the hook reads the committed file, so the check stayed on. 11 runs left an empty patch (2, 5 and 4).
 
 ## 3. The evaluator on patches with a known answer
 
@@ -279,7 +316,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 ## 6. What is not measured
 
-- The effect of a gate that has commands, and of a mandatory evaluator, on false "done", against the bare agent, on hard issues. The comparison of version 0.6.0 measured the instructions only.
+- Why the two pack arms resolved fewer hard issues than the bare agent, and the same comparison with a stronger model as the author or as the evaluator.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
