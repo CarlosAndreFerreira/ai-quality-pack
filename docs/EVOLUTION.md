@@ -242,6 +242,28 @@ As a general upgrade of the pack, no. The evidence in favour is concentrated in 
 4. E4 in parallel, because it needs no agent runs.
 5. E5 with a subset of ImpossibleBench.
 
+### After the measurement of the gate (2026-11-23): improvements to do
+
+The measurement is in [RESULTS.md](RESULTS.md), "A gate that has commands, and a mandatory evaluator, against the bare agent". The mandatory evaluator gave FAIL to 32 of 37 correct patches and to 29 of 37 wrong patches [code]. The agent then said "not done" for 29 of 38 correct patches, and the two pack arms resolved fewer issues than the bare agent [code]. None of the items below is implemented or measured.
+
+What the literature says about this result:
+
+- LLM reviewers frequently mark correct code as wrong, and a more elaborate prompt can make this worse ([arXiv 2603.00539](https://arxiv.org/abs/2603.00539), [arXiv 2508.12358](https://arxiv.org/abs/2508.12358)) [abstract].
+- An LLM judge of patches is useful for triage and is not sufficient as the only oracle (ESEM 2026, 326 patches) [abstract].
+- The best systems write a test that fails before the fix and passes after it for 63% to 66% of the issues, and such a test is not a complete oracle ([arXiv 2508.06365](https://arxiv.org/abs/2508.06365), [arXiv 2607.28871](https://arxiv.org/abs/2607.28871)) [abstract].
+- The selection of one patch from many candidates, with tests, gave 5 to 10 points more resolved issues in one study, and 26.2% to 32.8% in a second study ([arXiv 2602.05242](https://arxiv.org/abs/2602.05242), [arXiv 2510.22775](https://arxiv.org/abs/2510.22775)) [abstract].
+- An agent can give a probability of success before, during and after the work, and the calibration of that number can be measured ([arXiv 2602.06948](https://arxiv.org/abs/2602.06948)) [abstract].
+
+Improvements, in the order of the work:
+
+1. **Classify the 32 FAIL verdicts on correct patches.** No agent run is necessary. The classes: an edge case that the request does not name, a missing record, a real defect that the hidden tests do not find. The result says if items 2 and 3 are the correct repair.
+2. **The text of the evaluator does not block a stop.** With `require_evaluator`, only a `regression` counterexample that a command verified blocks: it was correct in 3 of 3 cases [code]. A FAIL in text becomes a warning in the report for the person who reviews.
+3. **Shorter instructions for the evaluator, with the same weight for PASS and FAIL.** Remove "assume the change is wrong". Each defect must quote the sentence of the requirement that it breaks. An edge case that the request does not name goes under "Not verified", not under FAIL.
+4. **Measure items 2 and 3 on the patches that we have.** Run only the evaluator on the 74 patches of the mandatory-evaluator arm, which have a known answer. This costs much less than a new comparison of 240 runs.
+5. **Report the precision of "done" and the share of correct patches that the agent calls done.** The rate of false "done" alone gives the best score to an agent that always says "not done".
+6. **A confidence in place of "done" or "not done".** The agent gives a probability and the list of what it did not verify. Measure the calibration before any use of the number.
+7. **Selection in place of a veto.** Use the cost of the mandatory evaluator (5.6 times the bare agent [code]) to make 3 to 5 candidate patches and to select one with tests. This changes what the pack is, and it needs a new measurement.
+
 ## 7. Limits
 
 - Almost all external evidence is with other models and other harnesses. Only the points tagged [code] were measured with this pack.
