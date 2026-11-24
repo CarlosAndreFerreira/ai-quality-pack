@@ -753,7 +753,7 @@ def cmd_start(a: argparse.Namespace) -> None:
     record_session(hook_input())
     tasks = load_tasks()
     out: List[str] = ["# Session start digest", ""] + ([plugin_note(), ""] if plugin_note() else [])
-    out += digest_attention(tasks) + digest_git(a.commits) + digest_resume(tasks, a.stale_hours)
+    out += digest_attention(tasks) + digest_evaluator() + digest_git(a.commits) + digest_resume(tasks, a.stale_hours)
     out += digest_progress(a.entries) + digest_features(a.features) + digest_playbook(a.lessons, a.threshold) + digest_proposals()
     body = "\n".join(clean(line) for line in out)
     if a.max_chars and len(body) > a.max_chars:  # the digest is read at every session start: keep its cost fixed
@@ -1002,7 +1002,7 @@ def feature_grade(a: argparse.Namespace, fs: List[dict], by_id: Dict[str, dict])
              fail_streak=streak, updated=now(), graded_hash=cur_hash)
     save_features(fs, dict(f, ev=a.action))
     log_event("feature", id=a.id, result=a.action, verified_by=a.verified_by, fail_streak=streak,
-              gate_fresh=gate_fresh())
+              hash=cur_hash[:12], gate_fresh=gate_fresh())
     print(f"{a.id} -> {'PASS' if f['passes'] else 'FAIL'}" + (f" (failed {streak}× in a row)" if streak else ""))
     if streak >= STUCK_AFTER:
         print(f"STUCK: {a.id} failed {streak}× in a row — stop, set its task to needs-human with the open failures", file=sys.stderr)
@@ -2326,7 +2326,8 @@ EVALUATOR_HELP_REGRESSION = """The gate file asks for a run of the evaluator for
    It records its verdict. Do not record a verdict for your own work.
 3. Wait for the verdict in this turn: do not stop while the evaluator runs. If the evaluator runs in the background,
    run `memory.py evaluated --wait 100` again and again, until it prints a PASS, a FAIL or an UNKNOWN.
-4. A change of the code after the verdict needs a new verdict.
+4. A change of the code after the verdict needs a new verdict. After 2 evaluations in one session (`max_evaluations`
+   in the gate file), a later change does not block the stop: do not start the evaluator again.
 Only a `regression` counterexample blocks the stop: a command that passes on the base and fails on your code. Then
 correct the code, or say in your last message that the work is NOT done.
 A FAIL or an UNKNOWN without that counterexample does not block. Then decide yourself if the work is done, and give in
@@ -2353,6 +2354,47 @@ def evaluator_mode() -> str:
 def evaluator_required() -> bool:
     """The gate file of the base ref asks for the evaluator, in one of the two modes of `evaluator_mode`."""
     return bool(evaluator_mode())
+
+
+MAX_EVALUATIONS = 2
+
+
+def max_evaluations() -> int:
+    """`"max_evaluations": N` in the gate file of the base ref (default 2, 0 for no limit). For the "regression"
+    mode only: after N verdicts in one session, a change of the code without a verdict does not block the stop.
+    Seen on 2026-11-24: one session had 4 runs of the evaluator, took 28 minutes and cost 6 times a usual session."""
+    with contextlib.suppress(Exception):
+        return max(0, int(gate_config(resolve_gate_ref(None)[0])[0].get("max_evaluations", MAX_EVALUATIONS)))
+    return MAX_EVALUATIONS
+
+
+def evaluations_in_session() -> int:
+    """For how many states of the code this session has a verdict (a grade or a vote) in the run log."""
+    events = read_jsonl(EVENTS)
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].get("ev") == "session_start":
+            events = events[i:]
+            break
+    return len({e.get("hash") for e in events
+                if e.get("ev") == "feature" and e.get("result") in ("pass", "fail", "vote") and e.get("hash")})
+
+
+def digest_evaluator() -> List[str]:
+    """Session start: what the agent must do before it changes the code, when the stop needs the evaluator.
+    From the measurement of 2026-11-23: the agent learned about the evaluator at the Stop hook, after the change,
+    so no test was recorded with the criteria, and the records gave no PASS for 12 correct patches."""
+    mode = evaluator_mode()
+    if not mode:
+        return []
+    last = ("Only a `regression` counterexample blocks the stop: a command that passes on the base and fails on your code."
+            if mode == "regression" else "The stop needs a PASS of the evaluator for the code that you leave.")
+    return ["## The stop needs the evaluator (`require_evaluator` in gate.json)",
+            "- Before you change the code: write a test that fails now, and record it with the criteria: "
+            "`memory.py feature add --id <F> --desc \"<what>\" --criterion \"<what must be true>\" --test-file <test file>`. "
+            "A test that is not recorded with the criteria does not support a PASS.",
+            "- After the change: start the `evaluator` subagent with the requirement and the feature id, and wait for "
+            "its verdict (`memory.py evaluated --wait 100`).",
+            f"- {last}", ""]
 
 
 def evaluator_state(feats: List[dict]) -> tuple:
@@ -2401,6 +2443,13 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
         return
     end = time.monotonic() + max(0, a.wait or 0)
     state, ids = evaluator_state(load_features())
+    limit, done = (max_evaluations(), evaluations_in_session()) if mode == "regression" else (0, 0)
+    if state == "NONE" and limit and done >= limit and not (counterexample_fresh() or {}).get("kind") == "regression":
+        log_event("evaluated", result="LIMIT", required=required, mode=mode, evaluations=done)
+        print(f"evaluator: no verdict for this code, and this session has {done} evaluations (the limit is {limit}): "
+              "the stop is not blocked")
+        print("Do not start the evaluator again. Say in your last message that the last change has no verdict of the evaluator.")
+        return
     while state in ("NONE", "PENDING") and time.monotonic() < end:
         time.sleep(min(3.0, max(0.1, end - time.monotonic())))
         state, ids = evaluator_state(load_features())

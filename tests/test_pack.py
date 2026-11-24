@@ -799,6 +799,27 @@ class ObservabilityTests(unittest.TestCase):
             self.assertIn("PASS for this code (F-1), and no regression counterexample", r.stdout)
             self.assertNotIn("what it did not verify", r.stdout)
             self.assertEqual(stop(False).returncode, 0)
+            # the session start says what to do before the change, in this mode
+            digest = run([MEM, "start"], root, stdin=json.dumps({"session_id": "s-2", "source": "startup"})).stdout
+            self.assertIn("The stop needs the evaluator", digest)
+            self.assertIn("Before you change the code: write a test that fails now", digest)
+            self.assertIn("Only a `regression` counterexample blocks the stop", digest)
+            # 2 evaluations at most in one session: after them, a change without a verdict does not block
+            for n in (1, 2):
+                (root / "later.py").write_text(f"x = {n}\n", encoding="utf-8")
+                self.assertEqual(stop(False).returncode, 2)
+                m("feature", "fail", "--id", "F-1")
+                self.assertEqual(m("evaluated").returncode, 0)
+            (root / "later.py").write_text("x = 3\n", encoding="utf-8")
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("this session has 2 evaluations (the limit is 2): the stop is not blocked", r.stdout)
+            self.assertIn("Do not start the evaluator again", r.stdout)
+            self.assertEqual(stop(False).returncode, 0)
+            self.assertEqual([e["result"] for e in self._events(root) if e["ev"] == "evaluated"][-1], "LIMIT")
+            # a new session starts the count again
+            run([MEM, "start"], root, stdin=json.dumps({"session_id": "s-3", "source": "startup"}))
+            self.assertEqual(m("evaluated").returncode, 4)
             # `true` keeps the first mode: a FAIL blocks
             gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
             subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "mode"], cwd=root, check=True)
