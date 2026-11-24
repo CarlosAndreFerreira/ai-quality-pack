@@ -191,21 +191,31 @@ def locked(timeout: float = 10.0) -> Iterator[None]:
             os.write(fd, str(os.getpid()).encode())
             os.close(fd)
             break
-        except FileExistsError:
+        # Windows gives PermissionError, not FileExistsError, while another process deletes the lock file or has it
+        # open (seen in CI on 2026-11-24: 1 of 16 parallel writers ended with exit code 1). It means "held": wait.
+        except (FileExistsError, PermissionError):
             try:  # stale lock (> 60 s) from a crashed process
                 if time.time() - LOCK.stat().st_mtime > 60:
                     LOCK.unlink()
                     continue
             except FileNotFoundError:
                 continue
+            except PermissionError:
+                pass
             if time.time() > deadline:
                 die(f"could not acquire {LOCK} (another agent writing?)", 4)
             time.sleep(0.05)
     try:
         yield
     finally:
-        with contextlib.suppress(FileNotFoundError):
-            LOCK.unlink()
+        for _ in range(40):  # on Windows the delete fails while another process looks at the file: try again
+            try:
+                LOCK.unlink()
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                time.sleep(0.05)
 
 
 def atomic_write(path: Path, text: str) -> None:
