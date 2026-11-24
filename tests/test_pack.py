@@ -754,6 +754,58 @@ class ObservabilityTests(unittest.TestCase):
             self.assertEqual((root / ".agent-memory/.stop-chain").read_text(encoding="utf-8").strip(), "1")
             self.assertIn(".stop-chain", (root / ".agent-memory/.gitignore").read_text(encoding="utf-8"))
 
+    def test_require_evaluator_regression_blocks_only_for_no_verdict_and_for_a_regression_counterexample(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            hook, gate = root / ".claude/hooks/gate_on_stop.py", root / ".agent-memory/gate.json"
+            m = lambda *a: run([MEM, *a], root, stdin="", env={"PYTHONDONTWRITEBYTECODE": "1"})
+            stop = lambda active: run([hook], root, stdin=json.dumps({"session_id": "s-1", "stop_hook_active": active}))
+            outcomes = lambda: [e["outcome"] for e in self._events(root) if e["ev"] == "stop"]
+            py = sys.executable.replace("\\", "/")
+            verdicts_without_records(root)
+            m("feature", "add", "--id", "F-1", "--desc", "x", "--criterion", "c1")
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator="regression")), encoding="utf-8")
+            subprocess.run(["git", "add", "-f", ".agent-memory/gate.json"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "gate"], cwd=root, check=True)
+            self.assertEqual(m("evaluated", "--is-required").returncode, 0)
+            # no verdict for this code: the stop is blocked, and the message says what blocks in this mode
+            r = stop(False)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("no verdict of the evaluator for this code", r.stderr)
+            self.assertIn("Only a `regression` counterexample blocks the stop", r.stderr)
+            # a FAIL of the evaluator without a regression counterexample does not block
+            m("feature", "fail", "--id", "F-1")
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("FAIL for this code (F-1), and no regression counterexample: the stop is not blocked", r.stdout)
+            self.assertIn("what the evaluator found and what it did not verify", r.stdout)
+            self.assertEqual(stop(True).returncode, 0)
+            self.assertEqual(outcomes(), ["blocked-evaluator", "released-green"])
+            # a command that passes on the base and fails on this code: the stop is blocked
+            (root / "broken.py").write_text("x = 1\n", encoding="utf-8")
+            check = f'"{py}" -c "import os,sys; sys.exit(1 if os.path.exists(\'broken.py\') else 0)"'
+            r = m("counterexample", "--test", check, "--id", "F-1")
+            self.assertIn("counterexample SHOWN (regression)", r.stdout, r.stdout + r.stderr)
+            m("feature", "fail", "--id", "F-1")
+            r = stop(False)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("a check that passes on the base fails on this code", r.stderr)
+            self.assertEqual(self._events(root)[-2]["regression"], True)
+            # the code without the regression, and a verdict for it: the stop goes on
+            (root / "broken.py").unlink()
+            self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "ran the tests", "--verified-by", "evaluator").returncode, 0)
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("PASS for this code (F-1), and no regression counterexample", r.stdout)
+            self.assertNotIn("what it did not verify", r.stdout)
+            self.assertEqual(stop(False).returncode, 0)
+            # `true` keeps the first mode: a FAIL blocks
+            gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "mode"], cwd=root, check=True)
+            (root / "later.py").write_text("x = 1\n", encoding="utf-8")
+            m("feature", "fail", "--id", "F-1")
+            self.assertEqual(m("evaluated").returncode, 4)
+
     def test_require_evaluator_lets_the_agent_wait_for_an_evaluator_that_runs_in_the_background(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)

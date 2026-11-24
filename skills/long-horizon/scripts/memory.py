@@ -2320,14 +2320,39 @@ If the work cannot pass, do not say that it is done: say in your last message th
 failures that the evaluator found."""
 
 
-def evaluator_required() -> bool:
-    """`"require_evaluator": true` in the gate file of the base ref. The gate reads the committed file, so an agent
-    cannot turn the check off in its session."""
+EVALUATOR_HELP_REGRESSION = """The gate file asks for a run of the evaluator for the code that you leave ("require_evaluator": "regression").
+1. Record the acceptance criteria as a feature, if no feature has them: `memory.py feature add`.
+2. Start the `evaluator` subagent, in a separate context, with the requirement as the user wrote it and the feature id.
+   It records its verdict. Do not record a verdict for your own work.
+3. Wait for the verdict in this turn: do not stop while the evaluator runs. If the evaluator runs in the background,
+   run `memory.py evaluated --wait 100` again and again, until it prints a PASS, a FAIL or an UNKNOWN.
+4. A change of the code after the verdict needs a new verdict.
+Only a `regression` counterexample blocks the stop: a command that passes on the base and fails on your code. Then
+correct the code, or say in your last message that the work is NOT done.
+A FAIL or an UNKNOWN without that counterexample does not block. Then decide yourself if the work is done, and give in
+your last message what the evaluator found and what it did not verify."""
+
+
+def evaluator_mode() -> str:
+    """What the gate file of the base ref asks of the evaluator: "" (nothing), "pass" (`"require_evaluator": true`:
+    the stop needs a PASS) or "regression" (`"require_evaluator": "regression"`: the stop needs a verdict, and only a
+    `regression` counterexample blocks). The gate reads the committed file, so an agent cannot turn the check off in
+    its session. The second mode comes from a measurement on 2026-11-23: with "pass", the records had no PASS for 32
+    of 37 correct patches, and a `regression` counterexample was the one record that separated wrong patches (7) from
+    correct patches (0)."""
     if not GATE.exists():
-        return False
+        return ""
     with contextlib.suppress(Exception):
-        return bool(gate_config(resolve_gate_ref(None)[0])[0].get("require_evaluator"))
-    return False
+        value = gate_config(resolve_gate_ref(None)[0])[0].get("require_evaluator")
+        if isinstance(value, str) and value.strip().lower() == "regression":
+            return "regression"
+        return "pass" if value else ""
+    return ""
+
+
+def evaluator_required() -> bool:
+    """The gate file of the base ref asks for the evaluator, in one of the two modes of `evaluator_mode`."""
+    return bool(evaluator_mode())
 
 
 def evaluator_state(feats: List[dict]) -> tuple:
@@ -2358,9 +2383,12 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
     nothing for the evaluator to grade (seen on 2026-11-19: the Stop hook blocked such a session 3 times).
     `--wait SECONDS`: while no verdict is complete for this code, look again each 3 seconds, for SECONDS at most. An
     agent whose evaluator runs in the background waits with this command (seen on 2026-11-19: in 3 of 3 sessions the
-    agent stopped before the verdict, and the Stop hook used its 3 blocks in 35 seconds)."""
+    agent stopped before the verdict, and the Stop hook used its 3 blocks in 35 seconds).
+    With `"require_evaluator": "regression"`: exit code 0 for each complete verdict (PASS, FAIL, UNKNOWN), and 4 for
+    no verdict or for a `regression` counterexample for this code."""
     ensure()
-    required = evaluator_required()
+    mode = evaluator_mode()
+    required = bool(mode)
     if a.is_required:
         print("evaluator: required" if required else "evaluator: not required")
         sys.exit(0 if required else 1)
@@ -2376,7 +2404,23 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
     while state in ("NONE", "PENDING") and time.monotonic() < end:
         time.sleep(min(3.0, max(0.1, end - time.monotonic())))
         state, ids = evaluator_state(load_features())
-    log_event("evaluated", result=state, id=",".join(ids) or None, required=required, waited=a.wait or None)
+    cx = counterexample_fresh() if mode == "regression" else None
+    regression = bool(cx and cx.get("kind") == "regression")
+    log_event("evaluated", result=state, id=",".join(ids) or None, required=required, waited=a.wait or None,
+              mode=mode or None, regression=regression or None)
+    if mode == "regression":
+        if regression:
+            print(f"evaluator: a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 160)}`")
+        elif state in ("NONE", "PENDING"):
+            print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
+        else:
+            print(f"evaluator: {state} for this code ({', '.join(ids)}), and no regression counterexample: the stop is not blocked")
+            if state != "PASS":
+                print("Give in your last message what the evaluator found and what it did not verify.")
+            return
+        print(f"code: {code_state_hash()[:12]}")
+        print(EVALUATOR_HELP_REGRESSION)
+        sys.exit(4)
     if state == "PASS":
         print(f"evaluator: PASS for this code ({', '.join(ids)})")
         return
@@ -3909,7 +3953,8 @@ def main() -> None:
     s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_counterexample)
     s = sub.add_parser("evaluated", help="exit 0 when the evaluator passed a feature for exactly this code, 4 when not "
-                                         "(the Stop hook asks this when gate.json has \"require_evaluator\": true)")
+                                         "(the Stop hook asks this when gate.json has \"require_evaluator\": true; with "
+                                         "\"regression\" in place of true, only a regression counterexample blocks)")
     s.add_argument("--if-required", action="store_true", help="exit 0 also when gate.json does not ask for the evaluator")
     s.add_argument("--is-required", action="store_true", help="only say if gate.json asks for the evaluator: exit 0 yes, 1 no")
     s.add_argument("--wait", type=int, default=0, metavar="SECONDS",
