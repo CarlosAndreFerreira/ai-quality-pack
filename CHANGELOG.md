@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.10.3 — 2026-11-24
+
+This release has the two measurements of the central question and what follows from them. On 40 hard issues with Claude Haiku as the author and the evaluator, a gate with the tests of the project did not change the number of false "done", and a mandatory evaluator, in each of its two modes, did not make an answer "done" more reliable than that of the bare agent ([docs/RESULTS.md](docs/RESULTS.md)). A `regression` counterexample did not separate wrong from correct patches, so it is no longer a FAIL. The two `require_evaluator` modes are in this release for a measurement with other models; they are not a recommendation.
+
+Changes that need attention in an upgrade: `memory.py verdict` and `evidence --json` give no `FAIL` now (see below).
+
+Checked: 170 tests on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
 - **A `regression` counterexample is no longer a FAIL.** `memory.py verdict` gives `UNKNOWN` of the new type `behaviour-changed`, with the next steps: a person decides if the request wants the change of behaviour. The `counterexample` output and the evidence block say "the behaviour changed", not "the change broke it". Reason: in the measurement of 2026-11-24 a `regression` counterexample was on 12 wrong and 9 correct patches, and the reference fix of the maintainers failed the same command in 14 of 18 runs. The earlier "3 of 3" and "7 of 0" did not repeat.
 - The evaluator (skill, Claude Code and Antigravity subagents) reports a `regression` counterexample as a change of behaviour for a person to judge, not as a FAIL.
