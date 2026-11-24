@@ -2418,6 +2418,50 @@ def evaluator_state(feats: List[dict]) -> tuple:
     return "NONE", []
 
 
+def wait_for_verdict(seconds: int) -> tuple:
+    """(state, feature ids) of the evaluator for this code. While no verdict is complete, look again each 3 seconds,
+    for `seconds` at most."""
+    end = time.monotonic() + max(0, seconds)
+    state, ids = evaluator_state(load_features())
+    while state in ("NONE", "PENDING") and time.monotonic() < end:
+        time.sleep(min(3.0, max(0.1, end - time.monotonic())))
+        state, ids = evaluator_state(load_features())
+    return state, ids
+
+
+def evaluated_regression(wait: int) -> None:
+    """`memory.py evaluated` with `"require_evaluator": "regression"`. Returns when the stop can go on: a complete
+    verdict without a `regression` counterexample, or the limit of evaluations of this session. Exit code 4 for no
+    verdict and for a `regression` counterexample."""
+    cx = counterexample_fresh()
+    regression = bool(cx and cx.get("kind") == "regression")
+    state, ids = evaluator_state(load_features())
+    limit, done = max_evaluations(), evaluations_in_session()
+    if state == "NONE" and not regression and limit and done >= limit:
+        log_event("evaluated", result="LIMIT", required=True, mode="regression", evaluations=done)
+        print(f"evaluator: no verdict for this code, and this session has {done} evaluations (the limit is {limit}): "
+              "the stop is not blocked")
+        print("Do not start the evaluator again. Say in your last message that the last change has no verdict of the evaluator.")
+        return
+    state, ids = wait_for_verdict(wait)
+    cx = counterexample_fresh()  # the evaluator can record one while this command waits
+    regression = bool(cx and cx.get("kind") == "regression")
+    log_event("evaluated", result=state, id=",".join(ids) or None, required=True, waited=wait or None,
+              mode="regression", regression=regression or None)
+    if not regression and state not in ("NONE", "PENDING"):
+        print(f"evaluator: {state} for this code ({', '.join(ids)}), and no regression counterexample: the stop is not blocked")
+        if state != "PASS":
+            print("Give in your last message what the evaluator found and what it did not verify.")
+        return
+    if regression:
+        print(f"evaluator: a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 160)}`")
+    else:
+        print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
+    print(f"code: {code_state_hash()[:12]}")
+    print(EVALUATOR_HELP_REGRESSION)
+    sys.exit(4)
+
+
 def cmd_evaluated(a: argparse.Namespace) -> None:
     """Did the evaluator pass a feature for exactly this code? Exit code: 0 yes, 4 no. `--if-required`: also 0 when
     the gate file does not ask for it. `--is-required`: 0 when the gate file asks for it, 1 when not (no other check).
@@ -2441,35 +2485,11 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
         log_event("evaluated", result="NOCHANGE", required=required)
         print("evaluator: no file changed since the base of the comparison, so no verdict is necessary")
         return
-    end = time.monotonic() + max(0, a.wait or 0)
-    state, ids = evaluator_state(load_features())
-    limit, done = (max_evaluations(), evaluations_in_session()) if mode == "regression" else (0, 0)
-    if state == "NONE" and limit and done >= limit and not (counterexample_fresh() or {}).get("kind") == "regression":
-        log_event("evaluated", result="LIMIT", required=required, mode=mode, evaluations=done)
-        print(f"evaluator: no verdict for this code, and this session has {done} evaluations (the limit is {limit}): "
-              "the stop is not blocked")
-        print("Do not start the evaluator again. Say in your last message that the last change has no verdict of the evaluator.")
-        return
-    while state in ("NONE", "PENDING") and time.monotonic() < end:
-        time.sleep(min(3.0, max(0.1, end - time.monotonic())))
-        state, ids = evaluator_state(load_features())
-    cx = counterexample_fresh() if mode == "regression" else None
-    regression = bool(cx and cx.get("kind") == "regression")
-    log_event("evaluated", result=state, id=",".join(ids) or None, required=required, waited=a.wait or None,
-              mode=mode or None, regression=regression or None)
     if mode == "regression":
-        if regression:
-            print(f"evaluator: a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 160)}`")
-        elif state in ("NONE", "PENDING"):
-            print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
-        else:
-            print(f"evaluator: {state} for this code ({', '.join(ids)}), and no regression counterexample: the stop is not blocked")
-            if state != "PASS":
-                print("Give in your last message what the evaluator found and what it did not verify.")
-            return
-        print(f"code: {code_state_hash()[:12]}")
-        print(EVALUATOR_HELP_REGRESSION)
-        sys.exit(4)
+        evaluated_regression(a.wait or 0)
+        return
+    state, ids = wait_for_verdict(a.wait or 0)
+    log_event("evaluated", result=state, id=",".join(ids) or None, required=required, waited=a.wait or None, mode=mode or None)
     if state == "PASS":
         print(f"evaluator: PASS for this code ({', '.join(ids)})")
         return
