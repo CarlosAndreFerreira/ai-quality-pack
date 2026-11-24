@@ -127,13 +127,27 @@ What the pack recorded in the 80 runs of GR:
 What the numbers say:
 
 - **GR said "done" less frequently, and did not separate the patches.** It did not call done 28% of its correct patches and 34% of its wrong patches. Thus the false "done" decreased because "done" decreased, and the precision of "done" did not change.
-- **The `regression` counterexample did not separate the patches in this run.** 12 wrong patches and 9 correct patches have one. In the measurement above it was 7 and 0, and before that 3 and 0. The difference in this run: the instructions tell the evaluator to look for a regression first. We did not read the 9 records. Each one is a command that passes on the base and fails on the change; the hidden tests do not say if that difference is a defect.
+- **The `regression` counterexample did not separate the patches in this run.** 12 wrong patches and 9 correct patches have one. In the measurement above it was 7 and 0, and before that 3 and 0. The difference in this run: the instructions tell the evaluator to look for a regression first.
+- **Most of these counterexamples reject the reference fix also.** With no agent, we ran each recorded command again in the image of the issue: on the base, on the last patch of the agent and on the reference fix of the maintainers. The files of the evaluator came from the transcript of the run. 18 of the 21 runs gave a command that passes on the base.
+
+  | | Correct patches | Wrong patches |
+  |---|---|---|
+  | Runs with a `regression` counterexample | 9 | 12 |
+  | Runs where a command passes on the base again | 8 | 10 |
+  | The last patch of the agent fails a command | 0 of 8 | 2 of 10 |
+  | The reference fix fails a command | 7 of 8 | 7 of 10 |
+
+  - In 14 of 18 runs, the reference fix fails a command that the evaluator recorded as a regression. The record is correct as a fact: the behaviour changed. It is not a defect: the correct fix changes the same behaviour.
+  - The agent repaired the difference in 16 of 18 runs, thus its last patch has the behaviour of the base. The limit of evaluations then let the agent stop without a new verdict, so the records do not show the repair.
+  - A counterexample that stays on the last patch is rare: 0 of 8 correct patches and 2 of 10 wrong patches. The 2 are one issue.
+  - On the 10 issues where the reference fix fails a command, the bare agent resolved 12 of 20 runs and GR resolved 12 of 20. Thus no loss is measured from these repairs.
+  - Limits: the file is the last version in the session, which can be different from the version at the record. 3 runs did not give a command that passes on the base. The 7 and 0 of the measurement above were not checked in this way.
 - **No record of the pack separated the patches.** A PASS, a FAIL, an UNKNOWN, a test recorded before the change and a `SUPPORTED` verdict have almost the same count for correct and for wrong patches.
 - **The mode is better than the first mode for correct patches**, as designed: the agent called done 72% of them, against 6 of 38 (16%) with `"require_evaluator": true`. No run used the 30 minutes, against 8.
 - **The two defects of the pilot runs did not occur.** The evaluator recorded a result in 73 of 80 runs, and the limit of evaluations came into effect in 23.
 - **The agent did not obey the records.** It said "done" in 13 of the 21 runs with a `regression` counterexample (the limit of evaluations then lets the stop pass), in 13 of 26 runs where the last result was a FAIL, and in 20 of 24 where it was an UNKNOWN.
 - **Cost.** GR cost 3.8 times the bare agent and took 5.5 times longer. 7.36 US dollars for 160 runs.
-- What this means for use: do not turn on `require_evaluator`, in the one mode or in the other, to make "done" reliable on hard issues when one model is the author and the evaluator. With these two measurements, a check by the same model added no information about the correctness of the patch.
+- What this means for use: do not turn on `require_evaluator`, in the one mode or in the other, to make "done" reliable on hard issues when one model is the author and the evaluator. Read a `regression` counterexample as "the behaviour changed": a person decides if the request wants that change. With these two measurements, a check by the same model added no information about the correctness of the patch.
 - Limits: one model for the author and for the evaluator, hard issues only, Python only. The 2 runs of an issue are not independent. 80 runs for each arm cannot show a difference of 7 points in false "done". Not measured: a stronger model as the author and as the evaluator, and tasks that are less hard. 6 runs left an empty patch.
 
 ## 3. The evaluator on patches with a known answer
@@ -222,7 +236,7 @@ The 42 SWE-bench patches again, with `"verdict_evidence": true` in each workspac
   - A counterexample of type `regression` (the check passes on the base and fails on the change): 3 runs, and the 3 patches are wrong.
   - A counterexample of type `not-fixed` only (the check fails on the base also): 6 runs, 2 wrong patches and 4 correct patches. In the transcripts, a part of these checks imports the code from an absolute path, thus the run on the base used the code of the change. This type has little information.
   - A verified reproduction (fails on the base, passes on the change): 3 runs; 2 are wrong patches that the evaluator approved. A test that the model wrote for the patch can agree with a wrong patch.
-- What this means for use: a `regression` counterexample shows a real difference from the base, and a person must read it. It is not a decision: a later measurement found it for 12 wrong patches and for 9 correct patches (see section 2). Do not read a `not-fixed` counterexample or a verified reproduction from the evaluator as a decision. Use `feature vote` or `feature pass`, which refuse a verdict without the record; a text of the evaluator does not.
+- What this means for use: a `regression` counterexample shows a real difference from the base, and a person must read it. It is not a decision: a later measurement found it for 12 wrong patches and for 9 correct patches, and in 14 of 18 runs the reference fix failed the same command (see section 2). Do not read a `not-fixed` counterexample or a verified reproduction from the evaluator as a decision. Use `feature vote` or `feature pass`, which refuse a verdict without the record; a text of the evaluator does not.
 - Limits: 3, 6 and 3 runs are small numbers. One pass for each model. The baseline rows use the pack of version 0.6.0 and the rows with the option use the current pack with a gate file without commands; the text of the evaluator is the same, plus the paragraph of the option. Cost: 3.36 US dollars for the two passes.
 
 ### What a gate with the existing tests of a project can find
