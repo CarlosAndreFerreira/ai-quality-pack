@@ -23,7 +23,7 @@ Values of `result`:
 - `counterexample`: `shown` (with `record.kind`: `regression`, `not-fixed`, `base-not-seen`, `base-unknown`), `not-shown`, `wrong-failure`, `timeout`.
 - Each command: `no-record` when the command stopped before it wrote a record (a usage error, exit code 2), and `ok` for `--check` with exit code 0.
 
-Only `repro` with `verified` shows a fix, and only `counterexample` with `shown` and `record.kind` `regression` shows that the change broke something.
+Only `repro` with `verified` shows a fix. `counterexample` with `shown` and `record.kind` `regression` shows that the change changed a behaviour that passed on the base; it is a defect only if the request does not want the change, and a person decides.
 
 ## `evidence`
 
@@ -34,7 +34,7 @@ Only `repro` with `verified` shows a fix, and only `counterexample` with `shown`
 | `exit` | number | 0, or 1 with `--strict` when something is not verified or a warning exists |
 | `ref` | text | The commit that the change is compared with |
 | `risk` | text | `LOW`, `MEDIUM` or `HIGH` |
-| `verdict` | text | `SUPPORTED`, `FAIL` or `UNKNOWN`, as `memory.py verdict` gives it |
+| `verdict` | text | `SUPPORTED`, `FAIL` or `UNKNOWN`, as `memory.py verdict` gives it. This version gives no `FAIL`: a `regression` counterexample gives `UNKNOWN` |
 | `records` | object | `gate`, `reproduction`, `reproduction_test`, `counterexample`, `mutation`, `tests_confirmed` (`by a person`, `no`, or `none` when no reproduction with a recorded test is there) |
 | `not_verified` | list of text | Each item of the "Not verified" part of the block |
 | `warnings` | list of text | The warnings of the block |

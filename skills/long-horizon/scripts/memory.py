@@ -2184,7 +2184,8 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
         before, before_out = run_check_on_base(a.test, a.test_file, sha, rel, a.timeout, a.base)
         result = "shown"
         if before == 0:
-            kind, why = "regression", "the command passes on the base and fails on the current code: the change broke it"
+            kind, why = "regression", ("the command passes on the base and fails on the current code: the change changed this "
+                                       "behaviour. It is a defect only if the request does not want this change; a person decides")
         elif before is None:
             kind, why = "base-unknown", f"the command fails on the current code; it did not finish on the base ({a.timeout}s)"
         else:
@@ -2266,10 +2267,12 @@ def confirmation_record(before) -> tuple:
 def records_verdict() -> dict:
     """What the records for exactly this code support. Commands wrote these records; no text of an agent is read.
 
-    FAIL: a check that passes on the base fails on this code (a `regression` counterexample). In our measurement on
-    42 patches, each of the 3 such counterexamples was on a wrong patch, and the verdicts of the evaluator did not
-    separate wrong from correct patches. SUPPORTED: the gate passed and a reproduction is verified. This is support
-    and not proof: 2 of 3 verified reproductions were on wrong patches. UNKNOWN: the rest."""
+    SUPPORTED: the gate passed and a reproduction is verified, and no check that passes on the base fails on this code.
+    This is support and not proof: 2 of 3 verified reproductions were on wrong patches. UNKNOWN: the rest.
+    A `regression` counterexample (a check that passes on the base fails on this code) gives UNKNOWN of the type
+    `behaviour-changed`, not FAIL: it shows that the behaviour changed, and a person decides if the request wants that
+    change. In the measurement of 2026-11-24 it was on 12 wrong patches and on 9 correct patches, and in 14 of 18 runs
+    the reference fix of the maintainers failed the same command (docs/RESULTS.md). No record of the pack gives FAIL."""
     cx, gate, repro, mut = counterexample_fresh(), gate_fresh(), repro_fresh(), mutants_state()
     before = repro and repro_before_change()
     records = {"gate": "pass" if gate else ("none" if gate is None else "no pass"), "reproduction": "verified" if repro else "none",
@@ -2277,7 +2280,14 @@ def records_verdict() -> dict:
                "counterexample": (cx or {}).get("kind") or "none", "mutation": mut or "not run"}
     records["tests_confirmed"], confirm_note = confirmation_record(before)
     if cx and cx.get("kind") == "regression":
-        return {"verdict": "FAIL", "why": f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`", "records": records}
+        return {"verdict": "UNKNOWN", "records": records, "unknown": "behaviour-changed",
+                "why": (f"a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 120)}`. The behaviour "
+                        "changed. That is a defect only if the request does not want this change: the correct fix can change "
+                        "the same behaviour"),
+                "next": ["a person reads the request and decides if it wants this change of behaviour",
+                         "if it does not, keep the old behaviour, then run the gate and `memory.py counterexample` again",
+                         "if it does, the person grades the feature (`feature pass --verified-by human`): the records cannot "
+                         "show that a changed behaviour is the wanted one"]}
     counts = repro and (before or later_tests_accepted())
     missing = [w for w, ok in (("a gate pass", bool(gate)), ("a verified reproduction", repro)) if not ok]
     notes = []
@@ -2349,9 +2359,10 @@ def evaluator_mode() -> str:
     """What the gate file of the base ref asks of the evaluator: "" (nothing), "pass" (`"require_evaluator": true`:
     the stop needs a PASS) or "regression" (`"require_evaluator": "regression"`: the stop needs a verdict, and only a
     `regression` counterexample blocks). The gate reads the committed file, so an agent cannot turn the check off in
-    its session. The second mode comes from a measurement on 2026-11-23: with "pass", the records had no PASS for 32
-    of 37 correct patches, and a `regression` counterexample was the one record that separated wrong patches (7) from
-    correct patches (0)."""
+    its session. Measured on 40 hard issues with one model as the author and the evaluator (docs/RESULTS.md): neither
+    mode made an answer "done" more reliable than that of the bare agent. With "pass" the agent said "not done" for most
+    correct patches; with "regression" a `regression` counterexample was on 12 wrong and 9 correct patches. The modes
+    stay for a measurement with other models; they are not a recommendation."""
     if not GATE.exists():
         return ""
     with contextlib.suppress(Exception):
@@ -2850,7 +2861,7 @@ def evidence_checks(ref: str, lines: List[str], gaps: List[str]) -> None:
         gaps.append("no test was shown to fail before the change and pass after it")
     counter = counterexample_fresh()
     if counter:
-        what = {"regression": "it passes on the base: the change broke it",
+        what = {"regression": "it passes on the base: the behaviour changed, and a person decides if the request wants that",
                 "not-fixed": "it fails on the base too: the change does not fix it",
                 "base-not-seen": "the check did not load the code of the base"}.get(counter.get("kind"), "the base did not give a result")
         lines.append(f"- Counterexample: SHOWN, `{clean(counter.get('test', '?'), 100)}` fails on this code ({what})")

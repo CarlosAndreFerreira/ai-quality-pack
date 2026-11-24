@@ -990,10 +990,11 @@ class EvolutionTests(unittest.TestCase):
             r = m("counterexample", "--test", f'"{self.py}" probe.py', "--test-file", "probe.py", "--id", "F-1")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("counterexample SHOWN (regression)", r.stdout)
-            self.assertIn("passes on the base and fails on the current code: the change broke it", r.stdout)
+            self.assertIn("passes on the base and fails on the current code: the change changed this behaviour", r.stdout)
+            self.assertIn("a person decides", r.stdout)
             ev = m("evidence").stdout
             self.assertIn("- Counterexample: SHOWN,", ev)
-            self.assertIn("it passes on the base: the change broke it", ev)
+            self.assertIn("it passes on the base: the behaviour changed, and a person decides if the request wants that", ev)
             self.assertRegex(ev, r"Review risk: HIGH \(.*a counterexample was shown for this code")
             last = self._events(root, "counterexample")[-1]
             self.assertEqual((last["result"], last["kind"], last["id"]), ("shown", "regression", "F-1"))
@@ -1253,9 +1254,12 @@ class EvolutionTests(unittest.TestCase):
             (root / "calc.py").write_text("def add(a, b):\n    return a * b\n", encoding="utf-8")   # breaks add(2, 0)
             self.assertEqual(m("counterexample", "--test", f'"{self.py}" probe.py', "--test-file", "probe.py").returncode, 0)
             r = m("verdict", "--json")
-            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # a change of behaviour is not a verdict on the patch
             v = json.loads(r.stdout)
-            self.assertEqual((v["verdict"], v["records"]["counterexample"]), ("FAIL", "regression"))
+            self.assertEqual((v["verdict"], v["unknown"], v["records"]["counterexample"]), ("UNKNOWN", "behaviour-changed", "regression"))
+            self.assertIn("a person reads the request and decides if it wants this change of behaviour", v["next"])
+            self.assertIn("the correct fix can change the same behaviour", v["why"])
+            self.assertEqual(self._events(root, "verdict")[-1]["unknown"], "behaviour-changed")
             (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")   # the fix
             self.assertEqual(m("verdict").returncode, 3)            # the counterexample was for other code
             self.assertEqual(self._repro(root).returncode, 0)
