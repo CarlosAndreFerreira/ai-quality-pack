@@ -50,4 +50,5 @@ Your text does not decide the result. On hard issues, the verdicts of an evaluat
 - Single-run mode (`"evaluator_runs": 1`, default):
   - All PASS → `memory.py feature pass --id <F> --evidence "<the evidence lines>" --verified-by evaluator`
   - Any FAIL → `memory.py feature fail --id <F>`. Hand the report back to the implementer. If the same kind of failure keeps coming back, record it with `learn-from-mistakes`.
+  - UNKNOWN, or a PASS or a FAIL that the command refuses → `memory.py feature vote --id <F> --verdict UNKNOWN --evidence "<the evidence lines>"`. Record a result in each run: without it the code has no verdict.
 - Max 3 evaluate→fix rounds. Then set the task to `needs-human` with the open failures.

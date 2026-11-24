@@ -786,6 +786,8 @@ class ObservabilityTests(unittest.TestCase):
             check = f'"{py}" -c "import os,sys; sys.exit(1 if os.path.exists(\'broken.py\') else 0)"'
             r = m("counterexample", "--test", check, "--id", "F-1")
             self.assertIn("counterexample SHOWN (regression)", r.stdout, r.stdout + r.stderr)
+            shown = [e for e in self._events(root) if e["ev"] == "counterexample"][-1]
+            self.assertEqual(len(shown["hash"]), 12)                # a counterexample counts as an evaluation of this code
             m("feature", "fail", "--id", "F-1")
             r = stop(False)
             self.assertEqual(r.returncode, 2, r.stderr)
@@ -820,6 +822,16 @@ class ObservabilityTests(unittest.TestCase):
             # a new session starts the count again
             run([MEM, "start"], root, stdin=json.dumps({"session_id": "s-3", "source": "startup"}))
             self.assertEqual(m("evaluated").returncode, 4)
+            # an evaluator that shows a counterexample and records no verdict did run also: it counts
+            check = f'"{py}" -c "import os,sys; sys.exit(1 if os.path.exists(\'later.py\') else 0)"'
+            for n in (4, 5):
+                (root / "later.py").write_text(f"x = {n}\n", encoding="utf-8")
+                self.assertIn("counterexample SHOWN", m("counterexample", "--test", check).stdout)
+            (root / "later.py").unlink()
+            (root / "other.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertIn("this session has 2 evaluations", m("evaluated").stdout)
+            (root / "other.py").unlink()
+            (root / "later.py").write_text("x = 3\n", encoding="utf-8")
             # `true` keeps the first mode: a FAIL blocks
             gate.write_text(json.dumps(dict(json.loads(gate.read_text(encoding="utf-8")), require_evaluator=True)), encoding="utf-8")
             subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "mode"], cwd=root, check=True)

@@ -2198,7 +2198,8 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
                                            "feature": a.id or ""}) + "\n", encoding="utf-8")
         else:
             COUNTER.unlink()
-    log_event("counterexample", result=result, kind=kind or None, id=a.id, test=safe_cmd(a.test), base=sha[:12])
+    log_event("counterexample", result=result, kind=kind or None, id=a.id, test=safe_cmd(a.test), base=sha[:12],
+              hash=code_state_hash()[:12])
     _WHY["text"] = why
     print(f"counterexample {result.upper()}" + (f" ({kind})" if kind else "") + f": {why}")
     if result == "shown":
@@ -2369,14 +2370,16 @@ def max_evaluations() -> int:
 
 
 def evaluations_in_session() -> int:
-    """For how many states of the code this session has a verdict (a grade or a vote) in the run log."""
+    """For how many states of the code this session has a verdict (a grade or a vote) or a counterexample in the run log."""
     events = read_jsonl(EVENTS)
     for i in range(len(events) - 1, -1, -1):
         if events[i].get("ev") == "session_start":
             events = events[i:]
             break
-    return len({e.get("hash") for e in events
-                if e.get("ev") == "feature" and e.get("result") in ("pass", "fail", "vote") and e.get("hash")})
+    # an evaluator that shows a counterexample and records no verdict did run also (2 of 3 sessions on 2026-11-24)
+    return len({e.get("hash") for e in events if e.get("hash") and (
+        (e.get("ev") == "feature" and e.get("result") in ("pass", "fail", "vote"))
+        or (e.get("ev") == "counterexample" and e.get("result") == "shown"))})
 
 
 def digest_evaluator() -> List[str]:
