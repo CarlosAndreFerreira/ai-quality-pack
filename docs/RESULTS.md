@@ -66,7 +66,20 @@ Differences in percentage points, with a 95% interval from a bootstrap over the 
 What the numbers say:
 
 - **The gate with the tests of the project did not change the number of false "done".** Its command failed in 4 of 80 runs and the hook blocked in 3. A wrong patch passes the existing tests in most cases, as the count above showed (9 of 86).
-- **The mandatory evaluator made fewer false "done", because the agent then said "not done" in most runs.** The evaluator gave FAIL to 32 of 37 correct patches (86%) and to 29 of 37 wrong patches (78%). It gave PASS to 5 correct patches and to 8 wrong patches. Thus it did not separate them.
+- **The mandatory evaluator made fewer false "done", because the agent then said "not done" in most runs.** The records had no PASS for 32 of 37 correct patches (86%) and for 29 of 37 wrong patches (78%). They had a PASS for 5 correct patches and for 8 wrong patches. Thus a PASS did not separate them. Correction of 2026-11-24: the first text of this page said "the evaluator gave FAIL" for these 32 and 29 runs. The number counts a FAIL, an UNKNOWN and a run without a verdict together.
+- **Why there was no PASS** (one person read the last record of the evaluator in each of the 61 runs; no run was repeated):
+
+  | Last record of the evaluator | Correct patches (32) | Wrong patches (29) |
+  |---|---|---|
+  | No defect found; no PASS because the test was recorded after the change, or because a part did not run in the container | 15 | 12 |
+  | A `regression` counterexample for the behaviour of the code | 0 | 7 |
+  | A case that the change does not repair and that fails on the base also, or a stricter reading of the request | 6 | 5 |
+  | A project rule that is not about behaviour (changelog entry, import order) | 2 | 0 |
+  | No verdict in the records, or the run used the 30 minutes | 7 | 4 |
+  | A FAIL first and a PASS after it | 2 | 1 |
+
+- **The largest cause is a rule of the pack, not a judgement of the model.** A PASS needs a test that was recorded before the change. With `require_evaluator` the agent learns about the evaluator at the Stop hook, after the change. Thus the rule refused a PASS for 12 correct patches and for 12 wrong patches where the evaluator found no defect. To accept a later test is not the repair: the same 12 wrong patches then get a PASS.
+- **A `regression` counterexample was the one record that separated the patches**: 7 wrong patches and 0 correct patches. This agrees with the 3 of 3 above. 2 correct patches had a `regression` record for a lint rule, not for behaviour.
 - **An answer "done" was not more reliable with the pack.** It was wrong in 61% of the cases in GE, in 51% in G and in 41% for the bare agent.
 - **The two pack arms resolved fewer issues than the bare agent.** For GE the interval does not include zero. The cause is not measured. In GE, 8 runs used the full 30 minutes; the harness counts them as "done" (5 wrong, 3 correct).
 - **Cost.** GE cost 5.6 times the bare agent and took 10 times longer.

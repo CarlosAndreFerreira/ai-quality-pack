@@ -244,7 +244,7 @@ As a general upgrade of the pack, no. The evidence in favour is concentrated in 
 
 ### After the measurement of the gate (2026-11-23): improvements to do
 
-The measurement is in [RESULTS.md](RESULTS.md), "A gate that has commands, and a mandatory evaluator, against the bare agent". The mandatory evaluator gave FAIL to 32 of 37 correct patches and to 29 of 37 wrong patches [code]. The agent then said "not done" for 29 of 38 correct patches, and the two pack arms resolved fewer issues than the bare agent [code]. None of the items below is implemented or measured.
+The measurement is in [RESULTS.md](RESULTS.md), "A gate that has commands, and a mandatory evaluator, against the bare agent". The records had no PASS for 32 of 37 correct patches and for 29 of 37 wrong patches [code]. The agent then said "not done" for 29 of 38 correct patches, and the two pack arms resolved fewer issues than the bare agent [code]. None of the items below is implemented or measured.
 
 What the literature says about this result:
 
@@ -256,8 +256,12 @@ What the literature says about this result:
 
 Improvements, in the order of the work:
 
-1. **Classify the 32 FAIL verdicts on correct patches.** No agent run is necessary. The classes: an edge case that the request does not name, a missing record, a real defect that the hidden tests do not find. The result says if items 2 and 3 are the correct repair.
-2. **The text of the evaluator does not block a stop.** With `require_evaluator`, only a `regression` counterexample that a command verified blocks: it was correct in 3 of 3 cases [code]. A FAIL in text becomes a warning in the report for the person who reviews.
+1. **Done on 2026-11-24: the 32 runs without a PASS on correct patches, and the 29 on wrong patches, are classified** (the table is in RESULTS.md). The result changes this list:
+   - The largest class is a rule of the pack: no PASS because the test was recorded after the change (12 correct and 12 wrong patches). The model found no defect in these runs. Thus item 3 repairs a smaller part than we thought.
+   - To accept a later test is not the repair, because the 12 wrong patches then get a PASS. A test that the author writes after the fix agrees with the fix.
+   - Item 2 has more support: a `regression` counterexample for behaviour was the last record for 7 wrong patches and for 0 correct patches [code].
+   - A new item comes from this: with `require_evaluator`, the agent must know at the start of the session that criteria and a test are recorded before the change. Now it learns this at the Stop hook.
+2. **The text of the evaluator does not block a stop.** With `require_evaluator`, only a `regression` counterexample that a command verified blocks: it was correct in 3 of 3 cases, and in 7 of 7 in the classification above [code]. A `regression` record for a lint rule does not count: the gate runs lint. A FAIL in text becomes a warning in the report for the person who reviews.
 3. **Shorter instructions for the evaluator, with the same weight for PASS and FAIL.** Remove "assume the change is wrong". Each defect must quote the sentence of the requirement that it breaks. An edge case that the request does not name goes under "Not verified", not under FAIL.
 4. **Measure items 2 and 3 on the patches that we have.** Run only the evaluator on the 74 patches of the mandatory-evaluator arm, which have a known answer. This costs much less than a new comparison of 240 runs.
 5. **Report the precision of "done" and the share of correct patches that the agent calls done.** The rate of false "done" alone gives the best score to an agent that always says "not done".
