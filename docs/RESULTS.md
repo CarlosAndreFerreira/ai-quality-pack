@@ -197,6 +197,44 @@ What the numbers say:
 - What this means for use: with a stronger model, the mode is a trade. It removes half of the false "done", and a person then checks 25% of the runs where a correct patch has the answer "not done". Use it only where a false "done" costs much more than a second check. It is not a filter that separates correct patches from wrong patches.
 - Limits: 2 runs for each issue, which are not independent. Hard issues and Python only. The runs are of 2 days. The comparison with Haiku is between days and models, not a controlled comparison. Criterion 3 had no margin written before the run. The commit of the pack has the mode that blocked on a `regression` counterexample; that block came into effect in 2 runs only. Not measured: the mode as it is now, a model of another supplier, and tasks that are less hard.
 
+### Does the evidence of the pack help a reviewer?
+
+The question: a person or a model reviews a finished patch. Does the record of the pack (criteria, reproduction, gate, votes and counterexamples of the evaluator) make the decision better? The data are the 160 runs of the "regression" mode above: 80 with Haiku and 80 with Sonnet. The design was written before the runs.
+
+**Part A, with no agent: one record as the rule.** The accuracy of each rule against the hidden tests, with a 95% interval of the difference from "accept all" (bootstrap over the issues):
+
+| Rule | Haiku (80 runs) | Sonnet (80 runs) |
+|---|---|---|
+| Accept all | 48.8% | 61.3% |
+| Accept only with `SUPPORTED` | 55.0% (−12.5 to +25.0) | 53.8% (−31.3 to +16.3) |
+| Accept only with a verified reproduction | 53.8% (−2.5 to +12.5) | 48.8% (−32.5 to +7.5) |
+| Accept only when the agent said "done" | 52.5% (−10.0 to +17.5) | 52.5% (−25.0 to +7.5) |
+
+- No rule is better than "accept all" with an interval that excludes zero.
+
+**Part A, the verified reproductions run again.** 76 of the 160 runs have a verified reproduction with a complete command. With no agent, each command ran on the base (with the test files of the agent), on the patch of the agent and on the reference fix of the maintainers (with the same test files).
+
+- **The record is true.** 74 of 76 (97%) fail on the base and pass on the patch of the agent.
+- **In many wrong patches, the test of the agent records the wrong behaviour.** The test fails on the reference fix for 23 of 38 wrong patches (61%) and for 13 of 36 correct patches (36%). The difference is +24.4 points, with an interval of −2.6 to +52.1 over 30 issues: the criterion written before the run (20 points, interval above zero) is not met. Most of the signal is from Haiku (+31 points; Sonnet +6).
+- The prediction was wrong. It said that in wrong patches the test passes on the reference fix in more than 70% (a true but weak test). It passed in 39%.
+- A reviewer does not have the reference fix. Thus this is the most that a reviewer can get from the test, not what a reviewer gets. The false alarm is also high: a reviewer who rejects each patch with a doubtful test rejects one third of the correct patches.
+- The agent said "done" for 17 of the 23 wrong patches where its test fails on the reference fix: the record did not change the answer of the agent.
+
+**Part B, with a model as the reviewer in place of a person.** 40 review packets of the pilot (20 runs, each in two forms: with the records of the pack and without them). 8 new agents, on a model that is stronger than the authors of the patches, read 5 packets each. They had a read tool only: no code ran, no network. The two packets of one issue went to different agents. One pass for each packet.
+
+| | With the records (20) | Without the records (20) |
+|---|---|---|
+| Correct decisions | 15 (75%) | 15 (75%) |
+| Wrong patches rejected | 5 of 10 | 5 of 10 |
+| Correct patches accepted | 10 of 10 | 10 of 10 |
+| Wrong patches where the test of the agent fails on the reference fix: rejected | 5 of 6 | 3 of 6 |
+
+- **The records of the pack did not change the decisions.** The difference is 0 points (permutation test, p = 1.0).
+- **The reviewer separated the patches, where the evaluator of the pack did not.** 30 of 40 correct decisions, against 20 for "accept all". It rejected no correct patch and half of the wrong patches. Of the 15 wrong patches that the agent called done, it rejected 7.
+- The one sign for the records is the 5 of 6 against 3 of 6 above: 12 packets, too few to say more.
+- Limits: a model is not a person, and a model cannot measure the time of a review. The reviewer can know these projects and their real fixes from its training; some notes name what "the tests of the maintainers" expect. This can make the 75% too high, in the two forms. 20 packets for each form, one pass, and only runs with a verified reproduction.
+- What this means: in its present form, the evidence block did not help a reviewer to decide. A separate reviewer on a stronger model, which read the issue and the diff, gave more information than the evaluator of the pack on the model of the author.
+
 ## 3. The evaluator on patches with a known answer
 
 42 patches of the bare agent on the hard SWE-bench issues, each judged once by the `evaluator` subagent (the version before the merge-readiness step):
@@ -235,6 +273,33 @@ The current evaluator on the 24 cases of `evals/judge-cases/` (two small tasks):
 - Cost: 0.21 US dollars and 14 minutes for 24 cases. No case without a decision.
 - The 3 rejections are on one task. The evaluator found that the fix raises an error for an infinite price, where the old code returned it. This is true for the 3 patches, and for the reference solution also. The requirement does not cover this input: the rejection is too strict, not false.
 - The evaluator is much better on these small tasks (0 of 12 wrong patches approved) than on the SWE-bench issues (5 of 19). Do not use the small set to predict the result on large repositories.
+
+### A plain reviewer against the evaluator of the pack (78 patches, 3 models)
+
+The question: on the same model, does a plain reviewer, which reads the issue and the diff and has no tools, separate correct from wrong patches better than the evaluator of the pack?
+
+- **The cases.** 78 patches with a change from the runs of the "regression" mode: 44 correct and 34 wrong by the hidden tests. "Accept all" gives a balanced accuracy of 50. One pass for each patch and arm; 95% intervals from a bootstrap over the issues.
+- **The arms.** The plain reviewer (issue and diff in the prompt, no tools, a decision and a reason) and the `evaluator` subagent of the pack in its usual role (tools, the commands of the pack, its full instructions), each on Haiku, Sonnet or Opus.
+
+| Arm | Correct patches accepted | Wrong patches rejected | Balanced accuracy (95% interval) | Cost (US dollars) |
+|---|---|---|---|---|
+| Plain reviewer, Haiku | 39 of 44 | 10 of 34 | 59.0 (49.0 to 69.4) | 0.16 |
+| Plain reviewer, Sonnet | 44 of 44 | 17 of 34 | 75.0 (65.9 to 84.5) | 2.65 |
+| Plain reviewer, Opus | 41 of 44 | 21 of 34 | 77.5 (67.8 to 87.3) | 5.31 |
+| Evaluator of the pack, Sonnet | 40 of 44 | 8 of 34 | 57.2 (48.8 to 65.8) | 11.89 |
+| Evaluator of the pack, Opus | 31 of 44 | 24 of 34 | 70.5 (60.5 to 80.2) | 25.23 |
+
+The criteria, written before the run: a strong plain reviewer separates the patches (met: 77.5, lower limit 67.8); on Sonnet the plain reviewer is better than the evaluator (met: +17.8 points, 7.7 to 29.2); on Opus the same (not met: +7.0 points, −7.3 to +21.4).
+
+What the numbers say:
+
+- **On Sonnet the evaluator of the pack approves almost all patches**: 66 PASS of 78, and 8 of the 34 wrong patches rejected. The plain reviewer on Sonnet accepted each correct patch and rejected half of the wrong patches, at less than a quarter of the cost.
+- **On Opus the evaluator rejected the most wrong patches** (24 of 34), and gave 25 UNKNOWN of 78, which left 13 correct patches not accepted.
+- **The step from Haiku to Sonnet is large for the plain reviewer (+16.0 points), the step from Sonnet to Opus is small (+2.5).**
+- **The cause is not isolated.** The two arms differ in the tools, in the instructions and in the form of the answer at the same time. "The tools make the evaluator trust green tests" and "the instructions of the evaluator are the cause" are two hypotheses; this run does not separate them. The same instructions also give different errors on different models: Haiku rejected most patches, Sonnet approved most, Opus gave many UNKNOWN.
+- The predictions were wrong: the plain reviewer on Sonnet was predicted at 58 to 66, and the evaluator was predicted to lose by UNKNOWN on Sonnet, not by approvals.
+- Limits: one pass for each patch. The memory of these SWE-bench issues in the models is not controlled, and it can help a reviewer that only reads the diff more than a reviewer that runs commands. On Opus the evaluator ran in two parts, with a pause for cost (52 of 78, then the others). One answer of Haiku had a JSON error and was read by its decision.
+- What this means for use: a plain review by a separate, stronger model is a cheap triage that rejected half of the wrong patches and no correct patch on these issues. It is a text verdict, not a proof: a defect that it suspects becomes evidence only when a command shows it (`memory.py counterexample`). The evaluator of the pack, as it is, is not the best use of the same money. Not measured: a design with the plain review first and a counterexample only for a suspected defect, and the plain reviewer on cases that are not in the training data of the models.
 
 ### The evaluator on another model (version 0.7.1)
 
@@ -443,6 +508,9 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
+- Which part of the evaluator makes it worse than a plain reviewer on Sonnet: its tools or its instructions. A run with the 4 combinations on the same 78 patches separates them.
+- The plain reviewer on cases that are not in the training data of the models, for example the 24 cases of `evals/judge-cases/`.
+- A review in two steps: a plain review first, then a counterexample only for a suspected defect.
 - The "regression" mode as it is now, where a `regression` counterexample does not block. The two measurements used the mode that blocked.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.

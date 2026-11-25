@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Measured, now in [docs/RESULTS.md](docs/RESULTS.md): does the evidence of the pack help a reviewer?** As one rule, no record of the pack decided better than "accept all". A verified reproduction is true in 74 of 76 cases, and in 61% of the wrong patches the test of the agent fails on the reference fix (36% of the correct patches; the interval of the difference includes zero). A model reviewer made the same decisions with the records and without them (15 of 20 correct in each form).
+- **Measured: a plain reviewer against the evaluator of the pack, on 78 patches and 3 models.** On Sonnet the plain reviewer, with no tools, reached a balanced accuracy of 75.0 against 57.2 for the evaluator, at less than a quarter of the cost; on Opus the difference is not significant. The cause, tools or instructions, is not isolated. The README says this under "What the pack does not do".
+
 ## 0.10.4 — 2026-11-25
 
 Corrections after a check of version 0.10.3. One changes behaviour: the "regression" mode of `require_evaluator`.

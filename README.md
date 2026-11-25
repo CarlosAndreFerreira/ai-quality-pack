@@ -21,7 +21,7 @@ Coding agents fail in predictable ways. They declare victory early, grade their 
 
 ## What the measurements show
 
-The numbers, with intervals, costs and limits, are in [docs/RESULTS.md](docs/RESULTS.md). All agent runs used Claude Haiku as the author.
+The numbers, with intervals, costs and limits, are in [docs/RESULTS.md](docs/RESULTS.md). Most agent runs used Claude Haiku as the author; one measurement of 160 runs used Claude Sonnet as the author and the evaluator.
 
 What the pack does:
 - It stops a "done" that no command checked. In 40 agent runs on repositories without a gate file, the old gate (exit code 0) let the agent continue in each run. The gate now fails.
@@ -32,11 +32,13 @@ What the pack does:
 What the pack does not do:
 - It does not make an answer "done" more reliable on hard issues. On 40 hard issues, a gate with the tests of the project gave 32 false "done" in 80 runs, against 30 for the bare agent. A mandatory evaluator gave fewer false "done" only because the agent said "not done" for most correct patches as well; it resolved fewer issues and cost 5.6 times more.
 - It does not tell you that a patch is correct. On 42 patches for hard issues, the evaluator did not separate wrong patches from correct patches, on Haiku or on Sonnet.
+- Its evaluator is not the best reviewer for the money. On 78 patches, a plain reviewer on Sonnet that read only the issue and the diff accepted 44 of 44 correct patches and rejected 17 of 34 wrong patches (balanced accuracy 75.0). The evaluator of the pack on Sonnet rejected 8 of 34 (57.2), at more than 4 times the cost. The cause, its tools or its instructions, is not isolated.
+- Its evidence block did not help a model reviewer to decide: the decisions were the same with the records and without them (15 of 20 correct in each form).
 - A green gate is not proof. Of 86 wrong patches, 9 broke an existing test of the project; the other 77 failed only tests that the agent did not have.
 - A green reproduction test is not proof. A test that the `criteria` subagent wrote from the issue alone rejected 0 of 19 wrong patches. With that test in the repository, the author resolved 20 of 40 issues, against 21 without it.
 - The full pack was never better than the core, thus a default install has the core only.
 
-Not measured: other models as the author or as the evaluator, other agents than Claude Code, tasks that are less hard, and agent runs on macOS (CI runs the tests of the pack on macOS).
+Not measured: models of other suppliers, other agents than Claude Code, tasks that are less hard, cases that are not in the training data of the models, and agent runs on macOS (CI runs the tests of the pack on macOS).
 
 ## Install
 
