@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Corrections after a check of version 0.10.3. One changes behaviour: the "regression" mode of `require_evaluator`.
+
+- **Fix: with `"require_evaluator": "regression"`, a `regression` counterexample does not block the stop.** Version 0.10.3 made such a record an `UNKNOWN` in `memory.py verdict`, but `memory.py evaluated` continued to block on it, and the message told the agent to correct the code. Now only a missing verdict blocks. The output names the command and tells the agent to name the change of behaviour in its last message; a person decides if the request wants it. Reason: in the measurement of 2026-11-24 the reference fix failed the same command in 14 of 18 runs, and the agent that the block told to correct the code moved its patch back to the behaviour of the base in 16 of 18. 1 test changed. Not measured with an agent.
+- Fix: `memory.py verdict` printed "a command ran, and its record does not count" for the type `behaviour-changed`. It now says that a check that passes on the base fails on this code.
+- The instructions of the evaluator (3 copies) and one comment in the code said that the records of commands separated wrong changes from correct changes. The last measurement does not support that. They now say that a record is a fact that a person can check. They also list `SUPPORTED` or `UNKNOWN` as the results of `memory.py verdict`, without `FAIL`.
+- The help of `counterexample` and of `verdict`, and two descriptions in the code, said "the change broke it" and listed a `FAIL`.
+- A number in the entry of version 0.10.3 was "7 of 0"; it is "7 and 0".
+- Checked after the release: the 170 tests of version 0.10.3 also pass on Windows, with and without `PYTHONDONTWRITEBYTECODE`. The entry of that version names Linux and CI only.
+
 ## 0.10.3 — 2026-11-24
 
 This release has the two measurements of the central question and what follows from them. On 40 hard issues with Claude Haiku as the author and the evaluator, a gate with the tests of the project did not change the number of false "done", and a mandatory evaluator, in each of its two modes, did not make an answer "done" more reliable than that of the bare agent ([docs/RESULTS.md](docs/RESULTS.md)). A `regression` counterexample did not separate wrong from correct patches, so it is no longer a FAIL. The two `require_evaluator` modes are in this release for a measurement with other models; they are not a recommendation.
@@ -8,7 +19,7 @@ Changes that need attention in an upgrade: `memory.py verdict` and `evidence --j
 
 Checked: 170 tests on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
-- **A `regression` counterexample is no longer a FAIL.** `memory.py verdict` gives `UNKNOWN` of the new type `behaviour-changed`, with the next steps: a person decides if the request wants the change of behaviour. The `counterexample` output and the evidence block say "the behaviour changed", not "the change broke it". Reason: in the measurement of 2026-11-24 a `regression` counterexample was on 12 wrong and 9 correct patches, and the reference fix of the maintainers failed the same command in 14 of 18 runs. The earlier "3 of 3" and "7 of 0" did not repeat.
+- **A `regression` counterexample is no longer a FAIL.** `memory.py verdict` gives `UNKNOWN` of the new type `behaviour-changed`, with the next steps: a person decides if the request wants the change of behaviour. The `counterexample` output and the evidence block say "the behaviour changed", not "the change broke it". Reason: in the measurement of 2026-11-24 a `regression` counterexample was on 12 wrong and 9 correct patches, and the reference fix of the maintainers failed the same command in 14 of 18 runs. The earlier "3 of 3" and "7 and 0" did not repeat.
 - The evaluator (skill, Claude Code and Antigravity subagents) reports a `regression` counterexample as a change of behaviour for a person to judge, not as a FAIL.
 - The README and docs/JSON.md say what the last measurements show: a gate with the tests of the project did not change false "done", the mandatory evaluator lowered it only by more "not done", and a `regression` record is not a verdict. The explanation of `require_evaluator` in the code says that the two modes are not a recommendation.
 - Attention in an upgrade: `memory.py verdict` and `evidence --json` give no `FAIL` now. A script that waits for exit code 1 from `verdict` must read `UNKNOWN` with `"unknown": "behaviour-changed"`.

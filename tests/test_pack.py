@@ -754,7 +754,7 @@ class ObservabilityTests(unittest.TestCase):
             self.assertEqual((root / ".agent-memory/.stop-chain").read_text(encoding="utf-8").strip(), "1")
             self.assertIn(".stop-chain", (root / ".agent-memory/.gitignore").read_text(encoding="utf-8"))
 
-    def test_require_evaluator_regression_blocks_only_for_no_verdict_and_for_a_regression_counterexample(self):
+    def test_require_evaluator_regression_blocks_only_for_no_verdict(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
             hook, gate = root / ".claude/hooks/gate_on_stop.py", root / ".agent-memory/gate.json"
@@ -772,16 +772,18 @@ class ObservabilityTests(unittest.TestCase):
             r = stop(False)
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("no verdict of the evaluator for this code", r.stderr)
-            self.assertIn("Only a `regression` counterexample blocks the stop", r.stderr)
-            # a FAIL of the evaluator without a regression counterexample does not block
+            self.assertIn("Only a missing verdict blocks the stop", r.stderr)
+            # a FAIL of the evaluator does not block
             m("feature", "fail", "--id", "F-1")
             r = m("evaluated")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("FAIL for this code (F-1), and no regression counterexample: the stop is not blocked", r.stdout)
+            self.assertIn("FAIL for this code (F-1): the stop is not blocked", r.stdout)
+            self.assertNotIn("passes on the base", r.stdout)
             self.assertIn("what the evaluator found and what it did not verify", r.stdout)
             self.assertEqual(stop(True).returncode, 0)
             self.assertEqual(outcomes(), ["blocked-evaluator", "released-green"])
-            # a command that passes on the base and fails on this code: the stop is blocked
+            # a command that passes on the base and fails on this code: the behaviour changed. The stop is not
+            # blocked (it was before 2026-11-25): the reference fix failed such a command in 14 of 18 measured runs
             (root / "broken.py").write_text("x = 1\n", encoding="utf-8")
             check = f'"{py}" -c "import os,sys; sys.exit(1 if os.path.exists(\'broken.py\') else 0)"'
             r = m("counterexample", "--test", check, "--id", "F-1")
@@ -789,23 +791,27 @@ class ObservabilityTests(unittest.TestCase):
             shown = [e for e in self._events(root) if e["ev"] == "counterexample"][-1]
             self.assertEqual(len(shown["hash"]), 12)                # a counterexample counts as an evaluation of this code
             m("feature", "fail", "--id", "F-1")
-            r = stop(False)
-            self.assertEqual(r.returncode, 2, r.stderr)
-            self.assertIn("a check that passes on the base fails on this code", r.stderr)
-            self.assertEqual(self._events(root)[-2]["regression"], True)
-            # the code without the regression, and a verdict for it: the stop goes on
+            r = m("evaluated")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("FAIL for this code (F-1): the stop is not blocked", r.stdout)
+            self.assertIn("A check that passes on the base fails on this code", r.stdout)
+            self.assertIn("a person decides if the request wants it", r.stdout)
+            self.assertEqual([e for e in self._events(root) if e["ev"] == "evaluated"][-1]["regression"], True)
+            self.assertEqual(stop(True).returncode, 0)
+            # the code without the change of behaviour, and a verdict for it: the stop goes on, with no note
             (root / "broken.py").unlink()
             self.assertEqual(m("feature", "pass", "--id", "F-1", "--evidence", "ran the tests", "--verified-by", "evaluator").returncode, 0)
             r = m("evaluated")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("PASS for this code (F-1), and no regression counterexample", r.stdout)
+            self.assertIn("PASS for this code (F-1): the stop is not blocked", r.stdout)
+            self.assertNotIn("passes on the base", r.stdout)
             self.assertNotIn("what it did not verify", r.stdout)
             self.assertEqual(stop(False).returncode, 0)
             # the session start says what to do before the change, in this mode
             digest = run([MEM, "start"], root, stdin=json.dumps({"session_id": "s-2", "source": "startup"})).stdout
             self.assertIn("The stop needs the evaluator", digest)
             self.assertIn("Before you change the code: write a test that fails now", digest)
-            self.assertIn("Only a `regression` counterexample blocks the stop", digest)
+            self.assertIn("A `regression` counterexample does not block", digest)
             # 2 evaluations at most in one session: after them, a change without a verdict does not block
             for n in (1, 2):
                 (root / "later.py").write_text(f"x = {n}\n", encoding="utf-8")

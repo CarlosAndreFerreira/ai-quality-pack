@@ -89,7 +89,7 @@ What the numbers say:
 
 ### The "regression" mode of the mandatory evaluator against the bare agent
 
-The question: with `"require_evaluator": "regression"`, where only a `regression` counterexample blocks the stop, does the agent call a correct patch done, and is its "done" more reliable than that of the bare agent?
+The question: with `"require_evaluator": "regression"`, where only a `regression` counterexample blocks the stop (the mode as it was at this commit; it does not block now), does the agent call a correct patch done, and is its "done" more reliable than that of the bare agent?
 
 - **The cases.** The same 40 hard issues and the same test command as above. 2 runs for each issue and arm: 160 runs on one day (2026-11-24), 4 at a time. Claude Haiku is the author and the evaluator. The pack is at the commit `bcfed3c`, after version 0.10.2.
 - **The arms.** A0c: the bare agent, with the test command in the prompt. GR: the core pack, with the command in a committed `gate.json`, the Stop gate and `"require_evaluator": "regression"`.

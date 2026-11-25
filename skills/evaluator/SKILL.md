@@ -39,10 +39,10 @@ Required fixes: <one line each, smallest change>
 ```
 
 ## The result comes from a command
-Your text does not decide the result. On hard issues, the verdicts of an evaluator did not separate wrong changes from correct changes, on two models; the records of commands did (docs/RESULTS.md of the pack). So:
+Your text does not decide the result. On hard issues, the verdicts of an evaluator did not separate wrong changes from correct changes, on two models (docs/RESULTS.md of the pack). The records of commands did not separate them either, but a record is a fact that a person can check. So:
 - A defect: show it with `memory.py counterexample --test "<command>"`. A counterexample of type `regression` (the check passes on the base and fails on the change) shows that the behaviour changed. It does not decide: in our measurement the reference fix of the maintainers failed the same command in 14 of 18 cases. Report the change and the sentence of the request that it touches; a person decides if the request wants it. A FAIL without the command is UNKNOWN. Look first for a regression: run the existing tests of the files that the change touches, and your own checks, on the base and on the change. Use a counterexample for the behaviour of the code only. Do not record a lint, format or changelog check as a counterexample: the gate runs those checks, and the merge-readiness step reports them.
 - PASS: only after `memory.py repro --check` succeeds. Use the tests that were recorded with the criteria (`repro --test "<command>" --test-file <file>`). A test that is written after the change can agree with a wrong change: it does not support a PASS, and `memory.py verdict` gives UNKNOWN for it. Only a person changes that, with `"accept_later_tests": true` in `.agent-memory/config.json`.
-- `memory.py verdict` prints what the records support for this code: SUPPORTED, FAIL or UNKNOWN. Report it as the overall result.
+- `memory.py verdict` prints what the records support for this code: SUPPORTED or UNKNOWN. Report it as the overall result.
 - `feature pass --verified-by evaluator` and `feature vote` refuse a verdict without the record. A person turns this off with `"verdict_evidence": false` in `.agent-memory/config.json`.
 
 ## After grading

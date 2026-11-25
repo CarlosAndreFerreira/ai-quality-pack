@@ -2155,7 +2155,7 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
     """A defect is shown by a command that fails on the current code. The base says which type of defect it is.
 
     The command runs on the current code first: when it passes there, it shows no defect. Then it runs on the base
-    (as `repro` does). Passes on the base: the change broke it. Fails on the base too: the change does not fix it,
+    (as `repro` does). Passes on the base: the change changed this behaviour. Fails on the base too: the change does not fix it,
     or the check fails for a reason that is not the change (a missing dependency, a wrong test): read the output.
     A FAIL of an evaluator without such a command is an opinion.
     """
@@ -2310,7 +2310,8 @@ def records_verdict() -> dict:
 
 
 def cmd_verdict(a: argparse.Namespace) -> None:
-    """Print what the records support for this code. Exit code: 0 SUPPORTED, 1 FAIL, 3 UNKNOWN."""
+    """Print what the records support for this code. Exit code: 0 SUPPORTED, 3 UNKNOWN. No record gives FAIL (exit
+    code 1) since version 0.10.3; the code is kept for a script that reads it."""
     ensure()
     v = records_verdict()
     log_event("verdict", result=v["verdict"], id=a.id, unknown=v.get("unknown"),
@@ -2321,8 +2322,9 @@ def cmd_verdict(a: argparse.Namespace) -> None:
         print(f"verdict: {v['verdict']} ({v['why']})")
         print("records for this code: " + ", ".join(f"{k} {val}" for k, val in v["records"].items()))
         if v.get("unknown"):
-            what = ("no command gave a record for this code" if v["unknown"] == "no-evidence"
-                    else "a command ran, and its record does not count")
+            what = {"no-evidence": "no command gave a record for this code",
+                    "behaviour-changed": "a check that passes on the base fails on this code"}.get(
+                        v["unknown"], "a command ran, and its record does not count")
             print(f"unknown: {v['unknown']} ({what}). Next: " + "; ".join(v["next"]))
     sys.exit({"SUPPORTED": 0, "FAIL": 1}.get(v["verdict"], 3))
 
@@ -2349,16 +2351,16 @@ EVALUATOR_HELP_REGRESSION = """The gate file asks for a run of the evaluator for
    run `memory.py evaluated --wait 100` again and again, until it prints a PASS, a FAIL or an UNKNOWN.
 4. A change of the code after the verdict needs a new verdict. After 2 evaluations in one session (`max_evaluations`
    in the gate file), a later change does not block the stop: do not start the evaluator again.
-Only a `regression` counterexample blocks the stop: a command that passes on the base and fails on your code. Then
-correct the code, or say in your last message that the work is NOT done.
-A FAIL or an UNKNOWN without that counterexample does not block. Then decide yourself if the work is done, and give in
-your last message what the evaluator found and what it did not verify."""
+Only a missing verdict blocks the stop. A FAIL, an UNKNOWN or a `regression` counterexample does not block. Then decide
+yourself if the work is done, and give in your last message what the evaluator found and what it did not verify.
+A `regression` counterexample (a command that passes on the base and fails on your code) shows that the behaviour
+changed: name the change in your last message. A person decides if the request wants it."""
 
 
 def evaluator_mode() -> str:
     """What the gate file of the base ref asks of the evaluator: "" (nothing), "pass" (`"require_evaluator": true`:
-    the stop needs a PASS) or "regression" (`"require_evaluator": "regression"`: the stop needs a verdict, and only a
-    `regression` counterexample blocks). The gate reads the committed file, so an agent cannot turn the check off in
+    the stop needs a PASS) or "regression" (`"require_evaluator": "regression"`: the stop needs a verdict, of any
+    result; a `regression` counterexample is reported and does not block). The gate reads the committed file, so an agent cannot turn the check off in
     its session. Measured on 40 hard issues with one model as the author and the evaluator (docs/RESULTS.md): neither
     mode made an answer "done" more reliable than that of the bare agent. With "pass" the agent said "not done" for most
     correct patches; with "regression" a `regression` counterexample was on 12 wrong and 9 correct patches. The modes
@@ -2410,7 +2412,8 @@ def digest_evaluator() -> List[str]:
     mode = evaluator_mode()
     if not mode:
         return []
-    last = ("Only a `regression` counterexample blocks the stop: a command that passes on the base and fails on your code."
+    last = ("The stop needs a verdict of the evaluator, of any result. A `regression` counterexample does not block: "
+            "name the change of behaviour in your last message."
             if mode == "regression" else "The stop needs a PASS of the evaluator for the code that you leave.")
     return ["## The stop needs the evaluator (`require_evaluator` in gate.json)",
             "- Before you change the code: write a test that fails now, and record it with the criteria: "
@@ -2455,13 +2458,13 @@ def wait_for_verdict(seconds: int) -> tuple:
 
 def evaluated_regression(wait: int) -> None:
     """`memory.py evaluated` with `"require_evaluator": "regression"`. Returns when the stop can go on: a complete
-    verdict without a `regression` counterexample, or the limit of evaluations of this session. Exit code 4 for no
-    verdict and for a `regression` counterexample."""
-    cx = counterexample_fresh()
-    regression = bool(cx and cx.get("kind") == "regression")
+    verdict, or the limit of evaluations of this session. Exit code 4 for no verdict.
+    A `regression` counterexample does not block (it did before 2026-11-25): it shows that the behaviour changed. In
+    the measurement of 2026-11-24 the reference fix failed the same command in 14 of 18 runs, and the agent that the
+    block told to correct the code moved its patch back to the behaviour of the base in 16 of 18."""
     state, ids = evaluator_state(load_features())
     limit, done = max_evaluations(), evaluations_in_session()
-    if state == "NONE" and not regression and limit and done >= limit:
+    if state == "NONE" and limit and done >= limit:
         log_event("evaluated", result="LIMIT", required=True, mode="regression", evaluations=done)
         print(f"evaluator: no verdict for this code, and this session has {done} evaluations (the limit is {limit}): "
               "the stop is not blocked")
@@ -2472,15 +2475,15 @@ def evaluated_regression(wait: int) -> None:
     regression = bool(cx and cx.get("kind") == "regression")
     log_event("evaluated", result=state, id=",".join(ids) or None, required=True, waited=wait or None,
               mode="regression", regression=regression or None)
-    if not regression and state not in ("NONE", "PENDING"):
-        print(f"evaluator: {state} for this code ({', '.join(ids)}), and no regression counterexample: the stop is not blocked")
+    if state not in ("NONE", "PENDING"):
+        print(f"evaluator: {state} for this code ({', '.join(ids)}): the stop is not blocked")
+        if regression:
+            print(f"A check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 160)}`. The behaviour "
+                  "changed. Name this change in your last message: a person decides if the request wants it.")
         if state != "PASS":
             print("Give in your last message what the evaluator found and what it did not verify.")
         return
-    if regression:
-        print(f"evaluator: a check that passes on the base fails on this code: `{clean(cx.get('test', '?'), 160)}`")
-    else:
-        print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
+    print(f"evaluator: {EVALUATOR_STATES[state]}" + (f" ({', '.join(ids)})" if ids else ""))
     print(f"code: {code_state_hash()[:12]}")
     print(EVALUATOR_HELP_REGRESSION)
     sys.exit(4)
@@ -2495,7 +2498,7 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
     agent whose evaluator runs in the background waits with this command (seen on 2026-11-19: in 3 of 3 sessions the
     agent stopped before the verdict, and the Stop hook used its 3 blocks in 35 seconds).
     With `"require_evaluator": "regression"`: exit code 0 for each complete verdict (PASS, FAIL, UNKNOWN), and 4 for
-    no verdict or for a `regression` counterexample for this code."""
+    no verdict for this code."""
     ensure()
     mode = evaluator_mode()
     required = bool(mode)
@@ -2526,7 +2529,8 @@ def cmd_evaluated(a: argparse.Namespace) -> None:
 def verdict_evidence_problem(verdict: str) -> str:
     """A verdict of the evaluator needs evidence that a command produced for this code. "" when the verdict has it.
     This is the default: the evaluator did not separate wrong patches from correct patches on hard issues, on two
-    models, and the records of commands did (docs/RESULTS.md). `"verdict_evidence": false` in config.json turns it off."""
+    models (docs/RESULTS.md). A record of a command did not separate them either, but it is a fact that a person can
+    check, and a text is not. `"verdict_evidence": false` in config.json turns it off."""
     if not load_config().get("verdict_evidence", True):
         return ""
     if verdict == "PASS" and repro_fresh() and not repro_supports():
@@ -4031,7 +4035,7 @@ def main() -> None:
     s.add_argument("--check", action="store_true", help="run nothing; exit 0 only if a reproduction was verified for this workspace")
     s.add_argument("--json", action="store_true", help="one JSON object in place of the text: result, record, exit code, output")
     s.set_defaults(fn=cmd_repro)
-    s = sub.add_parser("counterexample", help="show a defect: a command that fails on the current code; the base says if the change broke it")
+    s = sub.add_parser("counterexample", help="show a defect: a command that fails on the current code; the base says if the change changed this behaviour")
     s.add_argument("--test", help="shell command that fails when the defect is there")
     s.add_argument("--test-file", action="append", default=[], help="test file to copy onto the base (repeatable)")
     s.add_argument("--base", default="HEAD", help="commit without the change (default HEAD: the change is not committed)")
@@ -4047,13 +4051,13 @@ def main() -> None:
     s.set_defaults(fn=cmd_counterexample)
     s = sub.add_parser("evaluated", help="exit 0 when the evaluator passed a feature for exactly this code, 4 when not "
                                          "(the Stop hook asks this when gate.json has \"require_evaluator\": true; with "
-                                         "\"regression\" in place of true, only a regression counterexample blocks)")
+                                         "\"regression\" in place of true, each complete verdict lets the stop pass)")
     s.add_argument("--if-required", action="store_true", help="exit 0 also when gate.json does not ask for the evaluator")
     s.add_argument("--is-required", action="store_true", help="only say if gate.json asks for the evaluator: exit 0 yes, 1 no")
     s.add_argument("--wait", type=int, default=0, metavar="SECONDS",
                    help="wait for a complete verdict for this code, SECONDS at most (for an evaluator that runs in the background)")
     s.set_defaults(fn=cmd_evaluated)
-    s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED, FAIL or UNKNOWN (no text of an agent is read)")
+    s = sub.add_parser("verdict", help="what the records support for this code: SUPPORTED or UNKNOWN (no text of an agent is read)")
     s.add_argument("--id", help="the feature that the verdict is for (for the run log)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_verdict)

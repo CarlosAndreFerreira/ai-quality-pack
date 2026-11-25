@@ -16,8 +16,8 @@
   evaluator for exactly this code (`memory.py evaluated`). The agent then has work to do after a block (start the
   evaluator, correct the code, evaluate again), so the hook can block up to MAX_CHAIN times in one chain of stops,
   and then lets the agent stop (`released-red`). Without the option, nothing changes: one block.
-  With `"require_evaluator": "regression"` the stop needs a verdict of the evaluator for this code, of any result,
-  and only a `regression` counterexample blocks (`memory.py evaluated` decides; the hook is the same).
+  With `"require_evaluator": "regression"` the stop needs a verdict of the evaluator for this code, of any result;
+  a `regression` counterexample is reported and does not block (`memory.py evaluated` decides; the hook is the same).
   Two cases do not block (seen on 2026-11-19: the evaluator of Claude Code ran in the background, the agent stopped
   to wait for it, and the 3 blocks were used in 35 seconds, before the verdict):
   - the agent gives a list of its background tasks and an `evaluator` subagent runs: the stop goes on with
