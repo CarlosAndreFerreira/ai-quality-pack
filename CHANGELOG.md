@@ -1,8 +1,6 @@
 # Changelog
 
-## Unreleased
-
-Docs: a third measurement of the "regression" mode, with Claude Sonnet as the author and as the evaluator (160 runs, [docs/RESULTS.md](docs/RESULTS.md)). False "done" decreased from 41% to 21% of the runs, because the agent said "done" less frequently: it called done 59% of its correct patches and 55% of its wrong patches. The mode failed 1 of the 4 criteria written before the run. No code changed.
+## 0.10.4 — 2026-11-25
 
 Corrections after a check of version 0.10.3. One changes behaviour: the "regression" mode of `require_evaluator`.
 
@@ -12,6 +10,8 @@ Corrections after a check of version 0.10.3. One changes behaviour: the "regress
 - The help of `counterexample` and of `verdict`, and two descriptions in the code, said "the change broke it" and listed a `FAIL`.
 - A number in the entry of version 0.10.3 was "7 of 0"; it is "7 and 0".
 - Checked after the release: the 170 tests of version 0.10.3 also pass on Windows, with and without `PYTHONDONTWRITEBYTECODE`. The entry of that version names Linux and CI only.
+
+Docs: a third measurement of the "regression" mode, with Claude Sonnet as the author and as the evaluator (160 runs, [docs/RESULTS.md](docs/RESULTS.md)). False "done" decreased from 41% to 21% of the runs, because the agent said "done" less frequently: it called done 59% of its correct patches and 55% of its wrong patches. The mode failed 1 of the 4 criteria written before the run. No code changed.
 
 ## 0.10.3 — 2026-11-24
 
