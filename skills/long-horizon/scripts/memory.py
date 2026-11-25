@@ -3098,11 +3098,45 @@ def run_as_json(a: argparse.Namespace) -> None:
     sys.exit(code)
 
 
+def evidence_brief(ref: str, gaps: List[str], warnings: List[str], risk: str) -> str:
+    """Compact 5 to 8 line PR Decision Brief derived solely from verified records."""
+    v = records_verdict()
+    recs = v["records"]
+    verdict_txt = f"{v['verdict']} ({v['unknown']})" if v.get("unknown") else v["verdict"]
+    lines = [
+        "## PR Decision Brief",
+        f"- Verdict: {verdict_txt} · Risk: {risk}",
+        f"- Checks: gate={recs.get('gate', 'none')} · repro={recs.get('reproduction', 'none')} · counterexample={recs.get('counterexample', 'none')}",
+    ]
+    flags = [clean(w, 100) for w in warnings if NEW_GATE_NOTE not in w]
+    oos = out_of_scope_files(ref)
+    if oos:
+        flags.append(f"{len(oos)} out-of-scope file(s)")
+    rules = risk_matches(ref)[0]
+    if rules:
+        flags.append(f"{len(rules)} risk rule(s) matched")
+    if flags:
+        lines.append("- Red flags: " + "; ".join(flags[:4]))
+    feats = load_features()
+    decisions = [f"{f['id']}: {clean(q, 80)}" for f in feats for q in open_questions(f)]
+    if len(decisions) < 3:
+        decisions += [f"{f['id']} assumes: {clean(a, 80)}" for f in feats for a in (f.get("assumptions") or [])]
+    if decisions:
+        lines.append("- Decisions to check: " + "; ".join(decisions[:3]))
+    stat = git("diff", "--shortstat", ref, "--", ".", f":(exclude){ROOT.as_posix()}").strip()
+    lines.append(f"- Change against {ref}: {stat or 'no tracked changes'}")
+    if gaps:
+        lines.append(f"- Not verified ({len(gaps)}): " + "; ".join(clean(g, 80) for g in gaps[:3]) + (" ..." if len(gaps) > 3 else ""))
+    return "\n".join(lines)
+
+
 def cmd_evidence(a: argparse.Namespace) -> None:
     """What was verified for exactly this code, as Markdown for a pull request or a final report."""
     ensure()
     ref, _, ref_warnings = resolve_gate_ref(a.base)
     text, gaps, warnings, risk = evidence_report(ref, a.cost_usd, ref_warnings)
+    if getattr(a, "brief", False):
+        text = evidence_brief(ref, gaps, warnings, risk)
     if getattr(a, "json", False):
         v = records_verdict()
         print(json.dumps({"schema": JSON_SCHEMA, "command": "evidence", "exit": 1 if a.strict and (gaps or warnings) else 0,
@@ -4070,6 +4104,7 @@ def main() -> None:
     s.add_argument("--base", default=None, help="ref to compare with (default: active task base, origin default merge-base, or HEAD)")
     s.add_argument("--cost-usd", type=float, help="cost of the agent run, if the caller knows it")
     s.add_argument("--strict", action="store_true", help="exit 1 when something is not verified or a warning exists")
+    s.add_argument("--brief", action="store_true", help="compact 5 to 8 line PR Decision Brief instead of the full block")
     s.add_argument("--json", action="store_true", help="one JSON object: risk, verdict, records, what is not verified, and the Markdown")
     s.set_defaults(fn=cmd_evidence)
     s = sub.add_parser("pr", help="open a draft pull request with the evidence block, only after a green gate; it never merges")

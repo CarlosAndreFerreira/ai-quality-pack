@@ -73,8 +73,20 @@ CHAIN = Path(".agent-memory/.stop-chain")  # how many times this chain of stops 
 MAX_CHAIN = 3
 ENDED = {"completed", "complete", "done", "failed", "error", "killed", "stopped", "cancelled", "canceled"}
 MEM = Path(".agents/skills/long-horizon/scripts/memory.py")
-# a plugin install has no copy in the project: the script is in the plugin, three folders above this file
-PLUGIN_MEM = Path(__file__).resolve().parents[3] / "skills" / "long-horizon" / "scripts" / "memory.py"
+
+
+def find_plugin_memory() -> Path:
+    """Locate memory.py in a plugin layout (Claude Code: parents[3]; Antigravity: parents[1])."""
+    env_mem = os.environ.get("AGENT_MEMORY_SCRIPT")
+    if env_mem and Path(env_mem).is_file():
+        return Path(env_mem)
+    here = Path(__file__).resolve()
+    for idx in (1, 3):
+        if len(here.parents) > idx:
+            cand = here.parents[idx] / "skills" / "long-horizon" / "scripts" / "memory.py"
+            if cand.is_file():
+                return cand
+    return here.parents[3] / "skills" / "long-horizon" / "scripts" / "memory.py" if len(here.parents) > 3 else MEM
 
 
 def project_root(data: dict) -> str:
@@ -180,8 +192,10 @@ def main() -> int:
     if project and Path(project).is_dir():
         os.chdir(project)  # hooks may start in a subfolder; the pack paths are relative to the project root
     global MEM
-    if not MEM.exists() and PLUGIN_MEM.is_file():
-        MEM = PLUGIN_MEM
+    if not MEM.exists():
+        plugin_mem = find_plugin_memory()
+        if plugin_mem.is_file():
+            MEM = plugin_mem
     gate_file = Path(".agent-memory/gate.json")
     if not MEM.exists():
         return 0

@@ -1,5 +1,5 @@
 {
-  "description": "Session digest, formatter after an edit, and the completion gate before the agent stops (the gate runs only in a project that has .agent-memory/gate.json).",
+  "description": "Session digest, guard against edits to checks and tests, formatter after an edit, and completion gate before the agent stops (active in projects with .agent-memory/).",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,17 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/aqp-hook start"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/aqp-hook guard"
           }
         ]
       }

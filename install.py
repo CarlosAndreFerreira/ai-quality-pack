@@ -457,7 +457,7 @@ OPENCODE_AGENTS = ("evaluator", "criteria", "triage")
 
 def opencode_agent_text(name: str) -> str:
     """The Claude Code subagent file as an OpenCode agent: the same instructions, the OpenCode header."""
-    text = (PACK / "templates" / ".claude" / "agents" / f"{name}.md").read_text(encoding="utf-8")
+    text = (PACK / "agents" / f"{name}.md").read_text(encoding="utf-8")
     head, _, body = text[4:].partition("\n---\n") if text.startswith("---\n") else ("", "", text)
     description = next((l[len("description:"):].strip() for l in head.splitlines() if l.startswith("description:")), name)
     return f"---\ndescription: {description}\nmode: subagent\n---\n{body}"
@@ -564,7 +564,7 @@ def install_project(root: Path, a: argparse.Namespace) -> None:
     add_if_absent(None, root / "AGENTS.md", agents_md)
     add_if_absent(PACK / "templates" / "CLAUDE.md", root / "CLAUDE.md")
     for agent in ("evaluator.md", "criteria.md", "triage.md"):
-        add_or_upgrade(PACK / "templates" / ".claude" / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
+        add_or_upgrade(PACK / "agents" / agent, root / ".claude" / "agents" / agent, a.upgrade)
     if a.evaluator_model:
         set_agent_model(root / ".claude" / "agents" / "evaluator.md", a.evaluator_model)
         log("NOTE: the evaluator subagent of Claude Code now runs on this model. A stronger model is not better by default "
@@ -828,8 +828,9 @@ def uninstall_project(root: Path, a: argparse.Namespace) -> None:
     remove_skills(skills, a.force)
     remove_if_empty(root / ".agents")
     tpl = PACK / "templates"
-    for rel in ("agents/evaluator.md", "agents/criteria.md", "agents/triage.md", "hooks/format_on_edit.py", "hooks/gate_on_stop.py",
-                "hooks/guard_pack_files.py"):
+    for rel in ("evaluator.md", "criteria.md", "triage.md"):
+        remove_pack_file(PACK / "agents" / rel, root / ".claude" / "agents" / rel, a.force)
+    for rel in ("hooks/format_on_edit.py", "hooks/gate_on_stop.py", "hooks/guard_pack_files.py"):
         remove_pack_file(tpl / ".claude" / rel, root / ".claude" / rel, a.force)
     remove_pack_file(tpl / "ci" / "quality-gate.yml", root / ".github" / "workflows" / "quality-gate.yml", a.force)
     remove_pack_file(tpl / "ci" / "agent-issue.yml", root / ".github" / "workflows" / "agent-issue.yml", a.force)
@@ -864,6 +865,12 @@ def core_rules_text() -> str:
     return "".join(l for l in text.splitlines(True) if "`learn-from-mistakes`" not in l)
 
 
+def agy_hooks_text() -> str:
+    """Antigravity plugin hooks.json with the platform Python command."""
+    text = (PACK / "templates" / "antigravity" / "hooks.json").read_text(encoding="utf-8")
+    return text.replace('"python3 ', f'"{PY} ')
+
+
 def uninstall_global(a: argparse.Namespace) -> None:
     home = Path.home()
     agy_plugin = home / ".gemini" / "config" / "plugins" / "ai-quality-pack"
@@ -872,12 +879,19 @@ def uninstall_global(a: argparse.Namespace) -> None:
     rules = agy_plugin / "rules" / "AGENTS.md"
     if rules.is_file() and rules.read_text(encoding="utf-8") == core_rules_text():
         remove(rules)  # the rules of a core install are not the template: compare with what the installer wrote
-    for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
+    hooks_cfg = agy_plugin / "hooks.json"
+    if hooks_cfg.is_file() and (a.force or hooks_cfg.read_text(encoding="utf-8") == agy_hooks_text()):
+        remove(hooks_cfg)
+    elif hooks_cfg.is_file():
+        log(f"kept (differs from the pack's copy; --force removes it): {hooks_cfg}")
+    for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg", "hooks/aqp_agy_hook.py"):
         remove_pack_file(PACK / "templates" / "antigravity" / rel, agy_plugin / rel, a.force)
+    for name in ("format_on_edit.py", "gate_on_stop.py", "guard_pack_files.py"):
+        remove_pack_file(PACK / "templates" / ".claude" / "hooks" / name, agy_plugin / "hooks" / name, a.force)
     for doc in ("README.md", "LICENSE"):
         if (PACK / doc).exists():
             remove_pack_file(PACK / doc, agy_plugin / doc, a.force)
-    remove_if_empty(agy_plugin / "agents", agy_plugin / "rules", agy_plugin / "assets", agy_plugin)
+    remove_if_empty(agy_plugin / "agents", agy_plugin / "rules", agy_plugin / "assets", agy_plugin / "hooks", agy_plugin)
 
 
 def main() -> None:
@@ -952,19 +966,35 @@ def main() -> None:
         if FULL and not a.no_upstream:
             fetch_upstream(agy_skills, a.update_upstream, a.upstream_ref)
         agy_tpl = PACK / "templates" / "antigravity"
-        for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg"):
+        for rel in ("plugin.json", "agents/evaluator.md", "rules/AGENTS.md", "assets/logo.svg", "hooks/aqp_agy_hook.py"):
             src_f = agy_tpl / rel
             dst_f = agy_plugin / rel
             if rel == "rules/AGENTS.md" and not FULL:
-                if a.upgrade and dst_f.exists() and not DRY:
-                    dst_f.write_text(core_rules_text(), encoding="utf-8")
+                if a.upgrade and dst_f.exists():
+                    if dst_f.read_text(encoding="utf-8") != core_rules_text():
+                        log(f"upgrade: {dst_f}")
+                        if not DRY:
+                            dst_f.write_text(core_rules_text(), encoding="utf-8")
                 else:
                     add_if_absent(None, dst_f, core_rules_text())
             elif src_f.exists():
-                if a.upgrade and dst_f.exists() and not DRY:
-                    shutil.copy2(src_f, dst_f)
+                if a.upgrade and dst_f.exists():
+                    if dst_f.read_bytes() != src_f.read_bytes():
+                        log(f"upgrade: {dst_f}")
+                        if not DRY:
+                            shutil.copy2(src_f, dst_f)
                 else:
                     add_if_absent(src_f, dst_f)
+        hooks_cfg_dst = agy_plugin / "hooks.json"
+        if a.upgrade and hooks_cfg_dst.exists():
+            if hooks_cfg_dst.read_text(encoding="utf-8") != agy_hooks_text():
+                log(f"upgrade: {hooks_cfg_dst}")
+                if not DRY:
+                    hooks_cfg_dst.write_text(agy_hooks_text(), encoding="utf-8")
+        else:
+            add_if_absent(None, hooks_cfg_dst, agy_hooks_text())
+        for name in ("format_on_edit.py", "gate_on_stop.py", "guard_pack_files.py"):
+            add_or_upgrade(PACK / "templates" / ".claude" / "hooks" / name, agy_plugin / "hooks" / name, a.upgrade)
         for doc in ("README.md", "LICENSE"):  # pack-owned, like plugin.json: --upgrade replaces an older copy
             if not (PACK / doc).exists():
                 continue
@@ -975,10 +1005,12 @@ def main() -> None:
                         shutil.copy2(PACK / doc, agy_plugin / doc)
             else:
                 add_if_absent(PACK / doc, agy_plugin / doc)
-        for d in (home / ".gemini" / "antigravity-cli" / "skills", home / ".claude" / "skills"):
-            install_pack_skills(d, a.upgrade)
-            if FULL and not a.no_upstream:
-                fetch_upstream(d, a.update_upstream, a.upstream_ref)
+        if a.upgrade:
+            remove_skills(home / ".gemini" / "antigravity-cli" / "skills", a.force)
+        claude_skills = home / ".claude" / "skills"
+        install_pack_skills(claude_skills, a.upgrade)
+        if FULL and not a.no_upstream:
+            fetch_upstream(claude_skills, a.update_upstream, a.upstream_ref)
         if a.with_egm:
             install_egm()
         log("NOTE: memory is per project — run 'memory.py init' inside each repo (or install in project mode).")
