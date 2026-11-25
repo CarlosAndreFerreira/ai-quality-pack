@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Docs: a third measurement of the "regression" mode, with Claude Sonnet as the author and as the evaluator (160 runs, [docs/RESULTS.md](docs/RESULTS.md)). False "done" decreased from 41% to 21% of the runs, because the agent said "done" less frequently: it called done 59% of its correct patches and 55% of its wrong patches. The mode failed 1 of the 4 criteria written before the run. No code changed.
+
 Corrections after a check of version 0.10.3. One changes behaviour: the "regression" mode of `require_evaluator`.
 
 - **Fix: with `"require_evaluator": "regression"`, a `regression` counterexample does not block the stop.** Version 0.10.3 made such a record an `UNKNOWN` in `memory.py verdict`, but `memory.py evaluated` continued to block on it, and the message told the agent to correct the code. Now only a missing verdict blocks. The output names the command and tells the agent to name the change of behaviour in its last message; a person decides if the request wants it. Reason: in the measurement of 2026-11-24 the reference fix failed the same command in 14 of 18 runs, and the agent that the block told to correct the code moved its patch back to the behaviour of the base in 16 of 18. 1 test changed. Not measured with an agent.

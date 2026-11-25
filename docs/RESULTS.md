@@ -148,7 +148,54 @@ What the numbers say:
 - **The agent did not obey the records.** It said "done" in 13 of the 21 runs with a `regression` counterexample (the limit of evaluations then lets the stop pass), in 13 of 26 runs where the last result was a FAIL, and in 20 of 24 where it was an UNKNOWN.
 - **Cost.** GR cost 3.8 times the bare agent and took 5.5 times longer. 7.36 US dollars for 160 runs.
 - What this means for use: do not turn on `require_evaluator`, in the one mode or in the other, to make "done" reliable on hard issues when one model is the author and the evaluator. Read a `regression` counterexample as "the behaviour changed": a person decides if the request wants that change. With these two measurements, a check by the same model added no information about the correctness of the patch.
-- Limits: one model for the author and for the evaluator, hard issues only, Python only. The 2 runs of an issue are not independent. 80 runs for each arm cannot show a difference of 7 points in false "done". Not measured: a stronger model as the author and as the evaluator, and tasks that are less hard. 6 runs left an empty patch.
+- Limits: one model for the author and for the evaluator, hard issues only, Python only. The 2 runs of an issue are not independent. 80 runs for each arm cannot show a difference of 7 points in false "done". Not measured: tasks that are less hard. A stronger model as the author and as the evaluator is in the section below. 6 runs left an empty patch.
+
+### The "regression" mode with a stronger model as the author and as the evaluator
+
+The question: do the results of the measurement above stay the same when Claude Sonnet is the author and the evaluator?
+
+- **The cases.** The same 40 hard issues, the same 2 arms (A0c and GR), the same criteria and the same commit of the pack (`bcfed3c`, where a `regression` counterexample blocked the stop). 2 runs for each issue and arm: 160 runs, 4 at a time. 49 runs are of 2026-11-24 and 111 are of 2026-11-25, because the computer stopped. The model is `claude-sonnet-5-5` in the two arms, and the evaluator subagent uses the model of the session.
+- **The prediction, written before the run.** Criterion 1 passes, because Sonnet approves more, and criterion 3 fails.
+
+| | A0c | GR |
+|---|---|---|
+| Resolved (the hidden tests pass) | 46 of 80 (58%) | 49 of 80 (61%) |
+| The agent said "done" | 74 (92%) | 46 (58%) |
+| False "done", of all runs | 33 (41%) | 17 (21%) |
+| Correct patches that the agent called done | 41 of 46 (89%) | 29 of 49 (59%) |
+| Wrong patches that the agent called done | 33 of 34 (97%) | 17 of 31 (55%) |
+| Correct answers among the answers "done" (precision) | 41 of 74 (55%) | 29 of 46 (63%) |
+| Runs that used the 30 minutes | 0 | 1 |
+| Mean cost of a run (US dollars) | 0.120 | 0.288 |
+| Mean time of the agent (seconds) | 39 | 207 |
+
+Differences in percentage points, GR − A0c, with a 95% interval from a bootstrap over the issues: resolved +3.8 (−3.7 to +11.3); false "done" −20.0 (−31.2 to −8.8); the agent said "done" −35.0 (−47.5 to −22.5); precision of "done" +6.3 (−6.6 to +18.7).
+
+The result against the criteria: criterion 1 failed (59%), criterion 2 passed (+3.8 points), criterion 3 passed as a number (63% against 55%) but the interval of the difference includes zero, criterion 4 passed (1 run of 80). The prediction was wrong on its two points.
+
+What the pack recorded in the 80 runs of GR:
+
+| Record | Correct patches (49) | Wrong patches (31) |
+|---|---|---|
+| The evaluator recorded a result | 49 | 29 |
+| Last result of the evaluator: PASS | 15 | 3 |
+| Last result of the evaluator: FAIL | 1 | 0 |
+| Last result of the evaluator: UNKNOWN | 28 | 23 |
+| A test recorded before the change | 16 | 9 |
+| `memory.py verdict` gave `SUPPORTED` at the end | 15 | 3 |
+| A `regression` counterexample | 0 | 2 |
+| The limit of evaluations came into effect (`LIMIT`) | 4 | 1 |
+
+What the numbers say:
+
+- **The false "done" decreased to half, and the interval does not include zero.** With Haiku the decrease was 10 points and the interval included zero.
+- **The decrease is an effect of fewer answers "done", not of a separation of the patches.** GR called done 59% of its correct patches and 55% of its wrong patches. The last result of the evaluator was an UNKNOWN in 51 of 80 runs.
+- **The cost is correct work that a person must check again.** GR said "not done" for 20 correct patches (the bare agent: 5). In 15 of the 20, the last result was an UNKNOWN: the evaluator found no defect, and it had no record that counts as evidence.
+- **A PASS of the evaluator selects easy issues.** 15 of the 18 runs with a PASS were correct (83%). The 18 runs are 12 issues, and the bare agent resolved 18 of 24 runs on those issues (75%). Thus the PASS adds little to the difficulty of the issue, and 18 runs are not enough to show a difference. With Haiku the counts were 11 and 12.
+- **A `regression` counterexample was rare:** 2 of 80 runs (Haiku: 21), the two on wrong patches that the agent called done. We ran the 2 commands again with no agent: the last patch of the agent passes the two, and the reference fix fails 1. This number is too small for a conclusion.
+- **Cost.** GR cost 2.4 times the bare agent and took 5.3 times longer. 32.61 US dollars for 160 runs.
+- What this means for use: with a stronger model, the mode is a trade. It removes half of the false "done", and a person then checks 25% of the runs where a correct patch has the answer "not done". Use it only where a false "done" costs much more than a second check. It is not a filter that separates correct patches from wrong patches.
+- Limits: 2 runs for each issue, which are not independent. Hard issues and Python only. The runs are of 2 days. The comparison with Haiku is between days and models, not a controlled comparison. Criterion 3 had no margin written before the run. The commit of the pack has the mode that blocked on a `regression` counterexample; that block came into effect in 2 runs only. Not measured: the mode as it is now, a model of another supplier, and tasks that are less hard.
 
 ## 3. The evaluator on patches with a known answer
 
@@ -396,6 +443,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
+- The "regression" mode as it is now, where a `regression` counterexample does not block. The two measurements used the mode that blocked.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
 - Test tampering: no agent run on tasks with impossible tests (ImpossibleBench). The `block_test_changes` option of the gate was not run with an agent or on the prompt-injection test set.
