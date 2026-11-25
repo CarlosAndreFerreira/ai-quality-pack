@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.5 — 2026-11-25
+
+Two measurements about review, with no change of code. The evidence block of the pack did not help a model reviewer to decide, and a plain reviewer with no tools separated correct from wrong patches better than the evaluator of the pack on Sonnet ([docs/RESULTS.md](docs/RESULTS.md)). No command, default or check changed.
+
+Checked: 170 tests on Linux, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
 - **Measured, now in [docs/RESULTS.md](docs/RESULTS.md): does the evidence of the pack help a reviewer?** As one rule, no record of the pack decided better than "accept all". A verified reproduction is true in 74 of 76 cases, and in 61% of the wrong patches the test of the agent fails on the reference fix (36% of the correct patches; the interval of the difference includes zero). A model reviewer made the same decisions with the records and without them (15 of 20 correct in each form).
 - **Measured: a plain reviewer against the evaluator of the pack, on 78 patches and 3 models.** On Sonnet the plain reviewer, with no tools, reached a balanced accuracy of 75.0 against 57.2 for the evaluator, at less than a quarter of the cost; on Opus the difference is not significant. The cause, tools or instructions, is not isolated. The README says this under "What the pack does not do".
