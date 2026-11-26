@@ -1935,6 +1935,14 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self.assertTrue(data["markdown"].startswith("## PR Decision Brief"))
             for tpl in (PACK / "templates/AGENTS.md", PACK / "templates/antigravity/rules/AGENTS.md"):
                 self.assertIn("Single-session tasks with no open tasks", tpl.read_text(encoding="utf-8"))
+            # the rule that needs a recorded feature must not apply to the work that is told to skip `feature add`
+            rules = (PACK / "templates/AGENTS.md").read_text(encoding="utf-8")
+            done = rules.split("## Definition of done", 1)[1].split("## Memory", 1)[0]
+            supported = next(l for l in done.splitlines() if "prints SUPPORTED" in l)
+            self.assertTrue(supported.startswith("4. Only when the work has a recorded feature"), supported)
+            self.assertIn("Rule 4 of the definition of done does not apply then", rules)
+            # the guard blocks a write of the gate file, so no rule tells the agent to write it
+            self.assertNotIn("write the file and tell the user", (PACK / "templates/antigravity/rules/AGENTS.md").read_text(encoding="utf-8"))
 
     def test_evidence_lists_what_is_verified_and_what_is_not(self):
         with tempfile.TemporaryDirectory() as t:

@@ -23,6 +23,8 @@ Fixes for the Antigravity and Claude Code plugins. No measurement or default of 
 - **Low-overhead implementer rules & `evidence --brief`**:
   - Added `memory.py evidence --brief` for a compact 5-to-8-line PR Decision Brief (`Verdict`, `Checks`, `Red flags`, `Decisions to check`, `Change`, `Not verified`).
   - Updated `templates/AGENTS.md` and `templates/antigravity/rules/AGENTS.md` so single-session tasks skip manual task/progress bookkeeping and rely on hooks and the completion gate.
+  - Fix: `templates/AGENTS.md` told the agent to skip `feature add` in a single-session task, and its definition of done needed a `SUPPORTED` verdict, which needs `feature add --test-file`. The `SUPPORTED` rule is now rule 4 and applies only to work with a recorded feature. Rule 3 is the gate, for each task.
+  - Fix: the Antigravity rules told the agent to write `.agent-memory/gate.json` when it has no commands. The guard hook blocks that write. The rules now tell the agent to write `.agent-memory/gate.proposed.json` and to tell the user.
   - Checked by unit tests; not measured with a live agent yet.
 
 ## 0.10.5 — 2026-11-25

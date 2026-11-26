@@ -10,10 +10,11 @@
 ## Definition of done
 1. Acceptance criteria were agreed before coding, and tests cover them. The full suite passes.
 2. Lint and typecheck are clean. No new suppressions without a reason on the same line.
-3. `memory.py verdict` prints SUPPORTED for this code: the gate passed, and a test that was recorded with the criteria (`feature add --test-file`) fails on the base and passes now. The `evaluator` skill/subagent (separate context) looked for a counterexample. Its text does not decide; the records do.
+3. The gate passes for this code. Say in your last message what no command verified.
+4. Only when the work has a recorded feature (multi-session work, or criteria that you recorded with `feature add --test-file`): `memory.py verdict` prints SUPPORTED for this code. That is: the gate passed, and the recorded test fails on the base and passes now. The `evaluator` skill/subagent (separate context) looked for a counterexample. Its text does not decide; the records do.
 
 ## Memory
-- Single-session tasks with no open tasks: skip `task open`, `feature add` and `progress`; let hooks and `memory.py gate` check the work. Use `long-horizon` only for multi-session work or when open tasks already exist.
+- Single-session tasks with no open tasks: skip `task open`, `feature add` and `progress`; let hooks and `memory.py gate` check the work. Rule 4 of the definition of done does not apply then. Use `long-horizon` only for multi-session work or when open tasks already exist.
 - Before saying done: `python3 .agents/skills/long-horizon/scripts/memory.py gate` must pass.
 - Session start: `python3 .agents/skills/long-horizon/scripts/memory.py start` (skip if a hook printed it). Handle ⚑ items first. Resume unfinished tasks.
 - Mistake caught or non-obvious fix worked → `learn-from-mistakes`. SKILL.md changes only via `skill-evolve` with user approval.
