@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Fix for the Windows `.cmd` plugin launchers (`bin/aqp-hook.cmd` and `bin/aqp-memory.cmd`). No default of `memory.py` changed.
+
+- **Windows `.cmd` launchers (`bin/aqp-hook.cmd`, `bin/aqp-memory.cmd`)**: probe `python3`, `python`, and `py -3` with `call ... -c "import sys"` instead of `where`, skipping Microsoft Store aliases that are on `PATH` and fail on execution; jump with `goto` instead of reading `%errorlevel%` inside an `if (...)` block so hook block exit codes (`2`) are preserved. Checked by static assertions on Linux; live `.cmd` execution test runs on Windows CI (`os.name == "nt"`).
+
 ## 0.10.7 — 2026-11-26
 
 A correction. Two measurements are in [docs/RESULTS.md](docs/RESULTS.md); the second did not repeat the first, and it corrects statements of versions 0.10.5 and 0.10.6 about the plain reviewer and the evaluator of the pack. One change of code: `--mode two-stage` of `skill_eval.py judge` (a tool for experiments; no default of `memory.py` changed).
