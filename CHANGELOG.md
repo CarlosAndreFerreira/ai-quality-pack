@@ -13,6 +13,7 @@ Fixes for the Antigravity and Claude Code plugins. No measurement or default of 
   - Moved `evaluator.md`, `criteria.md`, and `triage.md` from `templates/.claude/agents/` to root `agents/` and removed the explicit `"agents"` path list from `.claude-plugin/plugin.json` so Claude Code auto-discovers the three subagents.
   - Added `hooks/aqp_hook.py` (cross-platform Python dispatcher), `bin/aqp-hook.cmd` and `bin/aqp-memory.cmd` for Windows, and `PreToolUse` (`guard`) in `hooks/hooks.json`.
   - Added slash commands in `commands/`: `init.md`, `review.md`, `evidence.md`, and `doctor.md`.
+  - Fix: `/ai-quality-pack:init` told the agent to create `.agent-memory/gate.json`, and the new `PreToolUse` guard blocked that write, so the command could not end. The agent now writes `.agent-memory/gate.proposed.json` and a person moves it into place. The guard did not change. 1 test extended.
   - Checked by unit tests; not run in a live Claude Code session or with `claude plugin validate` (CLI binary unavailable in this environment) yet.
 - **`skill-eval judge` (`--mode plain|two-stage`)**:
   - Added `--mode plain` (issue + base `<context>` + clean diff), `--mode two-stage` (plain triage outputting `APPROVE`/`SUSPECT` JSON hypotheses, invoking `--verify-cmd` only on `SUSPECT` cases), `--workers` for parallel case execution, Antigravity `agy` JSON (`response` / `thinking_tokens` / `cache_read_tokens`) parsing, and `balanced_accuracy` in `judge_summary` and report output.

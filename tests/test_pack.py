@@ -2211,6 +2211,14 @@ class PluginTests(unittest.TestCase):
             (root / ".agent-memory/config.json").write_text(json.dumps({"guard": False}), encoding="utf-8")
             self.assertEqual(run([dispatcher, "guard"], root, stdin=guard_in, env=env).returncode, 0)
             (root / ".agent-memory/config.json").unlink()
+            # the `init` command: the agent writes a proposal, and the guard blocks each way to the gate file itself
+            init_cmd = (PACK / "commands/init.md").read_text(encoding="utf-8")
+            self.assertIn(".agent-memory/gate.proposed.json", init_cmd)
+            self.assertIn("Do not write `.agent-memory/gate.json` yourself", init_cmd)
+            guard = lambda tool, **args: run([dispatcher, "guard"], root, stdin=json.dumps({"tool_name": tool, "tool_input": args}), env=env).returncode
+            self.assertEqual(guard("Write", file_path=".agent-memory/gate.proposed.json", content="{}"), 0)
+            self.assertEqual(guard("Write", file_path=".agent-memory/gate.json", content="{}"), 2)
+            self.assertEqual(guard("Bash", command="mv .agent-memory/gate.proposed.json .agent-memory/gate.json"), 2)
             # stop blocks when gate fails, and format exits 0
             py = sys.executable
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
