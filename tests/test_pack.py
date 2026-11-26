@@ -2326,6 +2326,51 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn("no python3 or python on PATH that runs", r.stderr)
 
+    def test_windows_cmd_launchers_probe_execution_and_avoid_parenthesized_errorlevel(self):
+        for name in ("aqp-hook.cmd", "aqp-memory.cmd"):
+            text = (PACK / "bin" / name).read_text(encoding="utf-8")
+            for probe in ('call python3 -c "import sys"', 'call python -c "import sys"', 'call py -3 -c "import sys"'):
+                self.assertIn(probe, text, name)
+            self.assertNotIn("where python", text.lower(), name)
+            self.assertIsNone(re.search(r"\([^)]*%errorlevel%[^)]*\)", text, re.I), name)
+            for label in (":use_python3", ":use_python", ":use_py"):
+                self.assertIn(label, text, name)
+
+    @unittest.skipUnless(os.name == "nt", "Windows .cmd launchers")
+    def test_windows_cmd_launchers_skip_store_stubs_and_propagate_exit_codes(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, fake = Path(t) / "repo", Path(t) / "fakebin"
+            root.mkdir()
+            fake.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            (fake / "python3.cmd").write_text("@echo off\r\necho Python was not found 1>&2\r\nexit /b 49\r\n", encoding="utf-8")
+            (fake / "python.cmd").write_text("@echo off\r\necho Python was not found 1>&2\r\nexit /b 9009\r\n", encoding="utf-8")
+            (fake / "py.cmd").write_text(
+                f'@echo off\r\nif "%~1"=="-3" shift\r\n"{sys.executable}" %1 %2 %3 %4 %5 %6 %7 %8 %9\r\nexit /b %errorlevel%\r\n',
+                encoding="utf-8",
+            )
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), CLAUDE_PLUGIN_ROOT=str(PACK),
+                       PATH=str(fake) + os.pathsep + os.environ.get("PATH", ""))
+            comspec = os.environ.get("COMSPEC", "cmd")
+            cmd = lambda launcher, *args: subprocess.run(
+                [comspec, "/c", str(PACK / "bin" / launcher), *args],
+                cwd=root, env=env, input="{}", capture_output=True, text=True,
+            )
+            r = cmd("aqp-memory.cmd", "init")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((root / ".agent-memory").is_dir())
+            r = cmd("aqp-hook.cmd", "start")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("# Session start digest", r.stdout)
+            r = cmd("aqp-hook.cmd", "stop")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # block exit code must not be swallowed inside if (...)
+            self.assertIn("no .agent-memory/gate.json", r.stderr)
+            (fake / "py.cmd").unlink()
+            env["PATH"] = str(fake)
+            r = cmd("aqp-hook.cmd", "start")
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("no python3, python or py on PATH that runs", r.stderr)
+
     def test_doctor_names_the_plugin_install(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
