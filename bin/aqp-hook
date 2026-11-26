@@ -1,21 +1,14 @@
 #!/bin/sh
-# Runs one of the pack's hooks from the plugin directory. Usage: aqp-hook start|format|stop
-# A project that has the pack's own install (install.py) keeps its hooks: this script then does nothing,
-# so that no hook runs twice.
+# Runs one of the pack's hooks from the plugin directory. Usage: aqp-hook start|format|guard|stop
+# A project that has the pack's own install (install.py) keeps its hooks: aqp_hook.py then does nothing.
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case "$1" in
-  start) script="skills/long-horizon/scripts/memory.py"; set -- start ;;
-  format) script="templates/.claude/hooks/format_on_edit.py"; set -- ;;
-  stop) script="templates/.claude/hooks/gate_on_stop.py"; set -- ;;
-  *) echo "aqp-hook: unknown hook '$1' (use start, format or stop)" >&2; exit 1 ;;
+  start|format|guard|stop) ;;
+  *) echo "aqp-hook: unknown hook '$1' (use start, format, guard or stop)" >&2; exit 1 ;;
 esac
-settings="${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json"
-if [ -f "$settings" ] && grep -q "$(basename "$script")" "$settings"; then
-  exit 0
-fi
 for py in python3 python; do
   if command -v "$py" >/dev/null 2>&1; then
-    exec "$py" "$root/$script" "$@"
+    exec "$py" "$root/hooks/aqp_hook.py" "$@"
   fi
 done
 echo "aqp-hook: no python3 or python on PATH" >&2

@@ -52,9 +52,9 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-PROTECTED = (".claude/", ".agents/", ".codex/", ".opencode/", ".github/workflows/", ".github/CODEOWNERS",
+PROTECTED = (".claude/", ".agents/", ".agent/", ".gemini/", ".codex/", ".opencode/", ".github/workflows/", ".github/CODEOWNERS",
              ".agent-memory/gate.json", ".agent-memory/config.json", ".agent-memory/risk-waivers.jsonl")
-NAMES = re.compile(r"(\.claude/|\.agents/|\.codex/|\.opencode/|\.github/workflows/|\.github/CODEOWNERS|\.agent-memory/(gate\.json|config\.json|risk-waivers\.jsonl))")
+NAMES = re.compile(r"(\.claude/|\.agents/|\.agent/|\.gemini/|\.codex/|\.opencode/|\.github/workflows/|\.github/CODEOWNERS|\.agent-memory/(gate\.json|config\.json|risk-waivers\.jsonl))")
 # tools that change nothing: no check (OpenCode sends each tool call to the guard)
 READ_ONLY = {"read", "grep", "glob", "list", "ls", "notebookread", "webfetch", "websearch", "skill", "task", "subagent",
              "agent", "todowrite", "todoread", "update_plan", "lsp", "question"}

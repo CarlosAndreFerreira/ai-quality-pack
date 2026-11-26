@@ -1673,7 +1673,7 @@ class EvaluatorViewAndCiTests(unittest.TestCase):
             self.assertEqual(run([*base, "--evaluator-model", "claude-sonnet-5-5"], root).returncode, 0)  # a second run changes it
             text = evaluator.read_text(encoding="utf-8")
             self.assertEqual((text.count("model: claude-sonnet-5-5"), text.count("model: opus")), (1, 0))
-            template = (PACK / "templates/.claude/agents/evaluator.md").read_text(encoding="utf-8")
+            template = (PACK / "agents/evaluator.md").read_text(encoding="utf-8")
             self.assertEqual(text.replace("model: claude-sonnet-5-5\n", ""), template)  # nothing else changed
             self.assertEqual(run([*base, "--evaluator-model", "bad model; rm"], root).returncode, 1)
             r = run([INST, "uninstall", root], root)  # the model line does not make the file "changed by the user"
@@ -1783,6 +1783,157 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             r = run([EVAL, "judge", "--cases", "cases.jsonl", "--judge-cmd", "echo VERDICT: PASS"], root)
             self.assertEqual(r.returncode, 2)
             self.assertIn("label (correct|wrong)", r.stderr)
+
+    def test_judge_plain_and_two_stage_modes(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            repo = tmp / "pack_repo"
+            repo.mkdir()
+            self._git(repo, "init", "-q")
+            (repo / "skills/long-horizon/scripts").mkdir(parents=True)
+            (repo / "skills/long-horizon/scripts/memory.py").write_text((MEM).read_text(encoding="utf-8"), encoding="utf-8")
+            (repo / "agents").mkdir()
+            (repo / "agents/evaluator.md").write_text("---\nname: evaluator\n---\nBody\n", encoding="utf-8")
+            (repo / "README.md").write_text("hi\n", encoding="utf-8")
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "init")
+
+            cases_dir = tmp / "cases_dir"
+            (cases_dir / "repos/app/docs").mkdir(parents=True)
+            (cases_dir / "repos/app/docs/SPEC.md").write_text("SPEC_BASE_RULE: add must sum inputs.\n", encoding="utf-8")
+            (cases_dir / "repos/app/calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+            (cases_dir / "patches").mkdir()
+            (cases_dir / "patches/ok.diff").write_text(
+                "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n",
+                encoding="utf-8",
+            )
+            (cases_dir / "patches/suspect_ok.diff").write_text(
+                "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b  # ok\n",
+                encoding="utf-8",
+            )
+            (cases_dir / "patches/bug.diff").write_text(
+                "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a * b\n"
+                "--- a/docs/SPEC.md\n+++ b/docs/SPEC.md\n@@ -1 +1 @@\n-SPEC_BASE_RULE: add must sum inputs.\n+TAMPERED_SPEC\n",
+                encoding="utf-8",
+            )
+            req = "<requirement>\nadd(a, b) must follow docs/SPEC.md and return the sum of a and b.\n</requirement>"
+            cases_file = cases_dir / "cases.jsonl"
+            cases_file.write_text("\n".join([
+                json.dumps({"id": "c_ok", "label": "correct", "repo": "repos/app", "patch": "patches/ok.diff", "prompt": "WRAPPER\n" + req}),
+                json.dumps({"id": "c_refute", "label": "correct", "repo": "repos/app", "patch": "patches/suspect_ok.diff", "prompt": "WRAPPER\n" + req}),
+                json.dumps({"id": "w_bug", "label": "wrong", "repo": "repos/app", "patch": "patches/bug.diff", "prompt": "WRAPPER\n" + req}),
+            ]) + "\n", encoding="utf-8")
+
+            py = sys.executable.replace("\\", "/")
+            eval_probe = tmp / "eval_probe.py"
+            eval_probe.write_text(
+                "import pathlib, sys\n"
+                "assert pathlib.Path('.claude/agents/evaluator.md').is_file(), 'missing root agents copy'\n"
+                "print('VERDICT: PASS')\n",
+                encoding="utf-8",
+            )
+            r_ev = run([EVAL, "judge", "--cases", cases_file, "--skills", "skills", "--judge-cmd", f'"{py}" "{eval_probe}"'], repo)
+            self.assertEqual(r_ev.returncode, 0, r_ev.stdout + r_ev.stderr)
+
+            plain_probe = tmp / "plain_probe.py"
+            plain_probe.write_text(
+                "import json, pathlib, sys\n"
+                "txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+                "assert 'WRAPPER' not in txt\n"
+                "assert 'add(a, b) must follow docs/SPEC.md' in txt\n"
+                "assert '<context>' in txt and 'SPEC_BASE_RULE' in txt\n"
+                "ctx = txt.split('<context>', 1)[1].split('</context>', 1)[0]\n"
+                "assert 'TAMPERED_SPEC' not in ctx\n"
+                "assert '<diff>' in txt\n"
+                "verdict = 'FAIL' if 'a * b' in txt else 'PASS'\n"
+                "print(json.dumps({'total_cost_usd': 0.01, 'result': f'checked\\nVERDICT: {verdict}'}))\n",
+                encoding="utf-8",
+            )
+            r_pl = run([EVAL, "judge", "--mode", "plain", "--cases", cases_file, "--skills", "skills",
+                        "--judge-cmd", f'"{py}" "{plain_probe}" {{prompt_file}}'], repo)
+            self.assertEqual(r_pl.returncode, 0, r_pl.stdout + r_pl.stderr)
+            self.assertIn("balanced accuracy:      100.0%", r_pl.stdout)
+
+            stage2_log = tmp / "stage2_calls.jsonl"
+            s1 = tmp / "s1.py"
+            s1.write_text(
+                "import json, pathlib, sys\n"
+                "txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+                "assert '<context>' in txt and 'SPEC_BASE_RULE' in txt\n"
+                "if 'a * b' in txt:\n"
+                "    out = {'decision': 'SUSPECT', 'hypotheses': [{'requirement_quote': 'must return the sum', 'suspected_defect': 'multiplies instead of adds', 'repro_idea': 'add(2,3)'}]}\n"
+                "    v = 'FAIL'\n"
+                "elif '# ok' in txt:\n"
+                "    out = {'decision': 'SUSPECT', 'hypotheses': [{'requirement_quote': 'must return the sum', 'suspected_defect': 'suspicious comment', 'repro_idea': 'add(2,3)'}]}\n"
+                "    v = 'FAIL'\n"
+                "else:\n"
+                "    out = {'decision': 'APPROVE', 'hypotheses': []}\n"
+                "    v = 'PASS'\n"
+                "body = '```json\\n' + json.dumps(out) + '\\n```\\nVERDICT: ' + v\n"
+                "print(json.dumps({'total_cost_usd': 0.01, 'usage': {'input_tokens': 100, 'output_tokens': 20, 'thinking_tokens': 10}, 'response': body}))\n",
+                encoding="utf-8",
+            )
+            s2 = tmp / "s2.py"
+            s2.write_text(
+                f"import json, pathlib, sys\n"
+                f"txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+                f"assert '<suspected_defects>' in txt\n"
+                f"open({str(stage2_log)!r}, 'a', encoding='utf-8').write(txt + '\\n---\\n')\n"
+                f"code = pathlib.Path('calc.py').read_text(encoding='utf-8')\n"
+                f"v = 'FAIL' if 'a * b' in code else 'PASS'\n"
+                f"print(json.dumps({{'total_cost_usd': 0.03, 'usage': {{'input_tokens': 200, 'output_tokens': 50, 'cache_read_tokens': 5}}, 'response': f'VERDICT: {{v}}'}}))\n",
+                encoding="utf-8",
+            )
+            r_2s = run([EVAL, "judge", "--mode", "two-stage", "--workers", "2", "--cases", cases_file, "--skills", "skills",
+                        "--judge-cmd", f'"{py}" "{s1}" {{prompt_file}}',
+                        "--verify-cmd", f'"{py}" "{s2}" {{prompt_file}}'], repo)
+            self.assertEqual(r_2s.returncode, 0, r_2s.stdout + r_2s.stderr)
+            self.assertIn("balanced accuracy:      100.0%", r_2s.stdout)
+            calls = [c for c in stage2_log.read_text(encoding="utf-8").split("\n---\n") if c.strip()]
+            self.assertEqual(len(calls), 2)  # c_ok skipped Stage 2; only c_refute and w_bug ran Stage 2
+            self.assertTrue(any("multiplies instead of adds" in c for c in calls))
+            reports = sorted((repo / ".agent-memory/evals/results").glob("*-judge.json"))
+            rep_data = json.loads(reports[-1].read_text(encoding="utf-8"))
+            self.assertEqual(rep_data["mode"], "two-stage")
+            self.assertEqual(rep_data["summary"]["balanced_accuracy"], 1.0)
+            self.assertEqual([row["id"] for row in rep_data["rows"]], ["c_ok", "c_refute", "w_bug"])
+            by_id = {row["id"]: row for row in rep_data["rows"]}
+            self.assertEqual((by_id["c_ok"]["stage"], by_id["c_ok"]["verdict"], by_id["c_ok"]["cost_usd"]), (1, "PASS", 0.01))
+            self.assertEqual((by_id["c_refute"]["stage"], by_id["c_refute"]["verdict"], by_id["c_refute"]["cost_usd"]), (2, "PASS", 0.04))
+            self.assertEqual((by_id["w_bug"]["stage"], by_id["w_bug"]["verdict"], by_id["w_bug"]["cost_usd"]), (2, "FAIL", 0.04))
+            self.assertEqual((by_id["w_bug"]["tokens"], by_id["c_ok"]["tokens"]), (385, 130))
+
+    def test_evidence_brief_is_compact_and_surfaces_red_flags_and_decisions(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "tests").mkdir()
+            (root / "tests/test_old.py").write_text("def test_x(): assert True\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "add test")
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{self.py}" -c "pass"']}), encoding="utf-8")
+            self._git(root, "add", ".agent-memory/gate.json")
+            self._git(root, "commit", "-q", "-m", "gate")
+            self.assertEqual(run([MEM, "gate"], root).returncode, 0)
+            self.assertEqual(run([
+                MEM, "feature", "add", "--id", "F-1", "--desc", "Add calc", "--criterion", "add(2,3) == 5",
+                "--question", "Should negative numbers overflow?", "--assumption", "Inputs are integers",
+            ], root).returncode, 0)
+            (root / "tests/test_old.py").unlink()  # triggers a deleted-test warning (red flag)
+            r = run([MEM, "evidence", "--brief"], root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            lines = [l for l in r.stdout.splitlines() if l.strip()]
+            self.assertEqual(lines[0], "## PR Decision Brief")
+            self.assertLessEqual(len(lines), 10)
+            for part in ("Verdict:", "Checks:", "Red flags:", "Decisions to check:"):
+                self.assertIn(part, r.stdout)
+            rj = run([MEM, "evidence", "--brief", "--json"], root)
+            self.assertEqual(rj.returncode, 0, rj.stderr)
+            data = json.loads(rj.stdout)
+            self.assertEqual(sorted(data), ["command", "exit", "markdown", "not_verified", "records", "ref", "risk", "schema", "verdict", "warnings"])
+            self.assertTrue(data["markdown"].startswith("## PR Decision Brief"))
+            for tpl in (PACK / "templates/AGENTS.md", PACK / "templates/antigravity/rules/AGENTS.md"):
+                self.assertIn("Single-session tasks with no open tasks", tpl.read_text(encoding="utf-8"))
 
     def test_evidence_lists_what_is_verified_and_what_is_not(self):
         with tempfile.TemporaryDirectory() as t:
@@ -2013,24 +2164,64 @@ class PluginTests(unittest.TestCase):
         plugin = json.loads((PACK / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertRegex(plugin["name"], r"^[a-z0-9]+(-[a-z0-9]+)*$")
         self.assertFalse(plugin["name"].startswith(("claude-", "anthropic-")))
-        for rel in plugin["agents"]:
-            self.assertTrue(rel.startswith("./") and ".." not in rel and (PACK / rel).is_file(), rel)
+        self.assertNotIn("agents", plugin)  # root agents/ directory is auto-discovered by Claude Code
+        for name in ("evaluator.md", "criteria.md", "triage.md"):
+            text = (PACK / "agents" / name).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("---\n") and "\nname: " in text and "\ndescription: " in text, name)
+        for name in ("init.md", "review.md", "evidence.md", "doctor.md"):
+            text = (PACK / "commands" / name).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("---\n") and "\ndescription: " in text, name)
         market = json.loads((PACK / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual(market["owner"]["name"], plugin["author"]["name"])
         self.assertEqual([(p["name"], p["source"]) for p in market["plugins"]], [(plugin["name"], "./")])
         self.assertFalse((PACK / "CLAUDE.md").exists())  # a CLAUDE.md at a plugin root is not loaded
         hooks = json.loads((PACK / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]
-        self.assertEqual(sorted(hooks), ["PostToolUse", "SessionStart", "Stop"])
+        self.assertEqual(sorted(hooks), ["PostToolUse", "PreToolUse", "SessionStart", "Stop"])
         launcher = (PACK / "bin/aqp-hook").read_text(encoding="utf-8")
+        dispatcher = (PACK / "hooks/aqp_hook.py").read_text(encoding="utf-8")
         for event, entries in hooks.items():
             command = entries[0]["hooks"][0]["command"]
             self.assertTrue(command.startswith('"${CLAUDE_PLUGIN_ROOT}"/bin/aqp-hook '), command)
-            self.assertIn(f"\n  {command.split()[-1]}) ", launcher)
-        for script in re.findall(r'script="([^"]+)"', launcher):
-            self.assertTrue((PACK / script).is_file(), script)
+            ev = command.split()[-1]
+            self.assertIn(ev, launcher)
+            self.assertIn(f'"{ev}":', dispatcher)
+        for rel in re.findall(r'"(skills/[^"]+|templates/[^"]+)"', dispatcher):
+            self.assertTrue((PACK / rel).is_file(), rel)
         for name in ("aqp-hook", "aqp-memory"):
             raw = (PACK / "bin" / name).read_bytes()
             self.assertTrue(raw.startswith(b"#!/bin/sh\n"), name)
+            self.assertTrue((PACK / "bin" / f"{name}.cmd").is_file(), f"{name}.cmd")
+
+    def test_plugin_hooks_python_dispatcher_cross_platform(self):
+        dispatcher = PACK / "hooks/aqp_hook.py"
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+            # guard is silent outside a project with .agent-memory/
+            guard_in = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": ".agent-memory/gate.json"}})
+            self.assertEqual(run([dispatcher, "guard"], root, stdin=guard_in, env=env).returncode, 0)
+            self.assertEqual(run([MEM, "init"], root).returncode, 0)
+            r = run([dispatcher, "start"], root, stdin="{}", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("# Session start digest", r.stdout)
+            # guard blocks protected edits once .agent-memory/ exists, unless disabled in config.json
+            r = run([dispatcher, "guard"], root, stdin=guard_in, env=env)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            (root / ".agent-memory/config.json").write_text(json.dumps({"guard": False}), encoding="utf-8")
+            self.assertEqual(run([dispatcher, "guard"], root, stdin=guard_in, env=env).returncode, 0)
+            (root / ".agent-memory/config.json").unlink()
+            # stop blocks when gate fails, and format exits 0
+            py = sys.executable
+            (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            self.assertEqual(run([dispatcher, "format"], root, stdin="{}", env=env).returncode, 0)
+            self.assertEqual(run([dispatcher, "stop"], root, stdin="{}", env=env).returncode, 2)
+            self.assertEqual(run([dispatcher, "nonsense"], root, stdin="{}", env=env).returncode, 1)
+            # yields silently when the project has install.py hooks configured in .claude/settings.json
+            self.assertEqual(run([INST, "project", root, "--no-upstream", "--profile", "none", "--with-stop-gate", "--with-guard"], root).returncode, 0)
+            self.assertEqual(run([dispatcher, "start"], root, stdin="{}", env=env).stdout, "")
+            self.assertEqual(run([dispatcher, "guard"], root, stdin=guard_in, env=env).returncode, 0)
+            self.assertEqual(run([dispatcher, "stop"], root, stdin="{}", env=env).returncode, 0)
 
     @unittest.skipIf(os.name == "nt", "the launchers are POSIX shell scripts")
     def test_plugin_hooks_run_from_the_plugin_and_yield_to_a_project_install(self):
@@ -2606,7 +2797,7 @@ class GovernanceTests(unittest.TestCase):
             self.assertIn("the gate has no lint or type check command", run([MEM, "doctor"], root).stdout)
             (root / ".agent-memory/gate.json").write_text(json.dumps({"commands": ["git --version", "ruff check ."]}), encoding="utf-8")
             self.assertNotIn("no lint or type check", run([MEM, "doctor"], root).stdout)
-        evaluator = (PACK / "templates/.claude/agents/evaluator.md").read_text(encoding="utf-8")
+        evaluator = (PACK / "agents/evaluator.md").read_text(encoding="utf-8")
         for text in ("Merge readiness", "MERGE-READY: YES", "a rule that the change breaks is a FAIL", "400 changed lines"):
             self.assertIn(text, evaluator)
         self.assertEqual(re.findall(r"^(\d+)\. ", evaluator, re.M), [str(i) for i in range(11)])  # steps 0 to 10, in order
@@ -2845,7 +3036,7 @@ class EvalsAndHardeningTests(unittest.TestCase):
 class EvaluatorCopiesTests(unittest.TestCase):
     def test_antigravity_evaluator_has_the_same_steps_as_the_claude_code_one(self):
         steps = {}
-        for name in ("templates/.claude/agents/evaluator.md", "templates/antigravity/agents/evaluator.md"):
+        for name in ("agents/evaluator.md", "templates/antigravity/agents/evaluator.md"):
             body = (PACK / name).read_text(encoding="utf-8").split("---\n", 2)[2]
             steps[name] = re.sub(r"(?m)^0\. .*\n", "", body)        # step 0 names where memory.py is: it differs by agent
         a, b = steps.values()
@@ -2969,6 +3160,9 @@ class SecurityTests(unittest.TestCase):
             blocked = [
                 ("Edit", {"file_path": ".claude/settings.json"}),
                 ("Write", {"file_path": str(root / ".agents/skills/evaluator/SKILL.md")}),
+                ("Edit", {"file_path": ".agent/rules.md"}),
+                ("Write", {"file_path": ".gemini/config.json"}),
+                ("Bash", {"command": "rm -rf .gemini/config/plugins/ai-quality-pack"}),
                 ("Edit", {"file_path": ".agent-memory/gate.json"}),
                 ("Write", {"file_path": ".agent-memory/risk-waivers.jsonl"}),
                 ("Bash", {"command": "echo '{}' >> .agent-memory/risk-waivers.jsonl"}),
@@ -2998,6 +3192,7 @@ class SecurityTests(unittest.TestCase):
                 ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate 2>&1"}),
                 ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py gate 2>&1 | tail -n 20; echo \"exit=$?\""}),
                 ("Bash", {"command": "ls .agents/skills/long-horizon/scripts/ 2>&1"}),
+                ("Bash", {"command": "python3 ~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py gate"}),
                 ("Bash", {"command": "ls -la .claude 2>/dev/null >&2"}),
             ]
             for tool, args in allowed:
@@ -4283,13 +4478,13 @@ class CoreAndRecordsTests(unittest.TestCase):
             self.assertEqual(len(feats[0]["recorded_tests"]), 1)
 
     def test_the_evaluator_and_the_criteria_subagent_say_where_the_result_comes_from(self):
-        for name in ("templates/.claude/agents/evaluator.md", "templates/antigravity/agents/evaluator.md", "skills/evaluator/SKILL.md"):
+        for name in ("agents/evaluator.md", "templates/antigravity/agents/evaluator.md", "skills/evaluator/SKILL.md"):
             text = (PACK / name).read_text(encoding="utf-8")
             for part in ("counterexample --test", "repro --check", "verdict", "A counterexample of type `regression`",
                          '"verdict_evidence": false'):
                 self.assertIn(part, text, f"{name}: {part}")
             self.assertNotIn('sets `"verdict_evidence": true`', text)      # it is the default now, not an option to turn on
-        criteria = (PACK / "templates/.claude/agents/criteria.md").read_text(encoding="utf-8")
+        criteria = (PACK / "agents/criteria.md").read_text(encoding="utf-8")
         for part in ("Write these tests now, in new test files", "Do not change an existing file", "--test-file <file>"):
             self.assertIn(part, criteria)
         self.assertNotIn("Bash", criteria.split("\n---\n")[0])              # it runs no command
@@ -4347,6 +4542,110 @@ class CoreEverywhereTests(unittest.TestCase):
             self.assertEqual(run([INST, "global", "--full", "--no-upstream"], home, env=env).returncode, 0)
             rules = (Path(home) / ".gemini/config/plugins/ai-quality-pack/rules/AGENTS.md").read_text(encoding="utf-8")
             self.assertIn("learn-from-mistakes", rules)
+
+
+class AntigravityPluginTests(unittest.TestCase):
+    """Native Antigravity plugin installation, legacy deduplication, and hook translation."""
+
+    def test_global_install_avoids_duplicate_skills_and_cleans_legacy_on_upgrade(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "USERPROFILE": home}
+            legacy = Path(home) / ".gemini/antigravity-cli/skills"
+            (legacy / "evaluator").mkdir(parents=True)
+            shutil.copytree(PACK / "skills/evaluator", legacy / "evaluator", dirs_exist_ok=True)
+            (legacy / "custom-user-skill").mkdir(parents=True)
+            (legacy / "custom-user-skill/SKILL.md").write_text("---\nname: custom-user-skill\n---\n", encoding="utf-8")
+
+            self.assertEqual(run([INST, "global"], home, env=env).returncode, 0)
+            plugin = Path(home) / ".gemini/config/plugins/ai-quality-pack"
+            self.assertTrue((plugin / "hooks.json").is_file())
+            for name in ("aqp_agy_hook.py", "format_on_edit.py", "gate_on_stop.py", "guard_pack_files.py"):
+                self.assertTrue((plugin / "hooks" / name).is_file(), name)
+            self.assertTrue((legacy / "evaluator").is_dir())  # untouched without --upgrade
+
+            self.assertEqual(run([INST, "global", "--upgrade"], home, env=env).returncode, 0)
+            self.assertFalse((legacy / "evaluator").exists())  # legacy pack duplicate removed
+            self.assertTrue((legacy / "custom-user-skill/SKILL.md").is_file())  # user skill kept
+
+            self.assertEqual(run([INST, "uninstall", "--global"], home, env=env).returncode, 0)
+            self.assertFalse((plugin / "hooks.json").exists())
+            self.assertFalse((plugin / "hooks").exists())
+            self.assertTrue((legacy / "custom-user-skill/SKILL.md").is_file())
+
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "USERPROFILE": home}
+            self.assertEqual(run([INST, "global"], home, env=env).returncode, 0)
+            self.assertFalse((Path(home) / ".gemini/antigravity-cli/skills").exists())
+
+    def test_antigravity_hook_adapter_translates_all_events(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            home, repo = tmp / "home", tmp / "repo"
+            home.mkdir()
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            (repo / "tests").mkdir()
+            (repo / "tests/test_app.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+            self.assertEqual(run([INST, "global"], home, env=env).returncode, 0)
+            agy_hook = home / ".gemini/config/plugins/ai-quality-pack/hooks/aqp_agy_hook.py"
+
+            # silent outside a project with .agent-memory/
+            r = run([agy_hook, "start"], repo, stdin=json.dumps({"cwd": str(repo)}), env=env)
+            self.assertEqual(json.loads(r.stdout), {})
+            r = run([agy_hook, "guard"], repo, stdin=json.dumps({
+                "cwd": str(repo), "toolCall": {"name": "edit_file", "args": {"Path": ".agent-memory/gate.json"}},
+            }), env=env)
+            self.assertEqual(json.loads(r.stdout), {"decision": "allow"})
+
+            # init memory in repo and test SessionStart
+            self.assertEqual(run([MEM, "init"], repo).returncode, 0)
+            r = run([agy_hook, "start"], repo, stdin=json.dumps({"conversationId": "c1", "workspacePaths": [str(repo)]}), env=env)
+            start_out = json.loads(r.stdout)
+            self.assertIn("# Session start digest", start_out["injectSteps"][0]["systemMessage"]["systemMessage"])
+
+            # PreToolUse guard: blocks protected paths and tracked test deletions, allows normal edits
+            for tc in (
+                {"name": "edit_file", "args": {"Path": ".agent-memory/gate.json", "Target": "a", "Replacement": "b"}},
+                {"name": "write_file", "args": {"Path": ".gemini/config.json", "Content": "{}"}},
+                {"name": "run_command", "args": {"CommandLine": "rm tests/test_app.py"}},
+            ):
+                res = json.loads(run([agy_hook, "guard"], repo, stdin=json.dumps({"cwd": str(repo), "toolCall": tc}), env=env).stdout)
+                self.assertEqual(res["decision"], "deny", tc)
+                self.assertTrue(res.get("reason"), tc)
+            ok = json.loads(run([agy_hook, "guard"], repo, stdin=json.dumps({
+                "cwd": str(repo), "toolCall": {"name": "edit_file", "args": {"Path": "src/app.py", "Target": "a", "Replacement": "b"}},
+            }), env=env).stdout)
+            self.assertEqual(ok, {"decision": "allow"})
+
+            # PostToolUse format exits cleanly
+            fmt = json.loads(run([agy_hook, "format"], repo, stdin=json.dumps({
+                "cwd": str(repo), "toolCall": {"name": "edit_file", "args": {"Path": "src/app.py"}},
+            }), env=env).stdout)
+            self.assertEqual(fmt, {})
+
+            # Stop hook: red gate -> continue; continuationActive -> stops without loop; USER_CANCELED -> {}
+            py = sys.executable
+            (repo / ".agent-memory/gate.json").write_text(json.dumps({"commands": [f'"{py}" -c "import sys; sys.exit(1)"']}), encoding="utf-8")
+            stop1 = json.loads(run([agy_hook, "stop"], repo, stdin=json.dumps({
+                "cwd": str(repo), "conversationId": "c1", "terminationReason": "NO_TOOL_CALL", "continuationActive": False,
+            }), env=env).stdout)
+            self.assertEqual(stop1["decision"], "continue")
+            self.assertIn("Completion gate failed", stop1["reason"])
+            stop2 = json.loads(run([agy_hook, "stop"], repo, stdin=json.dumps({
+                "cwd": str(repo), "conversationId": "c1", "terminationReason": "NO_TOOL_CALL", "continuationActive": True,
+            }), env=env).stdout)
+            self.assertEqual(stop2, {})
+            stop_cancel = json.loads(run([agy_hook, "stop"], repo, stdin=json.dumps({
+                "cwd": str(repo), "conversationId": "c1", "terminationReason": "USER_CANCELED", "continuationActive": False,
+            }), env=env).stdout)
+            self.assertEqual(stop_cancel, {})
 
 
 class OwnCodeTests(unittest.TestCase):

@@ -18,6 +18,19 @@ python skills/skill-eval/scripts/skill_eval.py judge --cases evals/judge-cases/c
   --judge-cmd "claude -p --permission-mode acceptEdits < {prompt_file}" --max-runs 24
 ```
 
+Alternative modes (available for benchmarking; live measurements on `--mode two-stage` are not run yet):
+
+```bash
+# Plain diff review (no tools; receives only <requirement> and clean diff)
+python skills/skill-eval/scripts/skill_eval.py judge --cases evals/judge-cases/cases.jsonl --skills skills \
+  --mode plain --judge-cmd "claude -p --tools '' < {prompt_file}" --max-runs 24
+
+# Two-stage review (plain triage -> targeted verifier only on SUSPECT cases)
+python skills/skill-eval/scripts/skill_eval.py judge --cases evals/judge-cases/cases.jsonl --skills skills \
+  --mode two-stage --judge-cmd "claude -p --tools '' < {prompt_file}" \
+  --verify-cmd "claude -p --permission-mode acceptEdits < {prompt_file}" --max-runs 24
+```
+
 - The judge works in a new repository for each case, with the case's code and patch. The case list, the labels and the hidden tests are not there.
 - The report gives the rate of wrong work approved and of correct work rejected, each with a 95% interval.
 - Limits: two tasks, both small and in Python. 24 cases give wide intervals. A good result here does not prove a good result on large repositories.

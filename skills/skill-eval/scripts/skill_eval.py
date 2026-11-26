@@ -56,7 +56,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -150,7 +152,7 @@ def leakage(diff: str, tasks: List[dict]) -> List[str]:
 
 
 # ---------------------------------------------------------------- what the agent reported
-TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+TOKEN_KEYS = ("input_tokens", "output_tokens", "thinking_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "cache_read_tokens")
 LOG_LIMIT = 200_000
 
 
@@ -758,6 +760,8 @@ def judge_summary(rows: List[dict]) -> dict:
     tp, fn, tn, fp = n("wrong", "FAIL"), n("wrong", "PASS"), n("correct", "PASS"), n("correct", "FAIL")
     wrong, correct = [r for r in rows if r["label"] == "wrong"], [r for r in rows if r["label"] == "correct"]
     unknown = sum(r["verdict"] == "UNKNOWN" for r in rows)
+    wrong_rejected = len(wrong) - fn  # matches docs/RESULTS.md: FAIL or UNKNOWN counts as not accepted
+    bal_acc = round(((tn / len(correct)) + (wrong_rejected / len(wrong))) / 2, 3) if wrong and correct else None
     return {
         "runs": len(rows), "wrong": len(wrong), "correct": len(correct),
         # the number that matters most: wrong work that the judge let pass
@@ -766,8 +770,183 @@ def judge_summary(rows: List[dict]) -> dict:
         "correct_rejected": fp, "correct_rejected_rate": round(fp / len(correct), 3) if correct else None,
         "correct_rejected_ci95": wilson(fp, len(correct)) if correct else None,
         "unknown": unknown, "unknown_rate": round(unknown / len(rows), 3) if rows else None,
+        "balanced_accuracy": bal_acc,
         "mcc_decided": mcc(tp, tn, fp, fn),
     }
+
+
+DIFF_LIMIT = 60_000
+CONTEXT_LIMIT = 40_000
+REQ_TAG_RE = re.compile(r"<requirement>\s*(.*?)\s*</requirement>", re.S)
+REQ_PATH_RE = re.compile(r"[\w./-]+\.(?:md|txt|py|ts|js|go|rs|json|toml|yaml|yml)")
+TEST_FILE_RE = re.compile(r"(?:^|/)(?:tests?|__tests__)/|(?:^|/)test_[^/]+\.py$|_test\.(?:py|go|rs)$")
+
+
+def extract_requirement(prompt: str) -> str:
+    m = REQ_TAG_RE.search(prompt)
+    return m.group(1).strip() if m else prompt.strip()
+
+
+def collect_base_context(wt: Path, req: str, max_chars: int = CONTEXT_LIMIT) -> str:
+    """Read referenced spec files and modified non-test files from HEAD (tamper-safe base context)."""
+    req_paths = REQ_PATH_RE.findall(req)
+    diff_files = [l.strip() for l in git("diff", "--name-only", "HEAD", cwd=wt).stdout.splitlines() if l.strip()]
+    candidates: List[str] = []
+    seen = set()
+    for p in req_paths:
+        if p not in seen:
+            seen.add(p)
+            candidates.append(p)
+    for p in diff_files:
+        if p not in seen and not (TEST_FILE_RE.search(p) and p not in req_paths):
+            seen.add(p)
+            candidates.append(p)
+    blocks: List[str] = []
+    used = 0
+    for p in candidates:
+        r = git("show", f"HEAD:{p}", cwd=wt)
+        if r.returncode != 0 or not r.stdout:
+            continue
+        header = f"### {p} (base)\n"
+        chunk = header + r.stdout.rstrip() + "\n"
+        if used + len(chunk) > max_chars:
+            rem = max_chars - used
+            if rem > len(header) + 100:
+                blocks.append(chunk[:rem] + "\n... [context truncated]\n")
+            break
+        blocks.append(chunk)
+        used += len(chunk)
+    return "\n".join(blocks)
+
+
+def clean_diff_for_review(wt: Path) -> str:
+    mem_script = wt / ".agents" / "skills" / "long-horizon" / "scripts" / "memory.py"
+    text = ""
+    if mem_script.is_file():
+        r = subprocess.run([sys.executable, str(mem_script), "diff-view", "--base", "HEAD"],
+                           cwd=str(wt), capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            text = r.stdout
+    if not text:
+        r = git("diff", "HEAD", cwd=wt)
+        text = r.stdout if r.returncode == 0 else ""
+    if not text.strip():
+        st = git("status", "--short", cwd=wt).stdout.strip()
+        text = f"(empty git diff HEAD; working tree status:\n{st})" if st else "(empty diff)"
+    if len(text) > DIFF_LIMIT:
+        text = text[:DIFF_LIMIT] + "\n... [diff truncated]\n"
+    return text
+
+
+def build_plain_prompt(req: str, diff_text: str, two_stage: bool, context_text: str = "") -> str:
+    ctx_block = f"<context>\n{context_text.rstrip()}\n</context>\n\n" if context_text.strip() else ""
+    base = (
+        "You are an independent code reviewer. Read only the requirement, base context (if given), and diff below.\n"
+        "Do NOT run commands, edit files, or use tools. Decide whether the diff solves the requirement "
+        "correctly without breaking existing behaviour.\n"
+        "For any suspected defect, quote the exact sentence of the requirement it violates.\n"
+        "List at most 3 ambiguities if the requirement leaves behaviour undecided.\n\n"
+        f"<requirement>\n{req}\n</requirement>\n\n"
+        f"{ctx_block}"
+        f"<diff>\n{diff_text.rstrip()}\n</diff>\n\n"
+    )
+    if two_stage:
+        return base + (
+            "Output a fenced JSON block with keys:\n"
+            '  "decision": "APPROVE" | "SUSPECT"\n'
+            '  "hypotheses": up to 3 objects {"requirement_quote": "...", "suspected_defect": "...", "repro_idea": "..."}\n'
+            '  "ambiguities": up to 3 short strings\n'
+            "Then end with one final line:\n"
+            "VERDICT: PASS   (when decision is APPROVE)\n"
+            "VERDICT: FAIL   (when decision is SUSPECT)\n"
+        )
+    return base + (
+        "State concise findings (if any) and end with one final line, nothing after it:\n"
+        "VERDICT: PASS | VERDICT: FAIL | VERDICT: UNKNOWN\n"
+    )
+
+
+def _extract_result_text(stdout: str) -> str:
+    s = stdout.strip()
+    if s.startswith(("{", "[")):
+        try:
+            d = json.loads(s)
+            if isinstance(d, list):
+                d = next((e for e in reversed(d) if isinstance(e, dict) and isinstance(e.get("result") or e.get("response"), str)), None)
+            if isinstance(d, dict):
+                txt = d.get("result") if isinstance(d.get("result"), str) else d.get("response")
+                if isinstance(txt, str):
+                    return txt
+        except ValueError:
+            pass
+    return stdout
+
+
+def parse_stage1(stdout: str) -> Tuple[str, List[dict], List[str]]:
+    text = _extract_result_text(stdout)
+    candidates: List[dict] = []
+    for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.S):
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict) and "decision" in obj:
+                candidates.append(obj)
+        except ValueError:
+            pass
+    if not candidates:
+        dec = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch == "{":
+                try:
+                    obj, _ = dec.raw_decode(text[i:])
+                    if isinstance(obj, dict) and "decision" in obj:
+                        candidates.append(obj)
+                except ValueError:
+                    pass
+    for obj in reversed(candidates):
+        decision = str(obj.get("decision") or "").strip().upper()
+        if decision in ("APPROVE", "SUSPECT"):
+            hyps = [h for h in (obj.get("hypotheses") or []) if isinstance(h, dict)][:3]
+            ambs = [str(x) for x in (obj.get("ambiguities") or []) if x][:3]
+            return decision, hyps, ambs
+    found = VERDICT_RE.findall(text)
+    if found:
+        v = found[-1].upper()
+        return ("APPROVE" if v == "PASS" else ("SUSPECT" if v == "FAIL" else "UNKNOWN")), [], []
+    return "UNKNOWN", [], []
+
+
+def build_verify_prompt(req: str, hypotheses: List[dict], stage1_stdout: str) -> str:
+    if hypotheses:
+        lines = []
+        for idx, h in enumerate(hypotheses, 1):
+            q_txt = str(h.get("requirement_quote") or "").strip()
+            d_txt = str(h.get("suspected_defect") or "").strip()
+            r_txt = str(h.get("repro_idea") or "").strip()
+            lines.append(f"{idx}. Defect: {d_txt}\n   Requirement: {q_txt}\n   Check idea: {r_txt}")
+        suspect_block = "\n".join(lines)
+    else:
+        suspect_block = _extract_result_text(stage1_stdout).strip()[-3000:]
+    return (
+        "You are a targeted verifier. A plain diff review flagged concrete suspected defects in the uncommitted change.\n"
+        "Test ONLY the suspected defects below against the actual code (e.g. run a minimal probe or `memory.py counterexample`).\n"
+        "Do NOT edit source files.\n\n"
+        f"<requirement>\n{req}\n</requirement>\n\n"
+        f"<suspected_defects>\n{suspect_block}\n</suspected_defects>\n\n"
+        "End your answer with one final line, and nothing after it:\n"
+        "VERDICT: FAIL      (at least one suspected defect is confirmed by a command)\n"
+        "VERDICT: PASS      (the suspected defects were refuted by running checks)\n"
+        "VERDICT: UNKNOWN   (could not confirm or refute the suspected defects)\n"
+    )
+
+
+def merge_usage(u1: dict, u2: dict) -> dict:
+    out: dict = {}
+    if "cost_usd" in u1 or "cost_usd" in u2:
+        out["cost_usd"] = round(float(u1.get("cost_usd", 0.0)) + float(u2.get("cost_usd", 0.0)), 4)
+    for k in ("tokens", "turns"):
+        if k in u1 or k in u2:
+            out[k] = int(u1.get(k, 0)) + int(u2.get(k, 0))
+    return out
 
 
 def prepare_case_repo(base: Path, case: dict, skills_src: Path, agents_src: Optional[Path]) -> Path:
@@ -790,7 +969,7 @@ def prepare_case_repo(base: Path, case: dict, skills_src: Path, agents_src: Opti
         shutil.copytree(skills_src, ws / ".claude" / "skills", ignore=shutil.ignore_patterns("__pycache__", ".backup"))
         if agents_src and agents_src.is_dir():
             shutil.copytree(agents_src, ws / ".claude" / "agents", ignore=shutil.ignore_patterns(".backup"))
-        (ws / ".git" / "info" / "exclude").write_text(".agents/\n.claude/\n.skill-eval-prompt.txt\n", encoding="utf-8")
+        (ws / ".git" / "info" / "exclude").write_text(".agents/\n.claude/\n.skill-eval-prompt.txt\n.skill-eval-verify-prompt.txt\n", encoding="utf-8")
     except BaseException:
         shutil.rmtree(ws, ignore_errors=True)
         raise
@@ -814,8 +993,9 @@ def cmd_judge(a) -> None:
     skills = (repo / a.skills).resolve()
     if not skills.is_dir():
         die(f"skills dir {skills} not found")
-    # subagents for a case with its own repository: this project's, else the pack's templates (a pack checkout)
-    agents = next((d for d in (repo / ".claude" / "agents", repo / "templates" / ".claude" / "agents") if d.is_dir()), None)
+    # subagents for a case with its own repository: this project's, else the pack's root agents/ (or legacy templates)
+    agents = next((d for d in (repo / ".claude" / "agents", repo / "agents", repo / "templates" / ".claude" / "agents") if d.is_dir()), None)
+    verify_t = a.verify_cmd or cmd_t
     cases = []
     for i, line in enumerate(Path(a.cases).read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
@@ -835,45 +1015,106 @@ def cmd_judge(a) -> None:
     if runs > a.max_runs and not a.yes:
         die(f"{runs} judge runs planned (> --max-runs {a.max_runs}); this costs tokens. Re-run with --yes to confirm.")
     logdir = new_logdir("judge")
-    rows = []
-    for c in cases:
-        for rep in range(a.repeats):
-            own = bool(c.get("repo"))
-            wt = prepare_case_repo(Path(a.cases).resolve().parent, c, skills, agents) if own else prepare_worktree(repo, skills, None)
-            t0 = time.time()
+    cases_dir = Path(a.cases).resolve().parent
+    git_lock = threading.Lock()
+    print_lock = threading.Lock()
+
+    def run_one(idx: int, c: dict, rep: int) -> Tuple[int, dict]:
+        own = bool(c.get("repo"))
+        if own:
+            wt = prepare_case_repo(cases_dir, c, skills, agents)
+        else:
+            with git_lock:
+                wt = prepare_worktree(repo, skills, None)
+        t0 = time.time()
+        try:
+            if c.get("setup"):
+                s_cmd = sh(c["setup"], wt, a.timeout)
+                if s_cmd.returncode != 0:
+                    die(f"case {c['id']}: setup failed: {(s_cmd.stderr or s_cmd.stdout).strip()[-300:]}")
+            req = extract_requirement(c["prompt"])
+            if a.mode in ("plain", "two-stage"):
+                ctx = collect_base_context(wt, req)
+                p1_text = build_plain_prompt(req, clean_diff_for_review(wt), two_stage=(a.mode == "two-stage"), context_text=ctx)
+            else:
+                p1_text = c["prompt"]
+            pfile = wt / ".skill-eval-prompt.txt"
+            pfile.write_text(p1_text, encoding="utf-8")
+            cmd = cmd_t.format(prompt=q(p1_text), prompt_file=q(str(pfile)), workdir=q(str(wt)))
             try:
-                if c.get("setup"):
-                    s = sh(c["setup"], wt, a.timeout)
-                    if s.returncode != 0:
-                        die(f"case {c['id']}: setup failed: {(s.stderr or s.stdout).strip()[-300:]}")
-                pfile = wt / ".skill-eval-prompt.txt"
-                pfile.write_text(c["prompt"], encoding="utf-8")
-                cmd = cmd_t.format(prompt=q(c["prompt"]), prompt_file=q(str(pfile)), workdir=q(str(wt)))
-                try:
-                    r = sh(cmd, wt, a.timeout)
-                    rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
-                except subprocess.TimeoutExpired as e:
-                    rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
-                found = VERDICT_RE.findall(stdout)
-                verdict = found[-1].upper() if found else "UNKNOWN"  # no verdict line: the judge did not decide
-                log = logdir / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', str(c['id']))}-{rep + 1}.txt"
-                try:
-                    log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
-                except OSError:
-                    pass
-                rows.append({"id": c["id"], "label": c["label"], "rep": rep + 1, "verdict": verdict, "stated": bool(found),
-                             "seconds": round(time.time() - t0, 1), **parse_usage(stdout)})
-                print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}" + ("" if found else " (no verdict line)"), flush=True)
-            finally:
-                if own:
-                    shutil.rmtree(wt, ignore_errors=True)
+                r = sh(cmd, wt, a.timeout)
+                rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
+            except subprocess.TimeoutExpired as e:
+                rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
+            slug = re.sub(r"[^A-Za-z0-9_.-]", "_", str(c["id"]))
+            log = logdir / f"{slug}-{rep + 1}.txt"
+            try:
+                log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
+            except OSError:
+                pass
+            usage = parse_usage(stdout)
+            extra: dict = {}
+            if a.mode == "two-stage":
+                decision, hyps, _ = parse_stage1(stdout)
+                extra["stage1_decision"] = decision
+                if decision == "SUSPECT":
+                    p2_text = build_verify_prompt(req, hyps, stdout)
+                    p2_file = wt / ".skill-eval-verify-prompt.txt"
+                    p2_file.write_text(p2_text, encoding="utf-8")
+                    cmd2 = verify_t.format(prompt=q(p2_text), prompt_file=q(str(p2_file)), workdir=q(str(wt)))
+                    try:
+                        r2 = sh(cmd2, wt, a.timeout)
+                        rc2, out2, err2 = r2.returncode, r2.stdout or "", r2.stderr or ""
+                    except subprocess.TimeoutExpired as e:
+                        rc2, out2, err2 = "timeout", _text(e.stdout), _text(e.stderr)
+                    log2 = logdir / f"{slug}-{rep + 1}-stage2.txt"
+                    try:
+                        log2.write_text(f"$ {cmd2}\nexit: {rc2}\n--- stdout ---\n{out2[-LOG_LIMIT:]}\n--- stderr ---\n{err2[-LOG_LIMIT:]}\n", encoding="utf-8")
+                    except OSError:
+                        pass
+                    found = VERDICT_RE.findall(_extract_result_text(out2))
+                    verdict = found[-1].upper() if found else "UNKNOWN"
+                    usage = merge_usage(usage, parse_usage(out2))
+                    extra["stage"] = 2
                 else:
+                    verdict = "PASS" if decision == "APPROVE" else "UNKNOWN"
+                    found = [verdict] if verdict == "PASS" else []
+                    extra["stage"] = 1
+            else:
+                found = VERDICT_RE.findall(_extract_result_text(stdout))
+                verdict = found[-1].upper() if found else "UNKNOWN"  # no verdict line: the judge did not decide
+            row = {"id": c["id"], "label": c["label"], "rep": rep + 1, "verdict": verdict, "stated": bool(found),
+                   "seconds": round(time.time() - t0, 1), **extra, **usage}
+            stage_note = f" [stage {extra['stage']}]" if "stage" in extra else ""
+            with print_lock:
+                print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}{stage_note}" + ("" if found else " (no verdict line)"), flush=True)
+            return idx, row
+        finally:
+            if own:
+                shutil.rmtree(wt, ignore_errors=True)
+            else:
+                with git_lock:
                     cleanup(repo, wt)
+
+    jobs = [(idx, c, rep) for idx, (c, rep) in enumerate((c, rep) for c in cases for rep in range(a.repeats))]
+    workers = max(1, a.workers)
+    if workers == 1:
+        indexed_rows = [run_one(idx, c, rep) for idx, c, rep in jobs]
+    else:
+        indexed_rows = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(run_one, idx, c, rep) for idx, c, rep in jobs]
+            for fut in as_completed(futs):
+                indexed_rows.append(fut.result())
+    indexed_rows.sort(key=lambda item: item[0])
+    rows = [row for _, row in indexed_rows]
     s = judge_summary(rows)
     report: dict = {
-        "kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "judge_cmd": cmd_t,
+        "kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "mode": a.mode, "judge_cmd": cmd_t,
         "repeats": a.repeats, "rule": a.rule, "summary": s, "rows": rows,
     }
+    if a.mode == "two-stage":
+        report["verify_cmd"] = verify_t
     agg, ag_rate, kap = None, None, None
     if a.repeats > 1:
         per_case = []
@@ -892,17 +1133,18 @@ def cmd_judge(a) -> None:
     out = RESULTS / f"{dt.datetime.now():%Y%m%d-%H%M%S}-judge.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     pct = lambda x: "n/a" if x is None else f"{x:.0%}"
-    print(f"\njudge on {s['runs']} runs ({s['wrong']} wrong, {s['correct']} correct)")
+    bal = lambda v: "n/a" if v is None else f"{v:.1%}"
+    print(f"\njudge ({a.mode}) on {s['runs']} runs ({s['wrong']} wrong, {s['correct']} correct)")
     print(f"  wrong work approved:    {s['wrong_approved']}/{s['wrong']} ({pct(s['wrong_approved_rate'])}, 95% CI {s['wrong_approved_ci95']})")
     print(f"  correct work rejected:  {s['correct_rejected']}/{s['correct']} ({pct(s['correct_rejected_rate'])}, 95% CI {s['correct_rejected_ci95']})")
     print(f"  no decision (UNKNOWN):  {s['unknown']}/{s['runs']} ({pct(s['unknown_rate'])})")
-    print(f"  MCC on decided cases:   {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
+    print(f"  balanced accuracy:      {bal(s['balanced_accuracy'])} · MCC on decided: {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
     if agg is not None:
         print(f"\naggregated ({a.repeats} runs, {a.rule}) on {agg['runs']} cases ({agg['wrong']} wrong, {agg['correct']} correct)")
         print(f"  wrong work approved:    {agg['wrong_approved']}/{agg['wrong']} ({pct(agg['wrong_approved_rate'])}, 95% CI {agg['wrong_approved_ci95']})")
         print(f"  correct work rejected:  {agg['correct_rejected']}/{agg['correct']} ({pct(agg['correct_rejected_rate'])}, 95% CI {agg['correct_rejected_ci95']})")
         print(f"  no decision / split:    {agg['unknown']}/{agg['runs']} ({pct(agg['unknown_rate'])})")
-        print(f"  unanimous cases:        {pct(ag_rate)} · pairwise kappa: {kap if kap is not None else 'n/a'}")
+        print(f"  balanced accuracy:      {bal(agg['balanced_accuracy'])} · unanimous: {pct(ag_rate)} · pairwise kappa: {kap if kap is not None else 'n/a'}")
     costed = [r["cost_usd"] for r in rows if isinstance(r.get("cost_usd"), (int, float))]
     print(f"  cost:                   " + (f"${sum(costed):.2f} for {len(costed)} of {len(rows)} runs" if costed else "not reported by the judge command")
           + f" · {sum(r['seconds'] for r in rows) / 60:.0f} minutes")
@@ -974,6 +1216,10 @@ def main() -> None:
     j = sub.add_parser("judge", help="measure an evaluator on cases with a known answer (how often it approves wrong work)")
     j.add_argument("--cases", required=True, help="JSON lines: id, label (correct|wrong), prompt, optional setup")
     j.add_argument("--judge-cmd", help="headless judge template, e.g. \"claude -p {prompt}\"; must print VERDICT: PASS|FAIL|UNKNOWN")
+    j.add_argument("--mode", choices=["evaluator", "plain", "two-stage"], default="evaluator",
+                   help="judge protocol: evaluator (default), plain (issue + diff only), or two-stage (plain triage then targeted verify)")
+    j.add_argument("--verify-cmd", help="Stage 2 command template for --mode two-stage (default: --judge-cmd)")
+    j.add_argument("--workers", type=int, default=1, help="parallel judge workers (default 1)")
     j.add_argument("--skills", default=".agents/skills", help="skills dir relative to the repo root")
     j.add_argument("--repeats", "--reps", dest="repeats", type=int, default=1, help="judge runs per case (default 1)")
     j.add_argument("--rule", choices=["asymmetric", "majority", "strict-fail"], default="asymmetric",

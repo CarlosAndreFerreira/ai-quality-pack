@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Fixes for the Antigravity and Claude Code plugins. No measurement or default of `memory.py` changed.
+
+- **Antigravity plugin (`install.py global`)**:
+  - Stopped copying pack skills into `~/.gemini/antigravity-cli/skills/`, which loaded every skill twice in Antigravity sessions alongside `~/.gemini/config/plugins/ai-quality-pack/skills/`. `install.py global --upgrade` removes older pack-owned duplicates from `~/.gemini/antigravity-cli/skills/` while keeping user skills.
+  - Added native `hooks.json` (`templates/antigravity/hooks.json`) and a Python adapter (`templates/antigravity/hooks/aqp_agy_hook.py`) translating Antigravity `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` events to the pack's scripts (silent outside repositories with `.agent-memory/`).
+  - Updated `templates/.claude/hooks/gate_on_stop.py` to find `memory.py` in both Claude Code and Antigravity plugin layouts, and added `.agent/` and `.gemini/` to `templates/.claude/hooks/guard_pack_files.py`.
+  - Checked by unit tests; not run in a live Antigravity session yet.
+- **Claude Code plugin**:
+  - Moved `evaluator.md`, `criteria.md`, and `triage.md` from `templates/.claude/agents/` to root `agents/` and removed the explicit `"agents"` path list from `.claude-plugin/plugin.json` so Claude Code auto-discovers the three subagents.
+  - Added `hooks/aqp_hook.py` (cross-platform Python dispatcher), `bin/aqp-hook.cmd` and `bin/aqp-memory.cmd` for Windows, and `PreToolUse` (`guard`) in `hooks/hooks.json`.
+  - Added slash commands in `commands/`: `init.md`, `review.md`, `evidence.md`, and `doctor.md`.
+  - Checked by unit tests; not run in a live Claude Code session or with `claude plugin validate` (CLI binary unavailable in this environment) yet.
+- **`skill-eval judge` (`--mode plain|two-stage`)**:
+  - Added `--mode plain` (issue + base `<context>` + clean diff), `--mode two-stage` (plain triage outputting `APPROVE`/`SUSPECT` JSON hypotheses, invoking `--verify-cmd` only on `SUSPECT` cases), `--workers` for parallel case execution, Antigravity `agy` JSON (`response` / `thinking_tokens` / `cache_read_tokens`) parsing, and `balanced_accuracy` in `judge_summary` and report output.
+  - Fixed `skill_eval.py judge` to look up root `agents/` in addition to `.claude/agents/` and `templates/.claude/agents/`.
+  - Measured on the 24 cases of `evals/judge-cases/` with Gemini 4 Neon via `agy` ([docs/RESULTS.md](docs/RESULTS.md)): diff-only `plain` gave 23/24 `UNKNOWN` (`c17` `FAIL`); adding read-only base-commit `<context>` raised both Stage 1 alone (`gemini-4-neon-medium`) and `two-stage` (`gemini-4-neon-medium` → `gemini-4-neon-high`) to 0/12 wrong approved, 0/12 correct rejected, 0/24 `UNKNOWN` (`balanced_accuracy` 1.0, 12/12 Stage 2 probes confirmed). Not measured on the 78 SWE-bench patches yet.
+- **Low-overhead implementer rules & `evidence --brief`**:
+  - Added `memory.py evidence --brief` for a compact 5-to-8-line PR Decision Brief (`Verdict`, `Checks`, `Red flags`, `Decisions to check`, `Change`, `Not verified`).
+  - Updated `templates/AGENTS.md` and `templates/antigravity/rules/AGENTS.md` so single-session tasks skip manual task/progress bookkeeping and rely on hooks and the completion gate.
+  - Checked by unit tests; not measured with a live agent yet.
+
 ## 0.10.5 — 2026-11-25
 
 Two measurements about review, with no change of code. The evidence block of the pack did not help a model reviewer to decide, and a plain reviewer with no tools separated correct from wrong patches better than the evaluator of the pack on Sonnet ([docs/RESULTS.md](docs/RESULTS.md)). No command, default or check changed.
