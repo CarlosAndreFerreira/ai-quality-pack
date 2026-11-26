@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.7 — 2026-11-26
 
-Docs: two measurements, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)). The second measurement did not repeat the first, and it corrects statements of versions 0.10.5 and 0.10.6. Also hardened `--mode two-stage` in `skill_eval.py judge` (experiment tooling only; no default of `memory.py` changed).
+A correction. Two measurements are in [docs/RESULTS.md](docs/RESULTS.md); the second did not repeat the first, and it corrects statements of versions 0.10.5 and 0.10.6 about the plain reviewer and the evaluator of the pack. One change of code: `--mode two-stage` of `skill_eval.py judge` (a tool for experiments; no default of `memory.py` changed).
+
+Checked: 176 tests on Windows and on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
 - **Correction: "a plain reviewer is better than the evaluator of the pack" did not repeat on new patches.** The 4 arms ran again on 79 patches that no judge saw (same 40 issues, one day, Sonnet). Balanced accuracy: no tools and a short prompt 66.0 (it was 75.0); no tools and the instructions of the evaluator 65.9; tools and the short prompt 71.4; tools and the instructions of the evaluator 60.3. The plain reviewer was 5.7 points above the evaluator (−6.9 to +18.1). With tools the judge rejected more wrong patches, not fewer (15 against 12). The 3 criteria written before the run failed. What the two sets support: the evaluator of the pack is not better than a plain review and costs 4.5 times more, and no judge rejected half of the wrong patches. The README and docs/RESULTS.md say this now. The entries of versions 0.10.5 and 0.10.6 below keep their text.
 
