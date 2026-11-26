@@ -780,6 +780,7 @@ CONTEXT_LIMIT = 40_000
 REQ_TAG_RE = re.compile(r"<requirement>\s*(.*?)\s*</requirement>", re.S)
 REQ_PATH_RE = re.compile(r"[\w./-]+\.(?:md|txt|py|ts|js|go|rs|json|toml|yaml|yml)")
 TEST_FILE_RE = re.compile(r"(?:^|/)(?:tests?|__tests__)/|(?:^|/)test_[^/]+\.py$|_test\.(?:py|go|rs)$")
+STAGE2_RE = re.compile(r"(?im)^\s*STAGE2\s*:\s*(CONFIRMED|REFUTED|UNCONFIRMED)\b")
 
 
 def extract_requirement(prompt: str) -> str:
@@ -915,6 +916,17 @@ def parse_stage1(stdout: str) -> Tuple[str, List[dict], List[str]]:
     return "UNKNOWN", [], []
 
 
+def parse_stage2(stdout: str) -> str:
+    text = _extract_result_text(stdout)
+    found = STAGE2_RE.findall(text)
+    if found:
+        return found[-1].upper()
+    legacy = VERDICT_RE.findall(text)
+    if legacy:
+        return {"FAIL": "CONFIRMED", "PASS": "REFUTED", "UNKNOWN": "UNCONFIRMED"}[legacy[-1].upper()]
+    return "UNCONFIRMED"
+
+
 def build_verify_prompt(req: str, hypotheses: List[dict], stage1_stdout: str) -> str:
     if hypotheses:
         lines = []
@@ -928,14 +940,16 @@ def build_verify_prompt(req: str, hypotheses: List[dict], stage1_stdout: str) ->
         suspect_block = _extract_result_text(stage1_stdout).strip()[-3000:]
     return (
         "You are a targeted verifier. A plain diff review flagged concrete suspected defects in the uncommitted change.\n"
-        "Test ONLY the suspected defects below against the actual code (e.g. run a minimal probe or `memory.py counterexample`).\n"
+        "Test ONLY the suspected defects below with a minimal targeted probe (or `memory.py counterexample`) against the actual code.\n"
+        "Do NOT run the project's existing test suite to refute a defect: passing existing tests NEVER proves a patch is correct "
+        "(most wrong patches pass existing tests).\n"
         "Do NOT edit source files.\n\n"
         f"<requirement>\n{req}\n</requirement>\n\n"
         f"<suspected_defects>\n{suspect_block}\n</suspected_defects>\n\n"
         "End your answer with one final line, and nothing after it:\n"
-        "VERDICT: FAIL      (at least one suspected defect is confirmed by a command)\n"
-        "VERDICT: PASS      (the suspected defects were refuted by running checks)\n"
-        "VERDICT: UNKNOWN   (could not confirm or refute the suspected defects)\n"
+        "STAGE2: CONFIRMED    (a targeted command reproduced at least one suspected defect)\n"
+        "STAGE2: REFUTED      (a targeted probe ran the exact suspected input/scenario for every hypothesis and directly observed the required behaviour — NEVER use passing project tests as refutation)\n"
+        "STAGE2: UNCONFIRMED  (could not confirm or directly refute with a targeted probe)\n"
     )
 
 
@@ -1072,8 +1086,12 @@ def cmd_judge(a) -> None:
                         log2.write_text(f"$ {cmd2}\nexit: {rc2}\n--- stdout ---\n{out2[-LOG_LIMIT:]}\n--- stderr ---\n{err2[-LOG_LIMIT:]}\n", encoding="utf-8")
                     except OSError:
                         pass
-                    found = VERDICT_RE.findall(_extract_result_text(out2))
-                    verdict = found[-1].upper() if found else "UNKNOWN"
+                    out2_text = _extract_result_text(out2)
+                    s2_status = parse_stage2(out2)
+                    extra["stage2_status"] = s2_status
+                    verdict = "PASS" if (a.stage2_policy == "allow-refute" and s2_status == "REFUTED") else "FAIL"
+                    m_s2 = STAGE2_RE.findall(out2_text) or VERDICT_RE.findall(out2_text)
+                    found = [m_s2[-1].upper()] if m_s2 else []
                     usage = merge_usage(usage, parse_usage(out2))
                     extra["stage"] = 2
                 else:
@@ -1113,8 +1131,12 @@ def cmd_judge(a) -> None:
         "kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "mode": a.mode, "judge_cmd": cmd_t,
         "repeats": a.repeats, "rule": a.rule, "summary": s, "rows": rows,
     }
+    s2_counts: Optional[dict] = None
     if a.mode == "two-stage":
+        s2_counts = {k: sum(1 for r in rows if r.get("stage2_status") == k.upper()) for k in ("confirmed", "refuted", "unconfirmed")}
         report["verify_cmd"] = verify_t
+        report["stage2_policy"] = a.stage2_policy
+        report["stage2_counts"] = s2_counts
     agg, ag_rate, kap = None, None, None
     if a.repeats > 1:
         per_case = []
@@ -1139,6 +1161,8 @@ def cmd_judge(a) -> None:
     print(f"  correct work rejected:  {s['correct_rejected']}/{s['correct']} ({pct(s['correct_rejected_rate'])}, 95% CI {s['correct_rejected_ci95']})")
     print(f"  no decision (UNKNOWN):  {s['unknown']}/{s['runs']} ({pct(s['unknown_rate'])})")
     print(f"  balanced accuracy:      {bal(s['balanced_accuracy'])} · MCC on decided: {s['mcc_decided'] if s['mcc_decided'] is not None else 'n/a'}")
+    if s2_counts is not None:
+        print(f"  stage 2 ({a.stage2_policy}):  confirmed {s2_counts['confirmed']}, unconfirmed {s2_counts['unconfirmed']}, refuted {s2_counts['refuted']} (of {sum(s2_counts.values())} suspects)")
     if agg is not None:
         print(f"\naggregated ({a.repeats} runs, {a.rule}) on {agg['runs']} cases ({agg['wrong']} wrong, {agg['correct']} correct)")
         print(f"  wrong work approved:    {agg['wrong_approved']}/{agg['wrong']} ({pct(agg['wrong_approved_rate'])}, 95% CI {agg['wrong_approved_ci95']})")
@@ -1219,6 +1243,8 @@ def main() -> None:
     j.add_argument("--mode", choices=["evaluator", "plain", "two-stage"], default="evaluator",
                    help="judge protocol: evaluator (default), plain (issue + diff only), or two-stage (plain triage then targeted verify)")
     j.add_argument("--verify-cmd", help="Stage 2 command template for --mode two-stage (default: --judge-cmd)")
+    j.add_argument("--stage2-policy", choices=["keep-suspect", "allow-refute"], default="keep-suspect",
+                   help="how Stage 2 affects a Stage 1 SUSPECT verdict: keep-suspect (default: attach proof only, never flip SUSPECT to PASS) or allow-refute (flip to PASS only on explicit STAGE2: REFUTED)")
     j.add_argument("--workers", type=int, default=1, help="parallel judge workers (default 1)")
     j.add_argument("--skills", default=".agents/skills", help="skills dir relative to the repo root")
     j.add_argument("--repeats", "--reps", dest="repeats", type=int, default=1, help="judge runs per case (default 1)")

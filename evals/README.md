@@ -25,7 +25,9 @@ Alternative modes (available for benchmarking; live measurements on `--mode two-
 python skills/skill-eval/scripts/skill_eval.py judge --cases evals/judge-cases/cases.jsonl --skills skills \
   --mode plain --judge-cmd "claude -p --tools '' < {prompt_file}" --max-runs 24
 
-# Two-stage review (plain triage -> targeted verifier only on SUSPECT cases)
+# Two-stage review (plain triage -> targeted probe only on SUSPECT cases;
+# default --stage2-policy keep-suspect attaches proof without overriding SUSPECT to PASS;
+# pass --stage2-policy allow-refute to let explicit STAGE2: REFUTED flip SUSPECT to PASS)
 python skills/skill-eval/scripts/skill_eval.py judge --cases evals/judge-cases/cases.jsonl --skills skills \
   --mode two-stage --judge-cmd "claude -p --tools '' < {prompt_file}" \
   --verify-cmd "claude -p --permission-mode acceptEdits < {prompt_file}" --max-runs 24
