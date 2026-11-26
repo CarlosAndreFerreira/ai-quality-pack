@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Docs: one measurement, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)).
+
+- **Measured: tools or instructions, the 4 combinations on the 78 patches, with Sonnet as the judge.** Balanced accuracy: no tools and a short prompt 75.0; no tools and the instructions of the evaluator 60.3; tools and the short prompt 62.1; tools and the instructions of the evaluator 57.2. The tools made the judge accept wrong patches (17 rejected became 9). The instructions with no tools made it give no decision (45 UNKNOWN of 78). The two effects do not add. A new text for the evaluator is not enough while the evaluator runs with tools.
+
 ## 0.10.6 — 2026-11-26
 
 Fixes for the Antigravity and Claude Code plugins, two new modes of `skill-eval judge`, and a short form of the evidence block. No default of `memory.py` changed. The Antigravity hooks ran in a live session; the changes for Claude Code did not.

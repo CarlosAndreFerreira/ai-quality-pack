@@ -296,10 +296,41 @@ What the numbers say:
 - **On Sonnet the evaluator of the pack approves almost all patches**: 66 PASS of 78, and 8 of the 34 wrong patches rejected. The plain reviewer on Sonnet accepted each correct patch and rejected half of the wrong patches, at less than a quarter of the cost.
 - **On Opus the evaluator rejected the most wrong patches** (24 of 34), and gave 25 UNKNOWN of 78, which left 13 correct patches not accepted.
 - **The step from Haiku to Sonnet is large for the plain reviewer (+16.0 points), the step from Sonnet to Opus is small (+2.5).**
-- **The cause is not isolated.** The two arms differ in the tools, in the instructions and in the form of the answer at the same time. "The tools make the evaluator trust green tests" and "the instructions of the evaluator are the cause" are two hypotheses; this run does not separate them. The same instructions also give different errors on different models: Haiku rejected most patches, Sonnet approved most, Opus gave many UNKNOWN.
+- **The cause is not isolated in this run** (the next section separates the tools from the instructions). The two arms differ in the tools, in the instructions and in the form of the answer at the same time. "The tools make the evaluator trust green tests" and "the instructions of the evaluator are the cause" are two hypotheses; this run does not separate them. The same instructions also give different errors on different models: Haiku rejected most patches, Sonnet approved most, Opus gave many UNKNOWN.
 - The predictions were wrong: the plain reviewer on Sonnet was predicted at 58 to 66, and the evaluator was predicted to lose by UNKNOWN on Sonnet, not by approvals.
 - Limits: one pass for each patch. The memory of these SWE-bench issues in the models is not controlled, and it can help a reviewer that only reads the diff more than a reviewer that runs commands. On Opus the evaluator ran in two parts, with a pause for cost (52 of 78, then the others). One answer of Haiku had a JSON error and was read by its decision.
 - What this means for use: a plain review by a separate, stronger model is a cheap triage that rejected half of the wrong patches and no correct patch on these issues. It is a text verdict, not a proof: a defect that it suspects becomes evidence only when a command shows it (`memory.py counterexample`). The evaluator of the pack, as it is, is not the best use of the same money. Not measured: a design with the plain review first and a counterexample only for a suspected defect, and the plain reviewer on cases that are not in the training data of the models.
+
+### Tools or instructions: the 4 combinations on the same 78 patches
+
+The question: the evaluator of the pack was worse than the plain reviewer on Sonnet. Is the cause its tools or its instructions?
+
+- **The cases.** The same 78 patches, and Claude Sonnet as the judge in each arm. Arms A and D are the two rows for Sonnet of the table above (2026-11-25). Arms B and C are new (2026-11-26).
+- **Arm B: no tools, the instructions of the evaluator.** One call. The prompt is the text of the evaluator of version 0.10.4, one sentence that says that no tool is available, the issue and the diff. A PASS is an acceptance.
+- **Arm C: tools, the short prompt.** One session in the image of the issue, with the patch applied and no pack. The prompt is that of the plain reviewer, with one sentence changed: the judge can read files and run commands.
+- **The criterion, written before the run.** An effect counts when it is 10 points or more and its interval does not include zero.
+
+| Arm | Correct patches accepted | Wrong patches rejected | Balanced accuracy (95% interval) | Answers | Cost (US dollars) |
+|---|---|---|---|---|---|
+| A: no tools, short prompt | 44 of 44 | 17 of 34 | 75.0 (65.8 to 84.6) | 61 accept, 17 reject | 2.65 |
+| B: no tools, instructions of the evaluator | 22 of 44 | 24 of 34 | 60.3 (47.9 to 72.0) | 32 PASS, 1 FAIL, 45 UNKNOWN | 4.75 |
+| C: tools, short prompt | 43 of 44 | 9 of 34 | 62.1 (54.1 to 71.1) | 68 accept, 10 reject | 6.49 |
+| D: tools, instructions of the evaluator | 40 of 44 | 8 of 34 | 57.2 (48.8 to 65.8) | 66 PASS, 7 FAIL, 5 UNKNOWN | 11.89 |
+
+| Effect | Difference in points (95% interval) | Counts |
+|---|---|---|
+| The tools, with the short prompt (C − A) | −12.9 (−21.6 to −5.4) | yes |
+| The tools, with the instructions of the evaluator (D − B) | −3.1 (−13.7 to +7.5) | no |
+| The instructions, with no tools (B − A) | −14.7 (−27.8 to −2.0) | yes |
+| The instructions, with tools (D − C) | −4.9 (−13.9 to +3.2) | no |
+| The two (D − A) | −17.8 (−29.1 to −7.8) | yes |
+
+- **Each of the two changes made the judge worse, and the two effects do not add.** One change moved the judge to about 60, and the two changes moved it to 57.
+- **The tools made the judge accept wrong patches.** With the short prompt, the wrong patches rejected decreased from 17 to 9, and the correct patches accepted stayed the same. In arm C, 66 of the 78 sessions used a tool. In those 66, the balanced accuracy was 58.6; arm A got 71.7 on the same patches.
+- **The instructions of the evaluator, with no tools, made the judge give no decision.** 45 of 78 answers were UNKNOWN and 1 was a FAIL. When arm B decided, it approved: 22 of 22 correct patches and 10 of 11 wrong patches got a PASS. The instructions did not make the judge find defects.
+- **The prediction was right for the tools and wrong for the instructions.** It said that C is 8 to 15 points below A (it was 12.9), that B is 0 to 8 points below A (it was 14.7), and that D is about 10 points below B (it was 3.1).
+- What this means for use: a first review of a patch gives most when the judge has no tools and a short prompt. Tests of the project that pass are not evidence that a patch is correct, and a judge that runs them approves more wrong patches. A new text for the evaluator is not enough while the evaluator runs with tools (D − C does not count). In a review in two steps, the second step must not change a suspected defect into a PASS because the tests pass.
+- Limits: one pass for each arm, and arms A and D are of the day before. The instructions of arm B ask for commands that the judge cannot run, so a part of the 45 UNKNOWN is an effect of that conflict. An UNKNOWN counts as a patch not accepted, which helps arm B on the wrong patches. Arm D has a coordinator and a subagent; arm C has one session. The 78 patches are those where the difference between A and D was found. The memory of these issues in the model is not controlled; it is the same in the 4 arms.
 
 ### The evaluator on another model (version 0.7.1)
 
@@ -523,7 +554,7 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
-- Which part of the evaluator makes it worse than a plain reviewer on Sonnet: its tools or its instructions. A run with the 4 combinations on the same 78 patches separates them.
+- The 4 combinations of tools and instructions on patches that are not the 78 where the difference was found, and with more than one pass. On the 78, each of the two made the judge worse (see above).
 - The plain reviewer on cases that are not in the training data of the models beyond the 24 small cases of `evals/judge-cases/` measured with Gemini 4 Neon above (for example, on Claude models or on larger non-SWE-bench repositories).
 - A review in two steps (plain review first, then a counterexample only for a suspected defect) on the 78 SWE-bench patches or outside Python; it was measured only on the 24 small cases of `evals/judge-cases/` with Gemini 4 Neon above.
 - The "regression" mode as it is now, where a `regression` counterexample does not block. The two measurements used the mode that blocked.
