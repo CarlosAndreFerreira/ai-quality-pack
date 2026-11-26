@@ -1799,7 +1799,8 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             self._git(repo, "commit", "-q", "-m", "init")
 
             cases_dir = tmp / "cases_dir"
-            (cases_dir / "repos/app").mkdir(parents=True)
+            (cases_dir / "repos/app/docs").mkdir(parents=True)
+            (cases_dir / "repos/app/docs/SPEC.md").write_text("SPEC_BASE_RULE: add must sum inputs.\n", encoding="utf-8")
             (cases_dir / "repos/app/calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
             (cases_dir / "patches").mkdir()
             (cases_dir / "patches/ok.diff").write_text(
@@ -1811,10 +1812,11 @@ class JudgeAndEvidenceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (cases_dir / "patches/bug.diff").write_text(
-                "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a * b\n",
+                "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a * b\n"
+                "--- a/docs/SPEC.md\n+++ b/docs/SPEC.md\n@@ -1 +1 @@\n-SPEC_BASE_RULE: add must sum inputs.\n+TAMPERED_SPEC\n",
                 encoding="utf-8",
             )
-            req = "<requirement>\nadd(a, b) must return the sum of a and b.\n</requirement>"
+            req = "<requirement>\nadd(a, b) must follow docs/SPEC.md and return the sum of a and b.\n</requirement>"
             cases_file = cases_dir / "cases.jsonl"
             cases_file.write_text("\n".join([
                 json.dumps({"id": "c_ok", "label": "correct", "repo": "repos/app", "patch": "patches/ok.diff", "prompt": "WRAPPER\n" + req}),
@@ -1838,7 +1840,10 @@ class JudgeAndEvidenceTests(unittest.TestCase):
                 "import json, pathlib, sys\n"
                 "txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
                 "assert 'WRAPPER' not in txt\n"
-                "assert 'add(a, b) must return the sum' in txt\n"
+                "assert 'add(a, b) must follow docs/SPEC.md' in txt\n"
+                "assert '<context>' in txt and 'SPEC_BASE_RULE' in txt\n"
+                "ctx = txt.split('<context>', 1)[1].split('</context>', 1)[0]\n"
+                "assert 'TAMPERED_SPEC' not in ctx\n"
                 "assert '<diff>' in txt\n"
                 "verdict = 'FAIL' if 'a * b' in txt else 'PASS'\n"
                 "print(json.dumps({'total_cost_usd': 0.01, 'result': f'checked\\nVERDICT: {verdict}'}))\n",
@@ -1854,6 +1859,7 @@ class JudgeAndEvidenceTests(unittest.TestCase):
             s1.write_text(
                 "import json, pathlib, sys\n"
                 "txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+                "assert '<context>' in txt and 'SPEC_BASE_RULE' in txt\n"
                 "if 'a * b' in txt:\n"
                 "    out = {'decision': 'SUSPECT', 'hypotheses': [{'requirement_quote': 'must return the sum', 'suspected_defect': 'multiplies instead of adds', 'repro_idea': 'add(2,3)'}]}\n"
                 "    v = 'FAIL'\n"
@@ -1864,7 +1870,7 @@ class JudgeAndEvidenceTests(unittest.TestCase):
                 "    out = {'decision': 'APPROVE', 'hypotheses': []}\n"
                 "    v = 'PASS'\n"
                 "body = '```json\\n' + json.dumps(out) + '\\n```\\nVERDICT: ' + v\n"
-                "print(json.dumps({'total_cost_usd': 0.01, 'usage': {'input_tokens': 100, 'output_tokens': 20}, 'result': body}))\n",
+                "print(json.dumps({'total_cost_usd': 0.01, 'usage': {'input_tokens': 100, 'output_tokens': 20, 'thinking_tokens': 10}, 'response': body}))\n",
                 encoding="utf-8",
             )
             s2 = tmp / "s2.py"
@@ -1875,26 +1881,27 @@ class JudgeAndEvidenceTests(unittest.TestCase):
                 f"open({str(stage2_log)!r}, 'a', encoding='utf-8').write(txt + '\\n---\\n')\n"
                 f"code = pathlib.Path('calc.py').read_text(encoding='utf-8')\n"
                 f"v = 'FAIL' if 'a * b' in code else 'PASS'\n"
-                f"print(json.dumps({{'total_cost_usd': 0.03, 'usage': {{'input_tokens': 200, 'output_tokens': 50}}, 'result': f'VERDICT: {{v}}'}}))\n",
+                f"print(json.dumps({{'total_cost_usd': 0.03, 'usage': {{'input_tokens': 200, 'output_tokens': 50, 'cache_read_tokens': 5}}, 'response': f'VERDICT: {{v}}'}}))\n",
                 encoding="utf-8",
             )
-            r_2s = run([EVAL, "judge", "--mode", "two-stage", "--cases", cases_file, "--skills", "skills",
+            r_2s = run([EVAL, "judge", "--mode", "two-stage", "--workers", "2", "--cases", cases_file, "--skills", "skills",
                         "--judge-cmd", f'"{py}" "{s1}" {{prompt_file}}',
                         "--verify-cmd", f'"{py}" "{s2}" {{prompt_file}}'], repo)
             self.assertEqual(r_2s.returncode, 0, r_2s.stdout + r_2s.stderr)
             self.assertIn("balanced accuracy:      100.0%", r_2s.stdout)
             calls = [c for c in stage2_log.read_text(encoding="utf-8").split("\n---\n") if c.strip()]
             self.assertEqual(len(calls), 2)  # c_ok skipped Stage 2; only c_refute and w_bug ran Stage 2
-            self.assertIn("multiplies instead of adds", calls[1])
+            self.assertTrue(any("multiplies instead of adds" in c for c in calls))
             reports = sorted((repo / ".agent-memory/evals/results").glob("*-judge.json"))
             rep_data = json.loads(reports[-1].read_text(encoding="utf-8"))
             self.assertEqual(rep_data["mode"], "two-stage")
             self.assertEqual(rep_data["summary"]["balanced_accuracy"], 1.0)
+            self.assertEqual([row["id"] for row in rep_data["rows"]], ["c_ok", "c_refute", "w_bug"])
             by_id = {row["id"]: row for row in rep_data["rows"]}
             self.assertEqual((by_id["c_ok"]["stage"], by_id["c_ok"]["verdict"], by_id["c_ok"]["cost_usd"]), (1, "PASS", 0.01))
             self.assertEqual((by_id["c_refute"]["stage"], by_id["c_refute"]["verdict"], by_id["c_refute"]["cost_usd"]), (2, "PASS", 0.04))
             self.assertEqual((by_id["w_bug"]["stage"], by_id["w_bug"]["verdict"], by_id["w_bug"]["cost_usd"]), (2, "FAIL", 0.04))
-            self.assertEqual((by_id["w_bug"]["tokens"], by_id["c_ok"]["tokens"]), (370, 120))
+            self.assertEqual((by_id["w_bug"]["tokens"], by_id["c_ok"]["tokens"]), (385, 130))
 
     def test_evidence_brief_is_compact_and_surfaces_red_flags_and_decisions(self):
         with tempfile.TemporaryDirectory() as t:

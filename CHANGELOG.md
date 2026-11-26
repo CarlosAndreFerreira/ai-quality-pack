@@ -15,9 +15,9 @@ Fixes for the Antigravity and Claude Code plugins. No measurement or default of 
   - Added slash commands in `commands/`: `init.md`, `review.md`, `evidence.md`, and `doctor.md`.
   - Checked by unit tests; not run in a live Claude Code session or with `claude plugin validate` (CLI binary unavailable in this environment) yet.
 - **`skill-eval judge` (`--mode plain|two-stage`)**:
-  - Added `--mode plain` (issue + clean diff only) and `--mode two-stage` (plain triage outputting `APPROVE`/`SUSPECT` JSON hypotheses, invoking `--verify-cmd` only on `SUSPECT` cases), plus `balanced_accuracy` in `judge_summary` and report output.
+  - Added `--mode plain` (issue + base `<context>` + clean diff), `--mode two-stage` (plain triage outputting `APPROVE`/`SUSPECT` JSON hypotheses, invoking `--verify-cmd` only on `SUSPECT` cases), `--workers` for parallel case execution, Antigravity `agy` JSON (`response` / `thinking_tokens` / `cache_read_tokens`) parsing, and `balanced_accuracy` in `judge_summary` and report output.
   - Fixed `skill_eval.py judge` to look up root `agents/` in addition to `.claude/agents/` and `templates/.claude/agents/`.
-  - Checked by unit tests with simulated judge/verifier commands; live model runs on `--mode two-stage` are not measured yet.
+  - Measured on the 24 cases of `evals/judge-cases/` with Gemini 4 Neon via `agy` ([docs/RESULTS.md](docs/RESULTS.md)): diff-only `plain` gave 23/24 `UNKNOWN` (`c17` `FAIL`); adding read-only base-commit `<context>` raised both Stage 1 alone (`gemini-4-neon-medium`) and `two-stage` (`gemini-4-neon-medium` → `gemini-4-neon-high`) to 0/12 wrong approved, 0/12 correct rejected, 0/24 `UNKNOWN` (`balanced_accuracy` 1.0, 12/12 Stage 2 probes confirmed). Not measured on the 78 SWE-bench patches yet.
 - **Low-overhead implementer rules & `evidence --brief`**:
   - Added `memory.py evidence --brief` for a compact 5-to-8-line PR Decision Brief (`Verdict`, `Checks`, `Red flags`, `Decisions to check`, `Change`, `Not verified`).
   - Updated `templates/AGENTS.md` and `templates/antigravity/rules/AGENTS.md` so single-session tasks skip manual task/progress bookkeeping and rely on hooks and the completion gate.

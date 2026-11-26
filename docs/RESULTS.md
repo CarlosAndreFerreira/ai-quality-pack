@@ -316,6 +316,21 @@ The same 24 cases, one run for each case, the evaluator of version 0.7.1. The se
 - What this means for use: a stronger model for the evaluator is not better by default. On this set it was less strict in the two directions, at 3.6 times the cost. Measure the evaluator on your cases before you change its model.
 - Limits: one run for each case, two small tasks, and the patches are from Haiku.
 
+### Plain and two-stage review on the 24 shipped cases (Gemini 4 Neon)
+
+The same 24 cases (`evals/judge-cases/`), run through `agy` with Gemini 4 Neon in parallel (4 workers; the last 8 cases of the two-stage arm ran with 2 workers on 2026-11-26 after an HTTP 429 quota reset on 2026-11-25):
+
+| Mode | Model(s) | Wrong approved (12) | Correct rejected (12) | Unknown | Balanced accuracy | Total tokens | Wall time |
+|---|---|---|---|---|---|---|---|
+| `plain` (diff only) | `gemini-4-neon-medium` | 0 (0%, 95% CI 0% to 24%) | 0 (0%, 95% CI 0% to 24%) | 23 of 24 | 0.500 | 697,975 | 202s |
+| `plain` + base `<context>` (Stage 1 alone) | `gemini-4-neon-medium` | 0 (0%, 95% CI 0% to 24%) | 0 (0%, 95% CI 0% to 24%) | 0 of 24 | 1.000 | 739,840 | — |
+| `two-stage` + base `<context>` | `gemini-4-neon-medium` → `gemini-4-neon-high` | 0 (0%, 95% CI 0% to 24%) | 0 (0%, 95% CI 0% to 24%) | 0 of 24 | 1.000 | 1,227,031 | 473s (216s + 257s) |
+
+- **Diff-only without repository context failed by `UNKNOWN`.** In 23 of 24 runs `gemini-4-neon-medium` refused to guess because `pricing` cites `docs/SPEC.md` and `ratelimit` cites the module docstring, which are outside a raw `git diff`. It still caught 1 wrong patch (`c17`: `sum(..., start=0)` empty-list crash in `shop/invoice.py`).
+- **Adding read-only base-commit `<context>` removed all `UNKNOWN` verdicts.** Reading referenced spec files and modified non-test files from `HEAD` let Stage 1 separate all 24 cases (`MCC 1.0`).
+- **Stage 2 verified every suspected defect with a probe.** Stage 2 (`gemini-4-neon-high` with tools) ran on 12 of 24 cases (all 12 wrong patches, 0 of 12 correct patches) and confirmed 12 of 12 with minimal Python probes, including the 9 `available()` full-bucket integer defects in `ratelimit` that Claude Sonnet missed in 7 of 9 runs above.
+- **Limits:** 24 cases on two small Python tasks, 1 pass, and 9 of the 12 wrong patches share one defect type. Not yet measured on the 78 SWE-bench patches or outside Python.
+
 The same comparison on the 42 SWE-bench patches (19 wrong, 23 correct). The evaluator is that of version 0.6.0 in the two rows, and its text did not change after that version. One line is different: the model of the evaluator subagent.
 
 | Model of the evaluator | Wrong patches approved (19) | Correct patches rejected (23) | No decision | MCC | Cost for one pass |

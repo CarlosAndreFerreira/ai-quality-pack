@@ -56,7 +56,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -150,7 +152,7 @@ def leakage(diff: str, tasks: List[dict]) -> List[str]:
 
 
 # ---------------------------------------------------------------- what the agent reported
-TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+TOKEN_KEYS = ("input_tokens", "output_tokens", "thinking_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "cache_read_tokens")
 LOG_LIMIT = 200_000
 
 
@@ -774,12 +776,47 @@ def judge_summary(rows: List[dict]) -> dict:
 
 
 DIFF_LIMIT = 60_000
+CONTEXT_LIMIT = 40_000
 REQ_TAG_RE = re.compile(r"<requirement>\s*(.*?)\s*</requirement>", re.S)
+REQ_PATH_RE = re.compile(r"[\w./-]+\.(?:md|txt|py|ts|js|go|rs|json|toml|yaml|yml)")
+TEST_FILE_RE = re.compile(r"(?:^|/)(?:tests?|__tests__)/|(?:^|/)test_[^/]+\.py$|_test\.(?:py|go|rs)$")
 
 
 def extract_requirement(prompt: str) -> str:
     m = REQ_TAG_RE.search(prompt)
     return m.group(1).strip() if m else prompt.strip()
+
+
+def collect_base_context(wt: Path, req: str, max_chars: int = CONTEXT_LIMIT) -> str:
+    """Read referenced spec files and modified non-test files from HEAD (tamper-safe base context)."""
+    req_paths = REQ_PATH_RE.findall(req)
+    diff_files = [l.strip() for l in git("diff", "--name-only", "HEAD", cwd=wt).stdout.splitlines() if l.strip()]
+    candidates: List[str] = []
+    seen = set()
+    for p in req_paths:
+        if p not in seen:
+            seen.add(p)
+            candidates.append(p)
+    for p in diff_files:
+        if p not in seen and not (TEST_FILE_RE.search(p) and p not in req_paths):
+            seen.add(p)
+            candidates.append(p)
+    blocks: List[str] = []
+    used = 0
+    for p in candidates:
+        r = git("show", f"HEAD:{p}", cwd=wt)
+        if r.returncode != 0 or not r.stdout:
+            continue
+        header = f"### {p} (base)\n"
+        chunk = header + r.stdout.rstrip() + "\n"
+        if used + len(chunk) > max_chars:
+            rem = max_chars - used
+            if rem > len(header) + 100:
+                blocks.append(chunk[:rem] + "\n... [context truncated]\n")
+            break
+        blocks.append(chunk)
+        used += len(chunk)
+    return "\n".join(blocks)
 
 
 def clean_diff_for_review(wt: Path) -> str:
@@ -801,14 +838,16 @@ def clean_diff_for_review(wt: Path) -> str:
     return text
 
 
-def build_plain_prompt(req: str, diff_text: str, two_stage: bool) -> str:
+def build_plain_prompt(req: str, diff_text: str, two_stage: bool, context_text: str = "") -> str:
+    ctx_block = f"<context>\n{context_text.rstrip()}\n</context>\n\n" if context_text.strip() else ""
     base = (
-        "You are an independent code reviewer. Read only the requirement and the diff below.\n"
+        "You are an independent code reviewer. Read only the requirement, base context (if given), and diff below.\n"
         "Do NOT run commands, edit files, or use tools. Decide whether the diff solves the requirement "
         "correctly without breaking existing behaviour.\n"
         "For any suspected defect, quote the exact sentence of the requirement it violates.\n"
         "List at most 3 ambiguities if the requirement leaves behaviour undecided.\n\n"
         f"<requirement>\n{req}\n</requirement>\n\n"
+        f"{ctx_block}"
         f"<diff>\n{diff_text.rstrip()}\n</diff>\n\n"
     )
     if two_stage:
@@ -833,9 +872,11 @@ def _extract_result_text(stdout: str) -> str:
         try:
             d = json.loads(s)
             if isinstance(d, list):
-                d = next((e for e in reversed(d) if isinstance(e, dict) and isinstance(e.get("result"), str)), None)
-            if isinstance(d, dict) and isinstance(d.get("result"), str):
-                return d["result"]
+                d = next((e for e in reversed(d) if isinstance(e, dict) and isinstance(e.get("result") or e.get("response"), str)), None)
+            if isinstance(d, dict):
+                txt = d.get("result") if isinstance(d.get("result"), str) else d.get("response")
+                if isinstance(txt, str):
+                    return txt
         except ValueError:
             pass
     return stdout
@@ -974,76 +1015,99 @@ def cmd_judge(a) -> None:
     if runs > a.max_runs and not a.yes:
         die(f"{runs} judge runs planned (> --max-runs {a.max_runs}); this costs tokens. Re-run with --yes to confirm.")
     logdir = new_logdir("judge")
-    rows = []
-    for c in cases:
-        for rep in range(a.repeats):
-            own = bool(c.get("repo"))
-            wt = prepare_case_repo(Path(a.cases).resolve().parent, c, skills, agents) if own else prepare_worktree(repo, skills, None)
-            t0 = time.time()
+    cases_dir = Path(a.cases).resolve().parent
+    git_lock = threading.Lock()
+    print_lock = threading.Lock()
+
+    def run_one(idx: int, c: dict, rep: int) -> Tuple[int, dict]:
+        own = bool(c.get("repo"))
+        if own:
+            wt = prepare_case_repo(cases_dir, c, skills, agents)
+        else:
+            with git_lock:
+                wt = prepare_worktree(repo, skills, None)
+        t0 = time.time()
+        try:
+            if c.get("setup"):
+                s_cmd = sh(c["setup"], wt, a.timeout)
+                if s_cmd.returncode != 0:
+                    die(f"case {c['id']}: setup failed: {(s_cmd.stderr or s_cmd.stdout).strip()[-300:]}")
+            req = extract_requirement(c["prompt"])
+            if a.mode in ("plain", "two-stage"):
+                ctx = collect_base_context(wt, req)
+                p1_text = build_plain_prompt(req, clean_diff_for_review(wt), two_stage=(a.mode == "two-stage"), context_text=ctx)
+            else:
+                p1_text = c["prompt"]
+            pfile = wt / ".skill-eval-prompt.txt"
+            pfile.write_text(p1_text, encoding="utf-8")
+            cmd = cmd_t.format(prompt=q(p1_text), prompt_file=q(str(pfile)), workdir=q(str(wt)))
             try:
-                if c.get("setup"):
-                    s = sh(c["setup"], wt, a.timeout)
-                    if s.returncode != 0:
-                        die(f"case {c['id']}: setup failed: {(s.stderr or s.stdout).strip()[-300:]}")
-                req = extract_requirement(c["prompt"])
-                if a.mode in ("plain", "two-stage"):
-                    p1_text = build_plain_prompt(req, clean_diff_for_review(wt), two_stage=(a.mode == "two-stage"))
+                r = sh(cmd, wt, a.timeout)
+                rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
+            except subprocess.TimeoutExpired as e:
+                rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
+            slug = re.sub(r"[^A-Za-z0-9_.-]", "_", str(c["id"]))
+            log = logdir / f"{slug}-{rep + 1}.txt"
+            try:
+                log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
+            except OSError:
+                pass
+            usage = parse_usage(stdout)
+            extra: dict = {}
+            if a.mode == "two-stage":
+                decision, hyps, _ = parse_stage1(stdout)
+                extra["stage1_decision"] = decision
+                if decision == "SUSPECT":
+                    p2_text = build_verify_prompt(req, hyps, stdout)
+                    p2_file = wt / ".skill-eval-verify-prompt.txt"
+                    p2_file.write_text(p2_text, encoding="utf-8")
+                    cmd2 = verify_t.format(prompt=q(p2_text), prompt_file=q(str(p2_file)), workdir=q(str(wt)))
+                    try:
+                        r2 = sh(cmd2, wt, a.timeout)
+                        rc2, out2, err2 = r2.returncode, r2.stdout or "", r2.stderr or ""
+                    except subprocess.TimeoutExpired as e:
+                        rc2, out2, err2 = "timeout", _text(e.stdout), _text(e.stderr)
+                    log2 = logdir / f"{slug}-{rep + 1}-stage2.txt"
+                    try:
+                        log2.write_text(f"$ {cmd2}\nexit: {rc2}\n--- stdout ---\n{out2[-LOG_LIMIT:]}\n--- stderr ---\n{err2[-LOG_LIMIT:]}\n", encoding="utf-8")
+                    except OSError:
+                        pass
+                    found = VERDICT_RE.findall(_extract_result_text(out2))
+                    verdict = found[-1].upper() if found else "UNKNOWN"
+                    usage = merge_usage(usage, parse_usage(out2))
+                    extra["stage"] = 2
                 else:
-                    p1_text = c["prompt"]
-                pfile = wt / ".skill-eval-prompt.txt"
-                pfile.write_text(p1_text, encoding="utf-8")
-                cmd = cmd_t.format(prompt=q(p1_text), prompt_file=q(str(pfile)), workdir=q(str(wt)))
-                try:
-                    r = sh(cmd, wt, a.timeout)
-                    rc, stdout, stderr = r.returncode, r.stdout or "", r.stderr or ""
-                except subprocess.TimeoutExpired as e:
-                    rc, stdout, stderr = "timeout", _text(e.stdout), _text(e.stderr)
-                slug = re.sub(r"[^A-Za-z0-9_.-]", "_", str(c["id"]))
-                log = logdir / f"{slug}-{rep + 1}.txt"
-                try:
-                    log.write_text(f"$ {cmd}\nexit: {rc}\n--- stdout ---\n{stdout[-LOG_LIMIT:]}\n--- stderr ---\n{stderr[-LOG_LIMIT:]}\n", encoding="utf-8")
-                except OSError:
-                    pass
-                usage = parse_usage(stdout)
-                extra: dict = {}
-                if a.mode == "two-stage":
-                    decision, hyps, _ = parse_stage1(stdout)
-                    extra["stage1_decision"] = decision
-                    if decision == "SUSPECT":
-                        p2_text = build_verify_prompt(req, hyps, stdout)
-                        p2_file = wt / ".skill-eval-verify-prompt.txt"
-                        p2_file.write_text(p2_text, encoding="utf-8")
-                        cmd2 = verify_t.format(prompt=q(p2_text), prompt_file=q(str(p2_file)), workdir=q(str(wt)))
-                        try:
-                            r2 = sh(cmd2, wt, a.timeout)
-                            rc2, out2, err2 = r2.returncode, r2.stdout or "", r2.stderr or ""
-                        except subprocess.TimeoutExpired as e:
-                            rc2, out2, err2 = "timeout", _text(e.stdout), _text(e.stderr)
-                        log2 = logdir / f"{slug}-{rep + 1}-stage2.txt"
-                        try:
-                            log2.write_text(f"$ {cmd2}\nexit: {rc2}\n--- stdout ---\n{out2[-LOG_LIMIT:]}\n--- stderr ---\n{err2[-LOG_LIMIT:]}\n", encoding="utf-8")
-                        except OSError:
-                            pass
-                        found = VERDICT_RE.findall(out2)
-                        verdict = found[-1].upper() if found else "UNKNOWN"
-                        usage = merge_usage(usage, parse_usage(out2))
-                        extra["stage"] = 2
-                    else:
-                        verdict = "PASS" if decision == "APPROVE" else "UNKNOWN"
-                        found = [verdict] if verdict == "PASS" else []
-                        extra["stage"] = 1
-                else:
-                    found = VERDICT_RE.findall(stdout)
-                    verdict = found[-1].upper() if found else "UNKNOWN"  # no verdict line: the judge did not decide
-                rows.append({"id": c["id"], "label": c["label"], "rep": rep + 1, "verdict": verdict, "stated": bool(found),
-                             "seconds": round(time.time() - t0, 1), **extra, **usage})
-                stage_note = f" [stage {extra['stage']}]" if "stage" in extra else ""
+                    verdict = "PASS" if decision == "APPROVE" else "UNKNOWN"
+                    found = [verdict] if verdict == "PASS" else []
+                    extra["stage"] = 1
+            else:
+                found = VERDICT_RE.findall(_extract_result_text(stdout))
+                verdict = found[-1].upper() if found else "UNKNOWN"  # no verdict line: the judge did not decide
+            row = {"id": c["id"], "label": c["label"], "rep": rep + 1, "verdict": verdict, "stated": bool(found),
+                   "seconds": round(time.time() - t0, 1), **extra, **usage}
+            stage_note = f" [stage {extra['stage']}]" if "stage" in extra else ""
+            with print_lock:
                 print(f"{str(c['id']):<28} {c['label']:<8} -> {verdict}{stage_note}" + ("" if found else " (no verdict line)"), flush=True)
-            finally:
-                if own:
-                    shutil.rmtree(wt, ignore_errors=True)
-                else:
+            return idx, row
+        finally:
+            if own:
+                shutil.rmtree(wt, ignore_errors=True)
+            else:
+                with git_lock:
                     cleanup(repo, wt)
+
+    jobs = [(idx, c, rep) for idx, (c, rep) in enumerate((c, rep) for c in cases for rep in range(a.repeats))]
+    workers = max(1, a.workers)
+    if workers == 1:
+        indexed_rows = [run_one(idx, c, rep) for idx, c, rep in jobs]
+    else:
+        indexed_rows = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(run_one, idx, c, rep) for idx, c, rep in jobs]
+            for fut in as_completed(futs):
+                indexed_rows.append(fut.result())
+    indexed_rows.sort(key=lambda item: item[0])
+    rows = [row for _, row in indexed_rows]
     s = judge_summary(rows)
     report: dict = {
         "kind": "judge", "date": dt.datetime.now().isoformat(timespec="seconds"), "mode": a.mode, "judge_cmd": cmd_t,
@@ -1155,6 +1219,7 @@ def main() -> None:
     j.add_argument("--mode", choices=["evaluator", "plain", "two-stage"], default="evaluator",
                    help="judge protocol: evaluator (default), plain (issue + diff only), or two-stage (plain triage then targeted verify)")
     j.add_argument("--verify-cmd", help="Stage 2 command template for --mode two-stage (default: --judge-cmd)")
+    j.add_argument("--workers", type=int, default=1, help="parallel judge workers (default 1)")
     j.add_argument("--skills", default=".agents/skills", help="skills dir relative to the repo root")
     j.add_argument("--repeats", "--reps", dest="repeats", type=int, default=1, help="judge runs per case (default 1)")
     j.add_argument("--rule", choices=["asymmetric", "majority", "strict-fail"], default="asymmetric",
