@@ -3378,6 +3378,8 @@ class TestProtectionTests(unittest.TestCase):
                 ("Bash", {"command": "mv tests/test_a.py /tmp/old.py"}),
                 ("Bash", {"command": ": > tests/test_a.py"}),
                 ("Bash", {"command": "python3 -c \"import os; os.remove('tests/test_a.py')\""}),
+                ("Bash", {"command": "python3 -W ignore -c \"import os; os.remove('tests/test_a.py')\""}),
+                ("Bash", {"command": "node --eval \"require('fs').unlinkSync('tests/test_a.py')\""}),
                 ("Bash", {"command": "bash -c 'rm tests/test_b.py'"}),
                 ("apply_patch", {"command": "*** Begin Patch\n*** Delete File: tests/test_a.py\n*** End Patch\n"}),
                 ("apply_patch", {"command": "*** Begin Patch\n*** Update File: tests/test_a.py\n*** Move to: old/a.py\n*** End Patch\n"}),
@@ -3406,6 +3408,9 @@ class TestProtectionTests(unittest.TestCase):
                 ("Bash", {"command": "find build -name '*.py' -delete"}),
                 ("Bash", {"command": "pytest tests 2>&1 > /tmp/out.txt"}),
                 ("Bash", {"command": "sed -i 's/5/5.0/' tests/test_a.py"}),                  # a change, not a removal
+                ("Bash", {"command": "python3 .agents/skills/long-horizon/scripts/memory.py repro --test \"python3 -m unittest discover -s tests\" --test-file tests/test_a.py"}),
+                ("Bash", {"command": "python3 ~/.gemini/config/plugins/ai-quality-pack/skills/long-horizon/scripts/memory.py counterexample --test \"pytest tests/test_a.py\" --test-file tests/test_a.py"}),
+                ("Bash", {"command": "python3 -m pytest --exitfirst tests/test_a.py"}),
                 ("Read", {"file_path": "tests/test_a.py"}),
             ]
             for tool, args in allowed:
