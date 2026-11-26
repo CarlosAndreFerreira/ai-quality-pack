@@ -3427,6 +3427,7 @@ class TestProtectionTests(unittest.TestCase):
                 ("Bash", {"command": "python3 -c \"import os; os.remove('tests/test_a.py')\""}),
                 ("Bash", {"command": "python3 -W ignore -c \"import os; os.remove('tests/test_a.py')\""}),
                 ("Bash", {"command": "node --eval \"require('fs').unlinkSync('tests/test_a.py')\""}),
+                ("Bash", {"command": "node --eval=\"require('fs').unlinkSync('tests/test_a.py')\""}),
                 ("Bash", {"command": "bash -c 'rm tests/test_b.py'"}),
                 ("apply_patch", {"command": "*** Begin Patch\n*** Delete File: tests/test_a.py\n*** End Patch\n"}),
                 ("apply_patch", {"command": "*** Begin Patch\n*** Update File: tests/test_a.py\n*** Move to: old/a.py\n*** End Patch\n"}),

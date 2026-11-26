@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.10.6 — 2026-11-26
 
-Fixes for the Antigravity and Claude Code plugins. No measurement or default of `memory.py` changed.
+Fixes for the Antigravity and Claude Code plugins, two new modes of `skill-eval judge`, and a short form of the evidence block. No default of `memory.py` changed. The Antigravity hooks ran in a live session; the changes for Claude Code did not.
+
+Checked: 176 tests on Windows and on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
 - **Antigravity plugin (`install.py global`)**:
   - Stopped copying pack skills into `~/.gemini/antigravity-cli/skills/`, which loaded every skill twice in Antigravity sessions alongside `~/.gemini/config/plugins/ai-quality-pack/skills/`. `install.py global --upgrade` removes older pack-owned duplicates from `~/.gemini/antigravity-cli/skills/` while keeping user skills.
   - Added native `hooks.json` (`templates/antigravity/hooks.json`) and a Python adapter (`templates/antigravity/hooks/aqp_agy_hook.py`) translating Antigravity `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` events to the pack's scripts (silent outside repositories with `.agent-memory/`).
   - Updated `templates/.claude/hooks/gate_on_stop.py` to find `memory.py` in both Claude Code and Antigravity plugin layouts, and added `.agent/` and `.gemini/` to `templates/.claude/hooks/guard_pack_files.py`.
-  - Fixed a false positive in `templates/.claude/hooks/guard_pack_files.py` caught during live Antigravity `evaluator` validation: `_has_inline_eval_flag` only matches `-c`/`-e`/`--eval` before the target script or `-m`, so flags such as `memory.py repro --test-file tests/...`, `memory.py counterexample --test-file tests/...`, and `python3 -m pytest --exitfirst tests/...` are no longer misclassified as inline code evaluation.
+  - Fixed a false positive in `templates/.claude/hooks/guard_pack_files.py` caught during live Antigravity `evaluator` validation: `_has_inline_eval_flag` only matches `-c`/`-e`/`--eval` before the target script or `-m`, so flags such as `memory.py repro --test-file tests/...`, `memory.py counterexample --test-file tests/...`, and `python3 -m pytest --exitfirst tests/...` are no longer misclassified as inline code evaluation. The form `--eval=CODE` in one argument continues to be blocked (the first form of this fix let it pass; 1 test line).
   - Checked by unit tests and live Antigravity (`agy`) validation (`SessionStart`, `PreToolUse` guard on `.agent-memory/gate.json`, `Stop` gate on red/green transitions, and `evaluator` subagent execution).
 - **Claude Code plugin**:
   - Moved `evaluator.md`, `criteria.md`, and `triage.md` from `templates/.claude/agents/` to root `agents/` and removed the explicit `"agents"` path list from `.claude-plugin/plugin.json` so Claude Code auto-discovers the three subagents.

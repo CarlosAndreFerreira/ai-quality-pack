@@ -95,7 +95,7 @@ def _has_inline_eval_flag(args_tok):
             continue
         if a in ("--", "-", "-m") or not a.startswith("-"):
             return False
-        if a == "--eval" or (not a.startswith("--") and ("c" in a[1:] or "e" in a[1:])):
+        if a == "--eval" or a.startswith("--eval=") or (not a.startswith("--") and ("c" in a[1:] or "e" in a[1:])):
             return True
     return False
 
