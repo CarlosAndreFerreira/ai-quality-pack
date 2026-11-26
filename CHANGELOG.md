@@ -13,6 +13,7 @@ Fixes for the Antigravity and Claude Code plugins. No measurement or default of 
   - Moved `evaluator.md`, `criteria.md`, and `triage.md` from `templates/.claude/agents/` to root `agents/` and removed the explicit `"agents"` path list from `.claude-plugin/plugin.json` so Claude Code auto-discovers the three subagents.
   - Added `hooks/aqp_hook.py` (cross-platform Python dispatcher), `bin/aqp-hook.cmd` and `bin/aqp-memory.cmd` for Windows, and `PreToolUse` (`guard`) in `hooks/hooks.json`.
   - Added slash commands in `commands/`: `init.md`, `review.md`, `evidence.md`, and `doctor.md`.
+  - Fix: the launchers `bin/aqp-hook` and `bin/aqp-memory` used the first of `python3` and `python` that was on PATH. On Windows, `python3` can be the Microsoft Store alias, which is on PATH and does not run: then each hook of the plugin failed with no block. The launchers now use the first one that runs. 1 test.
   - Fix: `/ai-quality-pack:init` told the agent to create `.agent-memory/gate.json`, and the new `PreToolUse` guard blocked that write, so the command could not end. The agent now writes `.agent-memory/gate.proposed.json` and a person moves it into place. The guard did not change. 1 test extended.
   - Checked by unit tests; not run in a live Claude Code session or with `claude plugin validate` (CLI binary unavailable in this environment) yet.
 - **`skill-eval judge` (`--mode plain|two-stage`)**:

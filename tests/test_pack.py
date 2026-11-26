@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2259,6 +2260,36 @@ class PluginTests(unittest.TestCase):
             r = sh(PACK / "bin/aqp-hook", "start")
             self.assertEqual((r.returncode, r.stdout), (0, ""))
             self.assertEqual(sh(PACK / "bin/aqp-hook", "stop").returncode, 0)
+
+    @unittest.skipUnless(shutil.which("sh"), "needs a POSIX shell")
+    def test_plugin_launchers_skip_a_python3_that_is_on_path_and_does_not_run(self):
+        # On Windows, `python3` can be the Microsoft Store alias: `command -v` finds it, and it exits with an error.
+        with tempfile.TemporaryDirectory() as t:
+            root, fake = Path(t) / "repo", Path(t) / "fakebin"
+            root.mkdir()
+            fake.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+            (fake / "python3").write_bytes(b"#!/bin/sh\necho 'Python was not found' >&2\nexit 49\n")
+            real = Path(sys.executable).as_posix()
+            (fake / "python").write_bytes(f'#!/bin/sh\nexec "{real}" "$@"\n'.encode("utf-8"))
+            for name in ("python3", "python"):
+                os.chmod(fake / name, 0o755)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), CLAUDE_PLUGIN_ROOT=str(PACK),
+                       PATH=str(fake) + os.pathsep + os.environ.get("PATH", ""))
+            sh = lambda *args: subprocess.run(["sh", *[Path(a).as_posix() if isinstance(a, Path) else a for a in args]], cwd=root, env=env,
+                                              input="{}", capture_output=True, text=True)
+            r = sh(PACK / "bin/aqp-memory", "init")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((root / ".agent-memory").is_dir())
+            r = sh(PACK / "bin/aqp-hook", "start")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("# Session start digest", r.stdout)
+            (fake / "python").unlink()                                 # no Python that runs: the launcher says so
+            env["PATH"] = str(fake)
+            r = subprocess.run([shutil.which("sh"), (PACK / "bin/aqp-hook").as_posix(), "start"], cwd=root, env=env, input="{}",
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("no python3 or python on PATH that runs", r.stderr)
 
     def test_doctor_names_the_plugin_install(self):
         with tempfile.TemporaryDirectory() as t:

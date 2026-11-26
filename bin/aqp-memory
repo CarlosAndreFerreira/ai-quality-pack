@@ -1,10 +1,11 @@
 #!/bin/sh
 # memory.py of the AI Quality Pack, for a plugin install (the plugin's bin/ directory is on PATH).
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# A name on PATH is not sufficient: on Windows, `python3` can be the Microsoft Store alias, which is found and does not run.
 for py in python3 python; do
-  if command -v "$py" >/dev/null 2>&1; then
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c "import sys" >/dev/null 2>&1; then
     exec "$py" "$root/skills/long-horizon/scripts/memory.py" "$@"
   fi
 done
-echo "aqp-memory: no python3 or python on PATH" >&2
+echo "aqp-memory: no python3 or python on PATH that runs" >&2
 exit 1
