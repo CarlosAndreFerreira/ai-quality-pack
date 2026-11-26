@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-Docs: one measurement, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)).
+Docs: one measurement, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)). Also hardened `--mode two-stage` in `skill_eval.py judge` (experiment tooling only; no default of `memory.py` changed).
 
 - **Measured: tools or instructions, the 4 combinations on the 78 patches, with Sonnet as the judge.** Balanced accuracy: no tools and a short prompt 75.0; no tools and the instructions of the evaluator 60.3; tools and the short prompt 62.1; tools and the instructions of the evaluator 57.2. The tools made the judge accept wrong patches (17 rejected became 9). The instructions with no tools made it give no decision (45 UNKNOWN of 78). The two effects do not add. A new text for the evaluator is not enough while the evaluator runs with tools.
+- **`skill-eval judge` (`--mode two-stage`) Stage 2 policy**: updated `build_verify_prompt` to emit `STAGE2: CONFIRMED|REFUTED|UNCONFIRMED` and explicitly forbid using passing project tests as refutation (motivated by the `C − A = −12.9 pp` tools effect above). Added `--stage2-policy` (`keep-suspect` default: Stage 2 attaches executable proof without flipping a Stage 1 `SUSPECT` to `PASS`; `allow-refute`: flips to `PASS` only on explicit `STAGE2: REFUTED`). Tested with mock probes; not re-measured with a live model yet.
 
 ## 0.10.6 — 2026-11-26
 

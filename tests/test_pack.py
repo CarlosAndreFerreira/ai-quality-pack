@@ -1879,30 +1879,57 @@ class JudgeAndEvidenceTests(unittest.TestCase):
                 f"import json, pathlib, sys\n"
                 f"txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\n"
                 f"assert '<suspected_defects>' in txt\n"
+                f"assert 'passing existing tests NEVER proves a patch is correct' in txt\n"
+                f"assert 'STAGE2: CONFIRMED' in txt\n"
                 f"open({str(stage2_log)!r}, 'a', encoding='utf-8').write(txt + '\\n---\\n')\n"
                 f"code = pathlib.Path('calc.py').read_text(encoding='utf-8')\n"
-                f"v = 'FAIL' if 'a * b' in code else 'PASS'\n"
-                f"print(json.dumps({{'total_cost_usd': 0.03, 'usage': {{'input_tokens': 200, 'output_tokens': 50, 'cache_read_tokens': 5}}, 'response': f'VERDICT: {{v}}'}}))\n",
+                f"s2_v = 'CONFIRMED' if 'a * b' in code else 'REFUTED'\n"
+                f"print(json.dumps({{'total_cost_usd': 0.03, 'usage': {{'input_tokens': 200, 'output_tokens': 50, 'cache_read_tokens': 5}}, 'response': f'STAGE2: {{s2_v}}'}}))\n",
                 encoding="utf-8",
             )
             r_2s = run([EVAL, "judge", "--mode", "two-stage", "--workers", "2", "--cases", cases_file, "--skills", "skills",
                         "--judge-cmd", f'"{py}" "{s1}" {{prompt_file}}',
                         "--verify-cmd", f'"{py}" "{s2}" {{prompt_file}}'], repo)
             self.assertEqual(r_2s.returncode, 0, r_2s.stdout + r_2s.stderr)
-            self.assertIn("balanced accuracy:      100.0%", r_2s.stdout)
+            self.assertIn("balanced accuracy:      75.0%", r_2s.stdout)  # default keep-suspect keeps Stage 1 SUSPECT as FAIL even when REFUTED
+            self.assertIn("stage 2 (keep-suspect):", r_2s.stdout)
             calls = [c for c in stage2_log.read_text(encoding="utf-8").split("\n---\n") if c.strip()]
             self.assertEqual(len(calls), 2)  # c_ok skipped Stage 2; only c_refute and w_bug ran Stage 2
             self.assertTrue(any("multiplies instead of adds" in c for c in calls))
             reports = sorted((repo / ".agent-memory/evals/results").glob("*-judge.json"))
             rep_data = json.loads(reports[-1].read_text(encoding="utf-8"))
             self.assertEqual(rep_data["mode"], "two-stage")
-            self.assertEqual(rep_data["summary"]["balanced_accuracy"], 1.0)
+            self.assertEqual(rep_data["stage2_policy"], "keep-suspect")
+            self.assertEqual(rep_data["stage2_counts"], {"confirmed": 1, "refuted": 1, "unconfirmed": 0})
+            self.assertEqual(rep_data["summary"]["balanced_accuracy"], 0.75)
             self.assertEqual([row["id"] for row in rep_data["rows"]], ["c_ok", "c_refute", "w_bug"])
             by_id = {row["id"]: row for row in rep_data["rows"]}
             self.assertEqual((by_id["c_ok"]["stage"], by_id["c_ok"]["verdict"], by_id["c_ok"]["cost_usd"]), (1, "PASS", 0.01))
-            self.assertEqual((by_id["c_refute"]["stage"], by_id["c_refute"]["verdict"], by_id["c_refute"]["cost_usd"]), (2, "PASS", 0.04))
-            self.assertEqual((by_id["w_bug"]["stage"], by_id["w_bug"]["verdict"], by_id["w_bug"]["cost_usd"]), (2, "FAIL", 0.04))
+            self.assertEqual((by_id["c_refute"]["stage"], by_id["c_refute"]["stage2_status"], by_id["c_refute"]["verdict"], by_id["c_refute"]["cost_usd"]), (2, "REFUTED", "FAIL", 0.04))
+            self.assertEqual((by_id["w_bug"]["stage"], by_id["w_bug"]["stage2_status"], by_id["w_bug"]["verdict"], by_id["w_bug"]["cost_usd"]), (2, "CONFIRMED", "FAIL", 0.04))
             self.assertEqual((by_id["w_bug"]["tokens"], by_id["c_ok"]["tokens"]), (385, 130))
+
+            # allow-refute flips only explicit REFUTED back to PASS; UNCONFIRMED still preserves the Stage 1 SUSPECT (FAIL)
+            s2_unconf = tmp / "s2_unconf.py"
+            s2_unconf.write_text(
+                "import json, pathlib, sys\n"
+                "code = pathlib.Path('calc.py').read_text(encoding='utf-8')\n"
+                "s2_v = 'UNCONFIRMED' if 'a * b' in code else 'REFUTED'\n"
+                "print(json.dumps({'total_cost_usd': 0.03, 'response': f'STAGE2: {s2_v}'}))\n",
+                encoding="utf-8",
+            )
+            r_refute = run([EVAL, "judge", "--mode", "two-stage", "--stage2-policy", "allow-refute", "--workers", "2",
+                            "--cases", cases_file, "--skills", "skills",
+                            "--judge-cmd", f'"{py}" "{s1}" {{prompt_file}}',
+                            "--verify-cmd", f'"{py}" "{s2_unconf}" {{prompt_file}}'], repo)
+            self.assertEqual(r_refute.returncode, 0, r_refute.stdout + r_refute.stderr)
+            self.assertIn("balanced accuracy:      100.0%", r_refute.stdout)
+            rep_refute = json.loads(sorted((repo / ".agent-memory/evals/results").glob("*-judge.json"))[-1].read_text(encoding="utf-8"))
+            self.assertEqual(rep_refute["stage2_policy"], "allow-refute")
+            self.assertEqual(rep_refute["stage2_counts"], {"confirmed": 0, "refuted": 1, "unconfirmed": 1})
+            by_id_ref = {row["id"]: row for row in rep_refute["rows"]}
+            self.assertEqual((by_id_ref["c_refute"]["stage2_status"], by_id_ref["c_refute"]["verdict"]), ("REFUTED", "PASS"))
+            self.assertEqual((by_id_ref["w_bug"]["stage2_status"], by_id_ref["w_bug"]["verdict"]), ("UNCONFIRMED", "FAIL"))
 
     def test_evidence_brief_is_compact_and_surfaces_red_flags_and_decisions(self):
         with tempfile.TemporaryDirectory() as t:
