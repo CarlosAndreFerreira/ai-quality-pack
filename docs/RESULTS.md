@@ -524,8 +524,8 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
 - Which part of the evaluator makes it worse than a plain reviewer on Sonnet: its tools or its instructions. A run with the 4 combinations on the same 78 patches separates them.
-- The plain reviewer on cases that are not in the training data of the models, for example the 24 cases of `evals/judge-cases/`.
-- A review in two steps: a plain review first, then a counterexample only for a suspected defect.
+- The plain reviewer on cases that are not in the training data of the models beyond the 24 small cases of `evals/judge-cases/` measured with Gemini 4 Neon above (for example, on Claude models or on larger non-SWE-bench repositories).
+- A review in two steps (plain review first, then a counterexample only for a suspected defect) on the 78 SWE-bench patches or outside Python; it was measured only on the 24 small cases of `evals/judge-cases/` with Gemini 4 Neon above.
 - The "regression" mode as it is now, where a `regression` counterexample does not block. The two measurements used the mode that blocked.
 - The `triage` subagent, the merge-readiness step of the evaluator, the reproduction check, the complexity warning, the digest size limit and the confirmation of lessons: none was measured with an agent.
 - The issue workflow: it was not run on GitHub.
