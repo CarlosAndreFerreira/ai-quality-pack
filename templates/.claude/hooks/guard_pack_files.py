@@ -83,6 +83,23 @@ TEST_MESSAGE = ("Blocked: {what} removes or turns off an existing test.\n"
                 "or stop and ask a person if this test must be removed or skipped.\n")
 
 
+def _has_inline_eval_flag(args_tok):
+    """Return True if interpreter args contain -c, -e, or --eval before the target script."""
+    prev = ""
+    for a in args_tok:
+        if prev in ("-W", "-X", "-r", "--require", "-o", "+o"):
+            prev = ""
+            continue
+        if a in ("-W", "-X", "-r", "--require", "-o", "+o"):
+            prev = a
+            continue
+        if a in ("--", "-", "-m") or not a.startswith("-"):
+            return False
+        if a == "--eval" or (not a.startswith("--") and ("c" in a[1:] or "e" in a[1:])):
+            return True
+    return False
+
+
 def project_root(data: dict) -> str:
     """The project folder. Claude Code gives CLAUDE_PROJECT_DIR. Other agents (Codex, OpenCode) give the session
     folder in `cwd`: the project is that folder, or the git top level above it, where the pack's files are."""
@@ -507,7 +524,7 @@ def check_shell_tests(command: str, cwd: Path, project: Path, in_git: bool, trac
             if target:
                 sim_cwd = Path(os.path.abspath(os.path.join(str(sim_cwd), target)))
             continue
-        if INLINE_EVAL.match(exe) and any(a.startswith("-") and ("c" in a or "e" in a) for a in args_tok):
+        if INLINE_EVAL.match(exe) and _has_inline_eval_flag(args_tok):
             if _inline_names_tracked(part, sim_cwd, project, tracked):
                 return part[:120]
             continue
