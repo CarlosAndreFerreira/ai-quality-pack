@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.10.9 — 2026-11-27
 
-Docs: one measurement, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)).
+One measurement, with no change of code ([docs/RESULTS.md](docs/RESULTS.md)). The code is that of version 0.10.8; only the version number changed.
+
+Checked: 179 tests on Windows and on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
 
 - **Measured: the pack of version 0.10.8 does not cost the author resolved issues, with Haiku.** 40 hard issues, 4 runs for each issue and arm, 320 runs. The core install with the Stop gate and the guard resolved 79 of 160, and the bare agent 74 of 160: +3.1 points (−4.4 to +10.6). The criterion written before the run was a lower limit above −7.5 points; it passed. The pack did not change false "done" (−3.8, −11.3 to +3.7) and cost 1.29 times more. The Stop hook blocked in 2 of 160 runs. The guard blocked in 3, and none was a change that turns off a test. The difference of −8.7 points of the first measurement did not occur again; its cause is not known.
 
