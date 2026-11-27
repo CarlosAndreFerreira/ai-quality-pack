@@ -81,7 +81,7 @@ What the numbers say:
 - **The largest cause is a rule of the pack, not a judgement of the model.** A PASS needs a test that was recorded before the change. With `require_evaluator` the agent learns about the evaluator at the Stop hook, after the change. Thus the rule refused a PASS for 12 correct patches and for 12 wrong patches where the evaluator found no defect. To accept a later test is not the repair: the same 12 wrong patches then get a PASS.
 - **A `regression` counterexample was the one record that separated the patches**: 7 wrong patches and 0 correct patches. This agrees with the 3 of 3 above. The next measurement did not repeat it (12 wrong patches and 9 correct patches; see the section below). 2 correct patches had a `regression` record for a lint rule, not for behaviour.
 - **An answer "done" was not more reliable with the pack.** It was wrong in 61% of the cases in GE, in 51% in G and in 41% for the bare agent.
-- **The two pack arms resolved fewer issues than the bare agent.** For GE the interval does not include zero. The cause is not measured. In GE, 8 runs used the full 30 minutes; the harness counts them as "done" (5 wrong, 3 correct).
+- **The two pack arms resolved fewer issues than the bare agent.** For GE the interval does not include zero. The cause is not measured. A later run with version 0.10.8, without the mandatory evaluator and with 4 runs for each issue, did not show this difference (see "Does the pack of version 0.10.8 cost the author resolved issues?" below). In GE, 8 runs used the full 30 minutes; the harness counts them as "done" (5 wrong, 3 correct).
 - **Cost.** GE cost 5.6 times the bare agent and took 10 times longer.
 - What this means for use: do not turn on `require_evaluator` to make "done" reliable. It makes the agent say "not done" for correct work also. A gate with the tests of the project stops a "done" without a check and finds a regression; it does not find a patch that repairs the wrong thing.
 - Cost: 10.79 US dollars for 240 runs.
@@ -196,6 +196,36 @@ What the numbers say:
 - **Cost.** GR cost 2.4 times the bare agent and took 5.3 times longer. 32.61 US dollars for 160 runs.
 - What this means for use: with a stronger model, the mode is a trade. It removes half of the false "done", and a person then checks 25% of the runs where a correct patch has the answer "not done". Use it only where a false "done" costs much more than a second check. It is not a filter that separates correct patches from wrong patches.
 - Limits: 2 runs for each issue, which are not independent. Hard issues and Python only. The runs are of 2 days. The comparison with Haiku is between days and models, not a controlled comparison. Criterion 3 had no margin written before the run. The commit of the pack has the mode that blocked on a `regression` counterexample; that block came into effect in 2 runs only. Not measured: the mode as it is now, a model of another supplier, and tasks that are less hard.
+
+### Does the pack of version 0.10.8 cost the author resolved issues?
+
+The question: in the first measurement above, the two pack arms resolved fewer hard issues than the bare agent (−8.7 and −10.0 points). The pack changed after that: lighter rules for a task of one session, no mandatory evaluator in the default, and the guard. Does the pack, as a user installs it today, cost resolved issues?
+
+- **The cases.** The same 40 hard issues and the same test command. 4 runs for each issue and arm: 320 runs on one day (2026-11-27), 4 at a time, Claude Haiku.
+- **The arms.** A0c: the bare agent, with the test command in the prompt. P8: the core install of version 0.10.8 with the Stop gate and the guard (`--with-stop-gate --with-guard`), the same command in a committed `gate.json`, and no `require_evaluator`.
+- **The criterion, written before the run.** The pack does not cost resolved issues if the lower limit of the 95% interval of the difference (P8 − A0c, bootstrap over the issues) is above −7.5 points. If the upper limit is below zero, the pack costs resolved issues. If neither, the result is not conclusive.
+
+| | A0c | P8 | Difference (95% interval) |
+|---|---|---|---|
+| Resolved (the hidden tests pass) | 74 of 160 (46%) | 79 of 160 (49%) | +3.1 (−4.4 to +10.6) |
+| The agent said "done" | 145 (91%) | 144 (90%) | −0.6 (−5.6 to +3.8) |
+| False "done", of all runs | 74 (46%) | 68 (42%) | −3.8 (−11.3 to +3.7) |
+| Correct patches that the agent did not call done | 3 | 3 | 0.0 |
+| Correct answers among the answers "done" (precision) | 71 of 145 (49%) | 76 of 144 (53%) | |
+| Runs that used the 30 minutes | 1 | 0 | |
+| Mean cost of a run (US dollars) | 0.0153 | 0.0197 | 1.29 times |
+| Mean time of the agent (seconds) | 90 | 124 | 1.38 times |
+
+- **The criterion passed.** The lower limit is −4.4, above −7.5. With Haiku, the pack of version 0.10.8 does not cost more than 7.5 points of resolved issues. The half of the interval is 7.5 points: 2 runs for each issue would not have been enough.
+- **The prediction was wrong.** It said a difference between −6 and 0 and a result that is not conclusive. It also said a cost of 1.5 to 2.5 times; the cost was 1.29 times.
+- **The pack did not make "done" more reliable.** The difference in false "done" and the precision of "done" are inside the noise. This agrees with the measurements above.
+- **What the hooks did in the 160 runs of P8.**
+  - The Stop hook blocked in 2 runs. In one, the agent stopped and named the conflict between the request and 8 existing tests, and it did not say "done": this is the way out that version 0.10.8 added to the block message. In the other, the agent said "not done" because runs in the background had not ended; its patch was correct.
+  - The guard blocked in 3 runs, all for one issue. None was a change that turns off a test. The agent added a new test with a `skipif` for an old Python, and used `sed -i` on an existing test file to add an import. The agent then did the work in another way.
+  - No run tried to delete or to turn off an existing test.
+- What this means for use: the default of version 0.10.8 is not a risk for the rate of resolved issues on this set, and it costs about 30% more. Its benefit is not shown here: on normal issues the agent did not change tests, so the guard had nothing to stop. A set where the tests and the request are in conflict can show that benefit; this measurement cannot.
+- What the first difference was: not known. The first measurement had 2 runs for each issue, so the −8.7 can be noise, and the pack also changed. This run cannot tell the two apart.
+- Limits: Claude Haiku only. Hard issues and Python only. The 4 runs of an issue are not independent. The bare agent resolved 46% here and 51% to 58% on other days: compare arms of one day, not days. The message of the guard for a command with more than one part names the start of the command, not the part that it blocked. 5.59 US dollars for 320 runs.
 
 ### Does the evidence of the pack help a reviewer?
 
@@ -582,7 +612,8 @@ The test set in `evals/injection/` (18 attack cases, 2 runs for each case and ar
 
 ## 6. What is not measured
 
-- Why the two pack arms resolved fewer hard issues than the bare agent, and the same comparison with a stronger model as the author or as the evaluator.
+- Why the two pack arms of the first measurement resolved fewer hard issues than the bare agent. With version 0.10.8 and Haiku the difference is not there. Not measured: the same comparison with a stronger model as the author.
+- The benefit of the guard on tasks where the tests and the request are in conflict. On normal issues no agent tried to turn off a test.
 - The full cause of the higher rejection rate of the evaluator of version 0.6.0 (one pass without the merge-readiness step gave a result between the two versions).
 - The defaults after version 0.8.0: the core install against the full install with an agent, a verdict that needs a record (`verdict_evidence` on) against the bare agent, As a judge of a finished patch, a test of the `criteria` subagent rejected no wrong patch, and as a guide for the author it did not change the number of resolved issues (see above).
 - An evaluator on a model of another supplier. Sonnet in place of Haiku did not make the evaluator better (see above).
