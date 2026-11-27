@@ -2,7 +2,7 @@
 
 A portable quality layer for AI coding agents (Claude Code, Google Antigravity, Codex, OpenCode, and any [Agent Skills](https://agentskills.io/specification) client). It covers deterministic gates, minimal rules, long-horizon memory, an independent evaluator, learning from mistakes, and **measured**, human-approved skill evolution.
 
-> Status: v0.10.7, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
+> Status: v0.10.8, experimental. The design follows published work (see [Design sources](#design-sources)). Parts of the pack are measured, and most are not: [docs/RESULTS.md](docs/RESULTS.md) has the numbers, with what they do not show. Use `skill-eval` on your tasks to find out for your project.
 
 ## Why
 
@@ -68,7 +68,7 @@ claude plugin install ai-quality-pack@ai-quality-pack
 - Run `/ai-quality-pack:init` (or `aqp-memory init` and create `.agent-memory/gate.json`) in a repository to start the memory and set up the completion gate. The command writes a proposal to `.agent-memory/gate.proposed.json` and you put it in place: the guard does not let the agent write the gate file. Without `.agent-memory/gate.json`, or with no commands in it, the gate fails and the Stop hook blocks one time: a gate that checks nothing is not a pass.
 - `aqp-memory` is `memory.py`. Use it where the instructions name `python3 .agents/skills/long-horizon/scripts/memory.py`.
 - The plugin does not add `AGENTS.md`, `CLAUDE.md`, the CI workflow or the language profiles. Use `install.py` for these. In a project that has the `install.py` hooks, the plugin's hooks do nothing.
-- Checked: `claude plugin validate --strict` passes on v0.10.7 (one warning: the plugin has no icon). In two agent sessions on Linux, the older three hooks ran, and the agent and the `evaluator` subagent used `aqp-memory`. The Python hook dispatcher (`hooks/aqp_hook.py`), the `PreToolUse` guard, the slash commands, and the `.cmd` launchers for Windows pass unit tests; they were not run in a live Claude Code session on Linux or Windows yet.
+- Checked: `claude plugin validate --strict` passes on v0.10.8 (one warning: the plugin has no icon). In two agent sessions on Linux, the older three hooks ran, and the agent and the `evaluator` subagent used `aqp-memory`. In 3 live sessions on Linux with v0.10.8 (the plugin loaded with `--plugin-dir`), the plugin loaded its 3 subagents and 4 commands, the `SessionStart` hook ran, `/ai-quality-pack:init` wrote the proposal and not the gate file, the `PreToolUse` guard blocked a write to the gate file, and the `Stop` hook blocked for a gate with no commands and for a red gate. Not run in a live session: the format hook, the `evaluator` subagent from the plugin, the commands `review`, `evidence` and `doctor`, and all of the plugin on Windows (the `.cmd` launchers pass unit tests and a check by hand).
 - `claude plugin uninstall ai-quality-pack` removes it.
 
 The installer never overwrites your files. It merges `.claude/settings.json` instead of replacing it. `--upgrade` replaces pack-owned skills and keeps a backup. Where symlinks are unavailable (Windows without developer mode), it copies.

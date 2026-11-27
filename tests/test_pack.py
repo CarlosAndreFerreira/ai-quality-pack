@@ -1367,6 +1367,27 @@ class EvolutionTests(unittest.TestCase):
             self.assertIn("--id T-777 is not used", r.stderr)
             self.assertNotIn("T-777", r.stdout)
 
+    def test_repro_and_counterexample_record_the_full_command(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = self._repo(t)
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")  # the fix, not committed
+            pad = " ".join(f"--note{i}=x" for i in range(40))     # a command much longer than what a display shows
+            long_cmd = f'"{self.py}" test_calc.py {pad}'
+            self.assertGreater(len(long_cmd), 300)
+            r = run([MEM, "repro", "--test", long_cmd, "--test-file", "test_calc.py"], root, env={"PYTHONDONTWRITEBYTECODE": "1"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(self._events(root, "repro")[-1]["test"], long_cmd)   # all of it: a person can run it again
+            self.assertEqual(json.loads((root / ".agent-memory/.repro").read_text(encoding="utf-8"))["test"], long_cmd)
+            for line in run([MEM, "evidence"], root).stdout.splitlines():
+                if "Reproduction: VERIFIED" in line:
+                    self.assertNotIn("--note39", line)                 # the display stays short
+            (root / "calc.py").write_text("def add(a, b):\n    return a + b + 1\n", encoding="utf-8")
+            r = run([MEM, "counterexample", "--test", long_cmd], root, env={"PYTHONDONTWRITEBYTECODE": "1"})
+            self.assertEqual(self._events(root, "counterexample")[-1]["test"], long_cmd, r.stdout + r.stderr)
+            secret = f'"{self.py}" test_calc.py --password=hunter2'
+            run([MEM, "counterexample", "--test", secret], root, env={"PYTHONDONTWRITEBYTECODE": "1"})
+            self.assertEqual(self._events(root, "counterexample")[-1]["test"], "<redacted>")
+
     def test_repro_is_verified_when_the_test_fails_on_the_base_and_passes_now(self):
         with tempfile.TemporaryDirectory() as t:
             root = self._repo(t)
@@ -1449,6 +1470,9 @@ class EvolutionTests(unittest.TestCase):
             r = run([hook], root, stdin="{}", env=env)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("Completion gate failed", r.stderr)  # a command that fails keeps the old message
+            # a way out that is not a pass: a check in conflict with the request is a reason to stop and ask, not to cheat
+            self.assertIn("If a check and the request are in conflict", r.stderr)
+            self.assertIn("do not change the test and do not write code only for the test", r.stderr)
             self.assertNotIn("checked nothing", r.stderr)
             self.assertIn("give the complete answer to the task again", r.stderr)
             (root / ".agent-memory/gate.json").unlink()

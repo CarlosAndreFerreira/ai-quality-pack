@@ -69,6 +69,11 @@ NOTHING_CHECKED = ("The completion gate has no commands, so it checked nothing. 
                    "(see below) and run the gate.\n"
                    "- The task changed nothing that a command can check (a question, a plan, a review): do not "
                    "write a gate file. Say in one line that no completion gate ran.\n")
+# A way out that is not a pass. An agent in a loop of "make the tests pass" finds shortcuts more frequently (ImpossibleBench,
+# arXiv 2510.20270: 33% to 38% with a feedback loop), and an option to stop and ask a person decreases them.
+CONFLICT_EXIT = ("If a check and the request are in conflict (the request needs a behaviour that an existing test "
+                 "forbids), do not change the test and do not write code only for the test: stop, and tell the user "
+                 "which check conflicts with which part of the request. That is a correct end of the task.")
 CHAIN = Path(".agent-memory/.stop-chain")  # how many times this chain of stops was blocked (require_evaluator only)
 MAX_CHAIN = 3
 ENDED = {"completed", "complete", "done", "failed", "error", "killed", "stopped", "cancelled", "canceled"}
@@ -233,7 +238,7 @@ def main() -> int:
         if "Nothing was checked" in out:  # no gate file, or a gate file without commands: not a failed check
             return block("blocked", NOTHING_CHECKED + out, env, required)
         return block("blocked", "Completion gate failed. Fix this before finishing, or explain to the user why it "
-                     "cannot pass:\n" + out, env, required)
+                     "cannot pass. " + CONFLICT_EXIT + "\n" + out, env, required)
     missing = evaluator_missing(env, required) if r.returncode == 0 else ""
     if missing and evaluator_runs(data):  # the agent stops to wait: it starts again when the evaluator ends
         record("waiting-evaluator", env)

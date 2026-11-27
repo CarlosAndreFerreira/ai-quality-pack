@@ -83,7 +83,7 @@ RISK_WAIVERS = ROOT / "risk-waivers.jsonl"  # a person reviewed a risk-rule matc
 EVENTS = ROOT / "events.jsonl"   # run log: what happened (ids, outcomes, durations), local and git-ignored
 EVENTS_OLD = ROOT / "events.1.jsonl"
 EVENTS_LOCK = ROOT / ".events.lock"
-PACK_VERSION = "0.10.7"  # the same as .claude-plugin/plugin.json (a test checks it)
+PACK_VERSION = "0.10.8"  # the same as .claude-plugin/plugin.json (a test checks it)
 CHAIN_START = "0" * 32  # `prev` of the first event of a chain
 SESSION = ROOT / ".session"
 REPRO = ROOT / ".repro"          # the last verified reproduction: which code it was for
@@ -431,6 +431,15 @@ def hook_input(wait: float = 0.5) -> dict:
 
 def safe_cmd(c: str) -> str:
     return "<redacted>" if SECRET_RE.search(c) else clean(c, 120)
+
+
+REPLAY_LIMIT = 4000
+
+
+def replay_cmd(c: str) -> str:
+    """The command of a reproduction or of a counterexample, as the record keeps it: all of it, so that a person can
+    run it again. Each display cuts it. A cut command made 28 of 104 records of one measurement not repeatable."""
+    return "<redacted>" if SECRET_RE.search(c) else clean(c, REPLAY_LIMIT)
 
 
 def gate_fresh():
@@ -2205,11 +2214,11 @@ def cmd_counterexample(a: argparse.Namespace) -> None:
                                           "the run on the base used the current code: this result then says nothing about the base")
     with contextlib.suppress(OSError):
         if result == "shown":
-            COUNTER.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha, "kind": kind,
+            COUNTER.write_text(json.dumps({"hash": workspace_hash(), "test": replay_cmd(a.test), "base": sha, "kind": kind,
                                            "feature": a.id or ""}) + "\n", encoding="utf-8")
         else:
             COUNTER.unlink()
-    log_event("counterexample", result=result, kind=kind or None, id=a.id, test=safe_cmd(a.test), base=sha[:12],
+    log_event("counterexample", result=result, kind=kind or None, id=a.id, test=replay_cmd(a.test), base=sha[:12],
               hash=code_state_hash()[:12])
     _WHY["text"] = why
     print(f"counterexample {result.upper()}" + (f" ({kind})" if kind else "") + f": {why}")
@@ -2723,11 +2732,11 @@ def cmd_repro(a: argparse.Namespace) -> None:
                 "change can agree with a wrong change")
     with contextlib.suppress(OSError):
         if result == "verified":
-            REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": safe_cmd(a.test), "base": sha,
+            REPRO.write_text(json.dumps({"hash": workspace_hash(), "test": replay_cmd(a.test), "base": sha,
                                          "recorded_test": recorded_test, "tests": used}) + "\n", encoding="utf-8")
         else:
             REPRO.unlink()
-    log_event("repro", result=result, test=safe_cmd(a.test), base=sha[:12], recorded_test=recorded_test if result == "verified" else None)
+    log_event("repro", result=result, test=replay_cmd(a.test), base=sha[:12], recorded_test=recorded_test if result == "verified" else None)
     _WHY["text"] = why
     print(f"repro {result.upper()}: {why}")
     if before not in (0, None):

@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.10.8 — 2026-11-27
 
-Fix for the Windows `.cmd` plugin launchers (`bin/aqp-hook.cmd` and `bin/aqp-memory.cmd`). No default of `memory.py` changed.
+Three small changes and the first live check of the Claude Code plugin since version 0.10.6. One changes what the agent reads: the block message of the Stop hook. No default of `memory.py` changed.
 
+Checked: 179 tests on Windows and on Linux, each with and without `PYTHONDONTWRITEBYTECODE`, and in CI on Linux, macOS and Windows (Python 3.9, 3.13 and 3.14).
+
+- **The record of a reproduction and of a counterexample keeps the full command.** `memory.py repro` and `memory.py counterexample` cut the command at 120 characters in `events.jsonl`, `.repro` and `.counterexample`. A cut command cannot be run again: in one measurement, 28 of 104 verified reproductions and 3 counterexamples could not be repeated. The record now keeps up to 4000 characters. Each display (digest, evidence block, messages) stays short, and a command with a secret is `<redacted>` as before. 1 test.
+- **The block of the Stop hook for a failed gate names a way out.** The message told the agent to fix the failure or to explain why the gate cannot pass. It now also says: if a check and the request are in conflict, do not change the test and do not write code only for the test; stop and tell the user. Reason: on tasks where tests and request conflict, a loop of test feedback increased shortcuts (33% to 38%) and an option to stop decreased them (ImpossibleBench, arXiv 2510.20270). 1 test extended. Not measured with an agent.
+- **Checked in a live session on Linux** (3 short sessions in Docker, plugin loaded with `--plugin-dir`, Sonnet): the plugin loads its 3 subagents and 4 commands; the SessionStart hook runs; `/ai-quality-pack:init` writes `gate.proposed.json` and not the gate file; the guard blocks a write to `.agent-memory/gate.json`; the Stop hook blocks one time for a gate with no commands and for a red gate, and the agent then did not say "done". Not checked: the format hook, the `evaluator` subagent from the plugin, the commands `review`, `evidence` and `doctor`, an interactive session, and Windows.
 - **Windows `.cmd` launchers (`bin/aqp-hook.cmd`, `bin/aqp-memory.cmd`)**: probe `python3`, `python`, and `py -3` with `call ... -c "import sys"` instead of `where`, skipping Microsoft Store aliases that are on `PATH` and fail on execution; jump with `goto` instead of reading `%errorlevel%` inside an `if (...)` block so hook block exit codes (`2`) are preserved. Checked by static assertions on Linux; live `.cmd` execution test runs on Windows CI (`os.name == "nt"`).
 
 ## 0.10.7 — 2026-11-26
